@@ -1,7 +1,0 @@
-aiogram==3.13.1
-aiosqlite==0.20.0
-python-dotenv==1.0.1
-hcloud==2.13.0
-pytz==2025.2
-requests==2.32.3
-aiohttp==3.9.5
