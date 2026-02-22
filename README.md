@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/deltashopsiavash/deltabot" target="_blank" rel="noopener noreferrer">
+  <a href="https://github.com/deltashopsiavash/deltabotvps" target="_blank" rel="noopener noreferrer">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://user-images.githubusercontent.com/27927279/227711552-d2bc1089-5666-477b-9be7-d7e50a5286dc.png">
       <img width="200" height="200" src="https://user-images.githubusercontent.com/27927279/227711552-d2bc1089-5666-477b-9be7-d7e50a5286dc.png">
@@ -21,7 +21,7 @@
 <h1 align="center"/>Welcome to delta</h1>
 
 <p align="center">
-Easy to sell with <a href="https://github.com/deltashopsiavash/deltabot">deltabot</a> easy install with few clicks
+Easy to sell with <a href="https://github.com/deltashopsiavash/deltabotvps">deltabot</a> easy install with few clicks
 </p>
 
 <p align="center">
@@ -42,7 +42,7 @@ delta is a powerful and professional robot that supports several types of panels
 <br>
 <br>
     <a align="center">
-        <img src="https://github.com/deltashopsiavash/deltabot/assets/27927279/f6635ea5-ab26-4c64-a7b8-952203f79763" />
+        <img src="https://github.com/deltashopsiavash/deltabotvps/assets/27927279/f6635ea5-ab26-4c64-a7b8-952203f79763" />
     </a>     
 <br>
 <br>
@@ -55,7 +55,7 @@ delta is a powerful and professional robot that supports several types of panels
 - The first option asks you for a domain, you must set the ip server for the domain and then enter it according to the example
 > Enter the installation command in the console and enter the required items to complete the installation.
 ```
-bash <(curl -s https://raw.githubusercontent.com/deltashopsiavash/deltabot/main/delta.sh)
+bash <(curl -s https://raw.githubusercontent.com/deltashopsiavash/deltabotvps/main/delta.sh)
 ```
 - First enter "sub.domain.com" or "domain.com" without https
 - Enter email
@@ -75,7 +75,7 @@ bash <(curl -s https://raw.githubusercontent.com/deltashopsiavash/deltabot/main/
 
 - With every update and backup, a notification is sent to the manager robot
 ```
-bash <(curl -s https://raw.githubusercontent.com/deltashopsiavash/deltabot/main/update.sh)
+bash <(curl -s https://raw.githubusercontent.com/deltashopsiavash/deltabotvps/main/update.sh)
 ```
 
 <br>
