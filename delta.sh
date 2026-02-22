@@ -43,9 +43,9 @@ apt_install php libapache2-mod-php php-mbstring php-zip php-gd php-json php-curl
 
 systemctl enable --now mysql apache2
 
-# phpMyAdmin (non-interactive)
+# phpMyAdmin (non-interactive) - avoid pipelines that can break with pipefail
 echo -e "${CYN}Installing phpMyAdmin...${NC}"
-PMAPASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 22)"
+PMAPASS="$(openssl rand -hex 16)"; PMAPASS="${PMAPASS:0:22}"
 echo 'phpmyadmin phpmyadmin/dbconfig-install boolean true' | debconf-set-selections
 echo "phpmyadmin phpmyadmin/app-password-confirm password ${PMAPASS}" | debconf-set-selections
 echo "phpmyadmin phpmyadmin/mysql/admin-pass password ${PMAPASS}" | debconf-set-selections
@@ -72,8 +72,8 @@ git clone "${REPO_URL}" "${BOT_DIR}"
 chown -R www-data:www-data "${BOT_DIR}"
 chmod -R 755 "${BOT_DIR}"
 
-# Panel path
-RANDOM_CODE="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 40)"
+# Panel path (FIXED: no pipefail)
+RANDOM_CODE="$(openssl rand -hex 20)"   # 40 chars
 PANEL_DIR="/var/www/html/${RANDOM_CODE}"
 mkdir -p "${PANEL_DIR}"
 
@@ -89,9 +89,9 @@ else
   echo -e "${YLW}[WARN] پنل نصب نشد. اگر پنل داری، فایل deltapanel.zip را داخل پوشه install/ در ریپو بگذار.${NC}"
 fi
 
-# MySQL root password helper
+# MySQL root password helper (FIXED: no pipefail)
 mkdir -p /root/confdelta
-MYSQL_ROOT_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+MYSQL_ROOT_PASS="$(openssl rand -hex 12)"  # 24 chars
 mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}'; FLUSH PRIVILEGES;" || true
 
 cat > /root/confdelta/dbrootdelta.txt <<'CONF'
@@ -124,13 +124,13 @@ fi
 apt_install certbot python3-certbot-apache
 if ! certbot --apache --non-interactive --agree-tos -m "${SSL_EMAIL}" -d "${DOMAIN_NAME}"; then
   echo -e "${YLW}[WARN] SSL گرفتن موفق نشد. بعداً دستی اجرا کن:${NC}"
-  echo -e "${CYN}certbot --apache -d ${DOMAIN_NAME}${NC}"
+  echo -e "${CYN}certbot --apache -m ${SSL_EMAIL} -d ${DOMAIN_NAME}${NC}"
 fi
 
-# Create DB
+# Create DB (FIXED: no pipefail)
 DBNAME="delta"
-DBUSER="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
-DBPASS="$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 20)"
+DBUSER="$(openssl rand -hex 8)"   # 16 chars
+DBPASS="$(openssl rand -hex 10)"  # 20 chars
 
 echo -e "${GRN}DB user default: ${YLW}${DBUSER}${NC}"
 read -r -p "DB username (خالی = پیشفرض): " IN_DBUSER
@@ -146,27 +146,19 @@ mysql -u root -p"${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON *.* TO '${DBUSE
 mysql -u root -p"${MYSQL_ROOT_PASS}" -e "CREATE USER IF NOT EXISTS '${DBUSER}'@'localhost' IDENTIFIED WITH mysql_native_password BY '${DBPASS}';"
 mysql -u root -p"${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON *.* TO '${DBUSER}'@'localhost'; FLUSH PRIVILEGES;"
 
-# Write baseInfo.php
-cat > "${BOT_DIR}/baseInfo.php" <<'PHP'
+# Write baseInfo.php (includes Hetzner token)
+cat > "${BOT_DIR}/baseInfo.php" <<EOF
 <?php
 error_reporting(0);
-$botToken = '__BOT_TOKEN__';
-$hcloudToken = '__HCLOUD_TOKEN__';
-$dbUserName = '__DBUSER__';
-$dbPassword = '__DBPASS__';
-$dbName = '__DBNAME__';
-$botUrl = '__BOTURL__';
-$admin = __ADMIN_ID__;
+\$botToken = '${BOT_TOKEN}';
+\$hcloudToken = '${HCLOUD_TOKEN}';
+\$dbUserName = '${DBUSER}';
+\$dbPassword = '${DBPASS}';
+\$dbName = '${DBNAME}';
+\$botUrl = 'https://${DOMAIN_NAME}/deltabot/';
+\$admin = ${ADMIN_ID};
 ?>
-PHP
-sed -i "s|__BOT_TOKEN__|${BOT_TOKEN}|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__HCLOUD_TOKEN__|${HCLOUD_TOKEN}|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__DBUSER__|${DBUSER}|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__DBPASS__|${DBPASS}|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__DBNAME__|${DBNAME}|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__BOTURL__|https://${DOMAIN_NAME}/deltabot/|g" "${BOT_DIR}/baseInfo.php"
-sed -i "s|__ADMIN_ID__|${ADMIN_ID}|g" "${BOT_DIR}/baseInfo.php"
-
+EOF
 chown www-data:www-data "${BOT_DIR}/baseInfo.php"
 chmod 640 "${BOT_DIR}/baseInfo.php"
 
@@ -174,15 +166,12 @@ chmod 640 "${BOT_DIR}/baseInfo.php"
 curl -fsS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
   -d "url=https://${DOMAIN_NAME}/deltabot/bot.php" >/dev/null || true
 
-# Init DB
+# Init DB (optional)
 if [ -f "${BOT_DIR}/createDB.php" ]; then
   curl -fsS "https://${DOMAIN_NAME}/deltabot/createDB.php" >/dev/null || true
 fi
 
-# Cron job (مثال)
-(crontab -l 2>/dev/null; echo "* * * * * curl -fsS https://${DOMAIN_NAME}/deltabot/settings/messagedelta.php >/dev/null 2>&1") | sort -u | crontab -
-
-# Notify
+# Notify admin
 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
   -d chat_id="${ADMIN_ID}" \
   -d text="✅ The delta bot has been successfully installed!" >/dev/null 2>&1 || true
@@ -190,6 +179,7 @@ curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
 echo
 echo -e "${GRN}================= DONE =================${NC}"
 echo -e "${GRN}phpMyAdmin:${NC} https://${DOMAIN_NAME}/phpmyadmin"
+echo -e "${GRN}Panel:${NC}     https://${DOMAIN_NAME}/${RANDOM_CODE}/login.php"
 echo -e "${GRN}Bot URL:${NC}    https://${DOMAIN_NAME}/deltabot/"
-echo -e "${GRN}Panel:${NC}      https://${DOMAIN_NAME}/${RANDOM_CODE}/login.php  (اگر پنل نصب شده باشد)"
+echo -e "${GRN}Hetzner token saved as \$hcloudToken in baseInfo.php${NC}"
 echo -e "${GRN}========================================${NC}"
