@@ -1,323 +1,220 @@
-#!/bin/bash
-# Written By: delta (patched to ask for Hetzner token)
+#!/usr/bin/env bash
+# delta.sh (stable installer) - patched to ask Hetzner token + avoid silent crashes
 
-set -e
+set -Eeuo pipefail
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo -e "\033[33mPlease run as root\033[0m"
-  exit 1
-fi
+# ---- helpers
+RED='\033[0;31m'; GRN='\033[0;32m'; YLW='\033[0;33m'; CYN='\033[0;36m'; NC='\033[0m'
+trap 'echo -e "\n${RED}[ERROR]${NC} خطا در خط ${YLW}$LINENO${NC}. نصب متوقف شد."; exit 1' ERR
 
-wait
-
-echo -e "\e[32m"
-echo "██████╗ ███████╗██╗ ████████╗ █████╗ "
-echo "██╔══██╗██╔════╝██║ ╚══██╔══╝██╔══██╗"
-echo "██║  ██║█████╗  ██║    ██║   ███████║"
-echo "██║  ██║██╔══╝  ██║    ██║   ██╔══██║"
-echo "██████╔╝███████╗███████╗██║   ██║  ██║"
-echo "╚═════╝ ╚══════╝╚══════╝╚═╝   ╚═╝  ╚═╝"
-echo -e "\033[0m"
-echo -e " \e[31mTelegram Channel: \e[34m@deltach\033[0m | \e[31mTelegram Group: \e[34m@deltadev\033[0m\n"
-
-echo -e "\e[32mInstalling Delta script ...\033[0m\n"
-sleep 5
-
-sudo apt update && apt upgrade -y
-echo -e "\e[92mThe server was successfully updated ...\033[0m\n"
-
-PKG=( lamp-server^ libapache2-mod-php mysql-server apache2 php-mbstring php-zip php-gd php-json php-curl )
-for i in "${PKG[@]}"; do
-  dpkg -s "$i" &>/dev/null
-  if [ $? -eq 0 ]; then
-    echo "$i is already installed"
-  else
-    apt install "$i" -y
-    if [ $? -ne 0 ]; then
-      echo "Error installing $i"
-      exit 1
-    fi
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${YLW}Please run as root${NC}"
+    echo -e "مثال: ${CYN}sudo -i${NC} سپس دوباره اجرا کن."
+    exit 1
   fi
-done
+}
 
-echo -e "\n\e[92mPackages Installed Continuing ...\033[0m\n"
+apt_install() {
+  local pkgs=("$@")
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}"
+}
 
-randomdbpasstxt69=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-20)
+print_banner() {
+  echo -e "${GRN}"
+  echo "██████╗ ███████╗██╗ ████████╗ █████╗ "
+  echo "██╔══██╗██╔════╝██║ ╚══██╔══╝██╔══██╗"
+  echo "██║  ██║█████╗  ██║    ██║   ███████║"
+  echo "██║  ██║██╔══╝  ██║    ██║   ██╔══██║"
+  echo "██████╔╝███████╗███████╗██║   ██║  ██║"
+  echo "╚═════╝ ╚══════╝╚══════╝╚═╝   ╚═╝  ╚═╝"
+  echo -e "${NC}"
+  echo -e " ${RED}Telegram Channel:${NC} ${CYN}@deltach${NC} | ${RED}Telegram Group:${NC} ${CYN}@deltadev${NC}\n"
+}
 
+# ---- main
+need_root
+print_banner
+
+echo -e "${GRN}Installing Delta bot ...${NC}\n"
+sleep 1
+
+echo -e "${CYN}Updating server packages...${NC}"
+apt-get update -y
+DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+echo -e "${GRN}The server was successfully updated ...${NC}\n"
+
+echo -e "${CYN}Installing required packages...${NC}"
+apt_install git wget unzip curl ufw ca-certificates lsb-release gnupg openssl \
+            apache2 mysql-server php libapache2-mod-php \
+            php-mbstring php-zip php-gd php-json php-curl php-soap php-ssh2 \
+            libssh2-1 libssh2-1-dev
+
+systemctl enable --now mysql apache2
+
+# ---- phpMyAdmin (non-interactive)
+echo -e "${CYN}Installing phpMyAdmin...${NC}"
+PMAPASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 22)"
 echo 'phpmyadmin phpmyadmin/dbconfig-install boolean true' | debconf-set-selections
-echo "phpmyadmin phpmyadmin/app-password-confirm password $randomdbpasstxt69" | debconf-set-selections
-echo "phpmyadmin phpmyadmin/mysql/admin-pass password $randomdbpasstxt69" | debconf-set-selections
-echo "phpmyadmin phpmyadmin/mysql/app-pass password $randomdbpasstxt69" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/app-password-confirm password ${PMAPASS}" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/mysql/admin-pass password ${PMAPASS}" | debconf-set-selections
+echo "phpmyadmin phpmyadmin/mysql/app-pass password ${PMAPASS}" | debconf-set-selections
 echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2' | debconf-set-selections
+apt_install phpmyadmin
+a2enconf phpmyadmin || true
+systemctl restart apache2
 
-sudo apt-get install phpmyadmin -y
-sudo ln -s /etc/phpmyadmin/apache.conf /etc/apache2/conf-available/phpmyadmin.conf
-sudo a2enconf phpmyadmin.conf
-sudo systemctl restart apache2
+# ---- UFW
+echo -e "${CYN}Configuring firewall (UFW)...${NC}"
+ufw allow 80/tcp || true
+ufw allow 443/tcp || true
+ufw allow 'Apache Full' || true
 
-sudo apt-get install -y php-soap
-sudo apt-get install -y libapache2-mod-php
+# ---- clone bot
+echo -e "${CYN}Cloning repository...${NC}"
+rm -rf /var/www/html/deltabot || true
+git clone https://github.com/deltashopsiavash/deltabotvps.git /var/www/html/deltabot
+chown -R www-data:www-data /var/www/html/deltabot
+chmod -R 755 /var/www/html/deltabot
 
-sudo systemctl enable mysql.service
-sudo systemctl start mysql.service
-sudo systemctl enable apache2
-sudo systemctl start apache2
-
-echo -e "\n\e[92m Setting Up UFW...\033[0m\n"
-ufw allow 'Apache'
-sudo systemctl restart apache2
-
-echo -e "\n\e[92mInstalling ...\033[0m\n"
-sleep 1
-
-sudo apt-get install -y git wget unzip curl php-ssh2
-sudo apt-get install -y libssh2-1-dev libssh2-1
-sudo systemctl restart apache2.service
-
-git clone https://github.com/deltashopsiavash/deltabot.git /var/www/html/deltabot
-sudo chown -R www-data:www-data /var/www/html/deltabot/
-sudo chmod -R 755 /var/www/html/deltabot/
-
-echo -e "\n\033[33mDelta config and script have been installed successfully\033[0m"
-wait
-
-RANDOM_CODE=$(LC_CTYPE=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 40)
+# ---- web panel folder (random path)
+RANDOM_CODE="$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 40)"
 mkdir -p "/var/www/html/${RANDOM_CODE}"
-echo "Directory created: ${RANDOM_CODE}"
-echo "Folder created successfully!"
 
-cd /var/www/html/
-wget -O deltapanel.zip https://github.com/deltashopsiavash/deltabot/releases/download/10.3.1/deltapanel.zip
+echo -e "${CYN}Downloading panel zip...${NC}"
+cd /var/www/html
+# اگر ریلیز/لینک پنل جای دیگریه بگو تا همین‌جا اصلاحش کنم
+wget -O deltapanel.zip "https://github.com/deltashopsiavash/deltabot/releases/download/10.3.1/deltapanel.zip"
+mv /var/www/html/deltapanel.zip "/var/www/html/${RANDOM_CODE}/deltapanel.zip"
+unzip -o "/var/www/html/${RANDOM_CODE}/deltapanel.zip" -d "/var/www/html/${RANDOM_CODE}/" >/dev/null
+rm -f "/var/www/html/${RANDOM_CODE}/deltapanel.zip"
+chown -R www-data:www-data "/var/www/html/${RANDOM_CODE}"
+chmod -R 755 "/var/www/html/${RANDOM_CODE}"
 
-file_to_transfer="/var/www/html/deltapanel.zip"
-destination_dir=$(find /var/www/html -type d -name "*${RANDOM_CODE}*" -print -quit)
+# ---- MySQL root password set (fix auth_socket issues)
+echo -e "${CYN}Configuring MySQL root password...${NC}"
+mkdir -p /root/confdelta
+MYSQL_ROOT_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
 
-if [ -z "$destination_dir" ]; then
-  echo "Error: Could not find directory containing RANDOM_CODE in '/var/www/html'"
+# set root password safely (works on Ubuntu where root uses auth_socket)
+mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}'; FLUSH PRIVILEGES;" || true
+
+# store config for later usage (and store $path too)
+cat > /root/confdelta/dbrootdelta.txt <<EOF
+\$user = 'root';
+\$pass = '${MYSQL_ROOT_PASS}';
+\$path = '${RANDOM_CODE}';
+EOF
+chmod 600 /root/confdelta/dbrootdelta.txt
+
+# verify mysql
+mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SELECT 1;" >/dev/null
+
+# ---- ask user inputs
+echo
+read -r -p "Enter domain (example: domain.com or sub.domain.com) : " DOMAIN_NAME
+if [ -z "${DOMAIN_NAME}" ]; then
+  echo -e "${RED}Domain is empty. Exit.${NC}"
   exit 1
 fi
 
-mv "$file_to_transfer" "$destination_dir/"
-yes | unzip "$destination_dir/deltapanel.zip" -d "$destination_dir/"
-rm "$destination_dir/deltapanel.zip"
-sudo chmod -R 755 "$destination_dir/"
-sudo chown -R www-data:www-data "$destination_dir/"
+read -r -p "Enter email for SSL (Let's Encrypt) : " SSL_EMAIL
+if [ -z "${SSL_EMAIL}" ]; then
+  echo -e "${RED}Email is empty. Exit.${NC}"
+  exit 1
+fi
 
-wait
+read -r -p "Bot Token : " YOUR_BOT_TOKEN
+read -r -p "Admin Numerical ID (from @userinfobot) : " YOUR_CHAT_ID
+read -r -p "Hetzner Token : " YOUR_HCLOUD_TOKEN
 
-# MySQL root helper file
-if [ ! -d "/root/confdelta" ]; then
-  sudo mkdir /root/confdelta
-  sleep 1
-  touch /root/confdelta/dbrootdelta.txt
-  sudo chmod -R 777 /root/confdelta/dbrootdelta.txt
-  sleep 1
+if [ -z "${YOUR_BOT_TOKEN}" ] || [ -z "${YOUR_CHAT_ID}" ] || [ -z "${YOUR_HCLOUD_TOKEN}" ]; then
+  echo -e "${RED}Bot token / Admin ID / Hetzner token must not be empty.${NC}"
+  exit 1
+fi
 
-  randomdbpasstxt=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-30)
-  ASAS="$"
-  echo "${ASAS}user = 'root';" >> /root/confdelta/dbrootdelta.txt
-  echo "${ASAS}pass = '${randomdbpasstxt}';" >> /root/confdelta/dbrootdelta.txt
+# ---- SSL (don’t hard-fail if certbot fails; show warning)
+echo -e "${CYN}Installing certbot...${NC}"
+apt_install certbot python3-certbot-apache
 
-  sleep 1
-  passs=$(cat /root/confdelta/dbrootdelta.txt | grep '$pass' | cut -d"'" -f2)
-  userrr=$(cat /root/confdelta/dbrootdelta.txt | grep '$user' | cut -d"'" -f2)
+echo -e "${CYN}Requesting SSL certificate...${NC}"
+if ! certbot --apache --non-interactive --agree-tos -m "${SSL_EMAIL}" -d "${DOMAIN_NAME}"; then
+  echo -e "${YLW}[WARN] SSL گرفتن موفق نشد. بعداً می‌تونی دستی اجرا کنی:${NC}"
+  echo -e "${CYN}certbot --apache -d ${DOMAIN_NAME}${NC}"
+fi
 
-  sudo mysql -u "$userrr" -p"$passs" -e "alter user '$userrr'@'localhost' identified with mysql_native_password by '$passs';FLUSH PRIVILEGES;"
-  echo "SELECT 1" | mysql -u"$userrr" -p"$passs" 2>/dev/null || true
+# ---- create DB + user
+echo -e "${CYN}Creating database...${NC}"
+DBNAME="delta"
+
+# prevent duplicate
+if mysql -u root -p"${MYSQL_ROOT_PASS}" -e "SHOW DATABASES LIKE '${DBNAME}';" | grep -q "${DBNAME}"; then
+  echo -e "${YLW}[WARN] Database '${DBNAME}' already exists. Skipping create.${NC}"
 else
-  echo "Folder already exists."
+  DEF_DB_USER="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+  DEF_DB_PASS="$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 20)"
+
+  echo -e "${GRN}DB user default: ${YLW}${DEF_DB_USER}${NC}"
+  read -r -p "DB username (leave empty for default): " DBUSER
+  DBUSER="${DBUSER:-$DEF_DB_USER}"
+
+  echo -e "${GRN}DB pass default: ${YLW}${DEF_DB_PASS}${NC}"
+  read -r -p "DB password (leave empty for default): " DBPASS
+  DBPASS="${DBPASS:-$DEF_DB_PASS}"
+
+  mysql -u root -p"${MYSQL_ROOT_PASS}" -e "CREATE DATABASE ${DBNAME};"
+  mysql -u root -p"${MYSQL_ROOT_PASS}" -e "CREATE USER '${DBUSER}'@'%' IDENTIFIED WITH mysql_native_password BY '${DBPASS}';"
+  mysql -u root -p"${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON *.* TO '${DBUSER}'@'%'; FLUSH PRIVILEGES;"
+  mysql -u root -p"${MYSQL_ROOT_PASS}" -e "CREATE USER '${DBUSER}'@'localhost' IDENTIFIED WITH mysql_native_password BY '${DBPASS}';"
+  mysql -u root -p"${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON *.* TO '${DBUSER}'@'localhost'; FLUSH PRIVILEGES;"
 fi
 
-clear
-echo " "
-echo -e "\e[32m"
-echo "██████╗ ███████╗██╗ ████████╗ █████╗ "
-echo "██╔══██╗██╔════╝██║ ╚══██╔══╝██╔══██╗"
-echo "██║  ██║█████╗  ██║    ██║   ███████║"
-echo "██║  ██║██╔══╝  ██║    ██║   ██╔══██║"
-echo "██████╔╝███████╗███████╗██║   ██║  ██║"
-echo "╚═════╝ ╚══════╝╚══════╝╚═╝   ╚═╝  ╚═╝"
-echo -e "\033[0m"
-
-read -p "Enter the domain: " domainname
-if [ "$domainname" = "" ]; then
-  echo -e "\n\033[91mPlease wait ...\033[0m\n"
-  sleep 3
-  echo -e "\e[36mNothing was registered for the domain.\033[0m\n"
-  echo -e "\n\033[0m Good Luck Baby\n"
-  exit 1
+# if DBUSER/DBPASS not set because DB existed, try read from baseInfo if exists
+DBUSER="${DBUSER:-}"
+DBPASS="${DBPASS:-}"
+if [ -z "${DBUSER}" ] || [ -z "${DBPASS}" ]; then
+  # fallback: random (user can fix in baseInfo.php later)
+  DBUSER="${DBUSER:-deltauser}"
+  DBPASS="${DBPASS:-deltapass}"
 fi
 
-DOMAIN_NAME="$domainname"
+# ---- write baseInfo.php
+echo -e "${CYN}Writing baseInfo.php...${NC}"
+cat > /var/www/html/deltabot/baseInfo.php <<EOF
+<?php
+error_reporting(0);
+\$botToken = '${YOUR_BOT_TOKEN}';
+\$hcloudToken = '${YOUR_HCLOUD_TOKEN}';
+\$dbUserName = '${DBUSER}';
+\$dbPassword = '${DBPASS}';
+\$dbName = '${DBNAME}';
+\$botUrl = 'https://${DOMAIN_NAME}/deltabot/';
+\$admin = ${YOUR_CHAT_ID};
+?>
+EOF
+chown www-data:www-data /var/www/html/deltabot/baseInfo.php
+chmod 640 /var/www/html/deltabot/baseInfo.php
 
-# cron jobs
-PATHS=$(cat /root/confdelta/dbrootdelta.txt | grep '$path' | cut -d"'" -f2)
-(crontab -l 2>/dev/null ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabot/settings/messagedelta.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l 2>/dev/null ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabot/settings/rewardReport.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l 2>/dev/null ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabot/settings/warnusers.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l 2>/dev/null ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabot/settings/gift2all.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l 2>/dev/null ; echo "*/3 * * * * curl https://${DOMAIN_NAME}/deltabot/settings/tronChecker.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l 2>/dev/null ; echo "* * * * * curl https://${DOMAIN_NAME}/${PATHS}/backupnutif.php >/dev/null 2>&1") | sort - | uniq - | crontab -
+# ---- set webhook
+echo -e "${CYN}Setting Telegram webhook...${NC}"
+curl -fsS -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook" \
+  -d "url=https://${DOMAIN_NAME}/deltabot/bot.php" >/dev/null || true
 
-echo -e "\n\e[92m Setting Up Cron...\033[0m\n"
-
-# Allow HTTP/HTTPS
-echo -e "\n\033[1;7;31mAllowing HTTP and HTTPS traffic...\033[0m\n"
-sudo ufw allow 80
-sudo ufw allow 443
-
-# Let's Encrypt
-echo -e "\n\033[1;7;32mInstalling Let's Encrypt...\033[0m\n"
-sudo apt install letsencrypt -y
-
-echo -e "\n\033[1;7;33mEnabling automatic certificate renewal...\033[0m\n"
-sudo systemctl enable certbot.timer || true
-
-echo -e "\n\033[1;7;34mObtaining SSL certificate using standalone mode...\033[0m\n"
-sudo certbot certonly --standalone --agree-tos --preferred-challenges http -d "$DOMAIN_NAME" || true
-
-echo -e "\n\033[1;7;35mInstalling Certbot Apache plugin...\033[0m\n"
-sudo apt install python3-certbot-apache -y
-
-echo -e "\n\033[1;7;36mObtaining SSL certificate using Apache plugin...\033[0m\n"
-sudo certbot --apache --agree-tos --preferred-challenges http -d "$DOMAIN_NAME" || true
-
-echo -e "\e[32m======================================"
-echo -e "SSL certificate obtained successfully!"
-echo -e "======================================\033[0m"
-
-wait
-echo " "
-
-ROOT_PASSWORD=$(cat /root/confdelta/dbrootdelta.txt | grep '$pass' | cut -d"'" -f2)
-ROOT_USER="root"
-
-echo "SELECT 1" | mysql -u"$ROOT_USER" -p"$ROOT_PASSWORD" 2>/dev/null
-if [ $? -ne 0 ]; then
-  echo -e "\n\e[36mThe password is not correct or empty.\033[0m\n"
-  exit 1
+# ---- init DB (if createDB exists)
+if [ -f /var/www/html/deltabot/createDB.php ]; then
+  echo -e "${CYN}Initializing bot DB tables...${NC}"
+  curl -fsS "https://${DOMAIN_NAME}/deltabot/createDB.php" >/dev/null || true
 fi
 
-wait
+# ---- notify admin
+curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" \
+  -d chat_id="${YOUR_CHAT_ID}" \
+  -d text="✅ The delta bot has been successfully installed!" >/dev/null 2>&1 || true
 
-randomdbpass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-22)
-randomdbdb=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-22)
-
-if [[ $(mysql -u root -p"$ROOT_PASSWORD" -e "SHOW DATABASES LIKE 'delta'" 2>/dev/null) ]]; then
-  clear
-  echo -e "\n\e[91mYou have already created the database\033[0m\n"
-  exit 1
-fi
-
-dbname=delta
-
-clear
-echo -e "\n\e[32mPlease enter the database username!\033[0m"
-printf "[+] Default user name is \e[91m${randomdbdb}\e[0m ( let it blank to use this user name ): "
-read dbuser
-if [ "$dbuser" = "" ]; then dbuser=$randomdbdb; fi
-
-echo -e "\n\e[32mPlease enter the database password!\033[0m"
-printf "[+] Default password is \e[91m${randomdbpass}\e[0m ( let it blank to use this password ): "
-read dbpass
-if [ "$dbpass" = "" ]; then dbpass=$randomdbpass; fi
-
-mysql -u root -p"$ROOT_PASSWORD" \
-  -e "CREATE DATABASE $dbname;" \
-  -e "CREATE USER '$dbuser'@'%' IDENTIFIED WITH mysql_native_password BY '$dbpass';" \
-  -e "GRANT ALL PRIVILEGES ON *.* TO '$dbuser'@'%'; FLUSH PRIVILEGES;" \
-  -e "CREATE USER '$dbuser'@'localhost' IDENTIFIED WITH mysql_native_password BY '$dbpass';" \
-  -e "GRANT ALL PRIVILEGES ON *.* TO '$dbuser'@'localhost'; FLUSH PRIVILEGES;"
-
-echo -e "\n\e[95mDatabase Created.\033[0m"
-wait
-
-# =========================
-# BOT CONFIG (PATCHED HERE)
-# =========================
-printf "\n\e[33m[+] \e[36mBot Token: \033[0m"
-read YOUR_BOT_TOKEN
-
-printf "\e[33m[+] \e[36mChat id: \033[0m"
-read YOUR_CHAT_ID
-
-printf "\e[33m[+] \e[36mDomain: \033[0m"
-read YOUR_DOMAIN
-
-printf "\e[33m[+] \e[36mHetzner Token: \033[0m"
-read YOUR_HCLOUD_TOKEN
-
-echo " "
-
-if [ "$YOUR_BOT_TOKEN" = "" ] || [ "$YOUR_DOMAIN" = "" ] || [ "$YOUR_CHAT_ID" = "" ] || [ "$YOUR_HCLOUD_TOKEN" = "" ]; then
-  exit 1
-fi
-
-ASAS="$"
-wait
-sleep 1
-
-file_path="/var/www/html/deltabot/baseInfo.php"
-if [ -f "$file_path" ]; then
-  rm "$file_path"
-  echo -e "File deleted successfully."
-else
-  echo -e "File not found."
-fi
-
-sleep 2
-
-# write baseInfo.php
-echo -e "" > /var/www/html/deltabot/baseInfo.php
-echo -e "error_reporting(0);" >> /var/www/html/deltabot/baseInfo.php
-echo -e "${ASAS}botToken = '${YOUR_BOT_TOKEN}';" >> /var/www/html/deltabot/baseInfo.php
-
-# ✅ NEW: Hetzner token
-echo -e "${ASAS}hcloudToken = '${YOUR_HCLOUD_TOKEN}';" >> /var/www/html/deltabot/baseInfo.php
-
-echo -e "${ASAS}dbUserName = '${dbuser}';" >> /var/www/html/deltabot/baseInfo.php
-echo -e "${ASAS}dbPassword = '${dbpass}';" >> /var/www/html/deltabot/baseInfo.php
-echo -e "${ASAS}dbName = '${dbname}';" >> /var/www/html/deltabot/baseInfo.php
-echo -e "${ASAS}botUrl = 'https://${YOUR_DOMAIN}/deltabot/';" >> /var/www/html/deltabot/baseInfo.php
-echo -e "${ASAS}admin = ${YOUR_CHAT_ID};" >> /var/www/html/deltabot/baseInfo.php
-echo -e "?>" >> /var/www/html/deltabot/baseInfo.php
-
-sleep 1
-
-curl -F "url=https://${YOUR_DOMAIN}/deltabot/bot.php" "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook" || true
-
-MESSAGE="✅ The delta bot has been successfully installed! @deltach"
-curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" -d chat_id="${YOUR_CHAT_ID}" -d text="$MESSAGE" >/dev/null 2>&1 || true
-
-sleep 1
-url="https://${YOUR_DOMAIN}/deltabot/createDB.php"
-curl "$url" || true
-
-sleep 1
-
-# cleanup
-sudo rm -rf /var/www/html/deltabot/webpanel || true
-sudo rm -rf /var/www/html/deltabot/install || true
-sudo rm -f /var/www/html/deltabot/createDB.php || true
-rm -f /var/www/html/deltabot/updateShareConfig.php || true
-rm -f /var/www/html/deltabot/README.md || true
-rm -f /var/www/html/deltabot/README-fa.md || true
-rm -f /var/www/html/deltabot/LICENSE || true
-rm -f /var/www/html/deltabot/update.sh || true
-rm -f /var/www/html/deltabot/delta.sh || true
-rm -f /var/www/html/deltabot/tempCookie.txt || true
-rm -f /var/www/html/deltabot/settings/messagedelta.json || true
-
-clear
-echo " "
-echo -e "\e[100mDatabase information:\033[0m"
-echo -e "\e[33maddres: \e[36mhttps://${YOUR_DOMAIN}/phpmyadmin\033[0m"
-echo -e "\e[33mDatabase name: \e[36m${dbname}\033[0m"
-echo -e "\e[33mDatabase username: \e[36m${dbuser}\033[0m"
-echo -e "\e[33mDatabase password: \e[36m${dbpass}\033[0m"
-
-echo " "
-echo -e "\e[100mdelta panel:\033[0m"
-echo -e "\e[33maddres: \e[36mhttps://${YOUR_DOMAIN}/${RANDOM_CODE}/login.php\033[0m"
-echo " "
-echo -e "Good Luck Baby! \e[94mThis project is for free. If you like it, be sure to donate me :) , so let's go \033[0m\n"
+echo
+echo -e "${GRN}================= DONE =================${NC}"
+echo -e "${GRN}phpMyAdmin:${NC} https://${DOMAIN_NAME}/phpmyadmin"
+echo -e "${GRN}Panel:${NC}     https://${DOMAIN_NAME}/${RANDOM_CODE}/login.php"
+echo -e "${GRN}Bot URL:${NC}    https://${DOMAIN_NAME}/deltabot/"
+echo -e "${GRN}Hetzner token saved in baseInfo.php as \$hcloudToken${NC}"
+echo -e "${GRN}========================================${NC}"
