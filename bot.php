@@ -1910,7 +1910,7 @@ if(preg_match('/^adminResDBList_(\d+)/',$data,$m) && ($from_id == $admin || $use
     smartSendOrEdit($message_id, $text, $keys, "Markdown");
 }
 
-if(preg_match('/^adminResDBInfo_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^adminResDBInfo_(.+)$/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     ensureResellerTables();
     $dbn = $m[1];
     $baseDb = $GLOBALS['dbName'] ?? ($dbName ?? '');
@@ -1943,7 +1943,7 @@ if(preg_match('/^adminResDBInfo_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $adm
     smartSendOrEdit($message_id, $text, $keys, "Markdown");
 }
 
-if(preg_match('/^adminResDBBackup_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^adminResDBBackup_(.+)$/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $dbn = $m[1];
     $baseDb = $GLOBALS['dbName'] ?? ($dbName ?? '');
     if(!($dbn === $baseDb || (strpos($dbn, $baseDb . "_rb") === 0))){
@@ -1970,7 +1970,7 @@ if(preg_match('/^adminResDBBackup_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $a
     exit;
 }
 
-if(preg_match('/^adminResDBDropAsk_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^adminResDBDropAsk_(.+)$/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $dbn = $m[1];
     $baseDb = $GLOBALS['dbName'] ?? ($dbName ?? '');
     if(!($dbn === $baseDb || (strpos($dbn, $baseDb . "_rb") === 0))){
@@ -1992,7 +1992,7 @@ if(preg_match('/^adminResDBDropAsk_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $
     smartSendOrEdit($message_id, $text, $keys, "Markdown");
 }
 
-if(preg_match('/^adminResDBDropYes_([A-Za-z0-9_]+)/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^adminResDBDropYes_(.+)$/',$data,$m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     ensureResellerTables();
     $dbn = $m[1];
     $baseDb = $GLOBALS['dbName'] ?? ($dbName ?? '');
