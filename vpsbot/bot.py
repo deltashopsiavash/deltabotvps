@@ -5006,7 +5006,7 @@ async def admin_general(cq: CallbackQuery, db: DB):
     manual_sale = (await db.get_setting("manual_sale_enabled", "1")) == "1"
     glass_btns = (await db.get_setting("glass_buttons_enabled", "1")) == "1"
     await cq.message.edit_text(
-        f"{glass_header('مدیریت عمومی')}\n{GLASS_DOT} وضعیت‌ها:",
+        f"{glass_header('')}\n{GLASS_DOT} وضعیت‌ها:",
         reply_markup=kb([
             [(f"🤖 وضعیت ربات: {'روشن ✅' if bot_enabled else 'خاموش ❌'}", "admin:toggle:bot")],
             [(f"♻️ دکمه تمدید: {'روشن ✅' if renew_enabled else 'خاموش ❌'}", "admin:toggle:renew")],
