@@ -1337,19 +1337,16 @@ async def main_menu(db: DB, user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         return str(v)[:32] if v else default
 
     # Default layout (admins can override via menu_layout setting)
+    # Two-column layout similar to the main DeltaBot.
     default_layout = [
-        ["buy"],
-        ["orders", "profile"],
-        ["ip_status"],
+        ["buy", "orders"],
+        ["profile", "ip_status"],
         ["admin"],
     ]
 
-    try:
-        layout = json.loads(await db.get_setting("menu_layout", "") or "null")
-        if not isinstance(layout, list):
-            layout = default_layout
-    except Exception:
-        layout = default_layout
+    # Layout is forced to the default two-column layout (like the main DeltaBot).
+    # This prevents old DB overrides from breaking the UI.
+    layout = default_layout
 
     keymap: Dict[str, Tuple[str, str]] = {
         "buy": (L("buy", "🛒 خرید سرویس"), "buy:start"),
@@ -1387,7 +1384,7 @@ async def main_menu(db: DB, user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
     # fallback (never return empty)
     if not rows:
-        rows = [[keymap["buy"]], [keymap["orders"], keymap["profile"]], [keymap["ip_status"]]]
+        rows = [[keymap["buy"], keymap["orders"]], [keymap["profile"], keymap["ip_status"]]]
         if is_admin(user_id):
             rows.append([keymap["admin"]])
 
@@ -4996,33 +4993,107 @@ async def admin_addbtn_text(msg: Message, db: DB, state: FSMContext):
     await state.clear()
     await msg.answer("✅ اضافه شد.", reply_markup=kb([[("برگشت","admin:buttons")]]))
 
-@router.callback_query(F.data == "admin:general")
-async def admin_general(cq: CallbackQuery, db: DB):
+@router.callback_query(F.data.startswith("admin:general"))
+async def admin_general(cq: CallbackQuery, db: DB, state: FSMContext | None = None):
+    """General admin panel.
+
+    This screen MUST work even when the current message is not editable (common on
+    webhook/bridge setups, forwarded messages, older messages, etc.).
+    """
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
+
+    # If caller passed state (some flows call back into here), clear it to avoid being stuck.
+    if state is not None:
+        try:
+            await state.clear()
+        except Exception:
+            pass
+
     bot_enabled = (await db.get_setting("bot_enabled", "1")) == "1"
     renew_enabled = (await db.get_setting("renew_enabled", "0")) == "1"
     hourly_buy = (await db.get_setting("hourly_buy_enabled", "0")) == "1"
     manual_sale = (await db.get_setting("manual_sale_enabled", "1")) == "1"
     glass_btns = (await db.get_setting("glass_buttons_enabled", "1")) == "1"
-    await cq.message.edit_text(
-        f"{glass_header('مدیریت عمومی')}\n{GLASS_DOT} وضعیت‌ها:",
-        reply_markup=kb([
+
+    text = (
+        f"{glass_header('مدیریت عمومی')}\n"
+        f"{GLASS_DOT} از اینجا وضعیت‌های کلی، تنظیمات و ابزارهای مدیریتی رو کنترل کن."
+    )
+
+    markup = kb([
+        [(f"🤖 وضعیت ربات: {'روشن ✅' if bot_enabled else 'خاموش ❌'}", "admin:toggle:bot")],
+        [(f"♻️ دکمه تمدید: {'روشن ✅' if renew_enabled else 'خاموش ❌'}", "admin:toggle:renew")],
+        [(f"⏱ خرید ساعتی: {'روشن ✅' if hourly_buy else 'خاموش ❌'}", "admin:toggle:hourlybuy")],
+        [(f"🧾 فروش دستی: {'روشن ✅' if manual_sale else 'خاموش ❌'}", "admin:toggle:manualsale")],
+        [(f"🫧 نمایش دکمه‌ها: {'شیشه‌ای ✅' if glass_btns else 'عادی'}", "admin:toggle:glassbuttons")],
+        [("🗄 بکاپ و بازیابی", "admin:backup")],
+        [("🌍 تنظیم کشور / لوکیشن", "admin:countrycfg")],
+        [("💶 قیمت‌گذاری (یورو)", "admin:pricing")],
+        [("📈 آمار", "admin:stats"), ("👥 کاربران", "admin:users")],
+        [("برگشت", "admin:home")],
+    ])
+
+    # Safe render: try edit; if it fails, send a new message.
+    rendered = False
+    try:
+        if cq.message:
+            await cq.message.edit_text(text, reply_markup=markup)
+            rendered = True
+    except Exception:
+        rendered = False
+
+    if not rendered:
+        try:
+            await cq.bot.send_message(cq.from_user.id, text, reply_markup=markup)
+        except Exception:
+            # As last resort, at least show an alert.
+            return await cq.answer("خطا در نمایش منو (ارسال/ادیت ممکن نیست).", show_alert=True)
+
+    await cq.answer()
+
+
+
+
+# Allow entering "مدیریت عمومی" from text messages as well (some setups show this as a normal keyboard button)
+@router.message(F.text)
+async def _admin_general_from_text(msg: Message, db: DB, state: FSMContext):
+    try:
+        if not msg.text:
+            return
+        t = str(msg.text).strip()
+        if "مدیریت عمومی" not in t:
+            return
+        if not is_admin(msg.from_user.id):
+            return
+        await state.clear()
+        bot_enabled = (await db.get_setting("bot_enabled", "1")) == "1"
+        renew_enabled = (await db.get_setting("renew_enabled", "0")) == "1"
+        hourly_buy = (await db.get_setting("hourly_buy_enabled", "0")) == "1"
+        manual_sale = (await db.get_setting("manual_sale_enabled", "1")) == "1"
+        glass_btns = (await db.get_setting("glass_buttons_enabled", "1")) == "1"
+
+        text = (
+            f"{glass_header('مدیریت عمومی')}\n"
+            f"{GLASS_DOT} از اینجا وضعیت‌های کلی، تنظیمات و ابزارهای مدیریتی رو کنترل کن."
+        )
+
+        markup = kb([
             [(f"🤖 وضعیت ربات: {'روشن ✅' if bot_enabled else 'خاموش ❌'}", "admin:toggle:bot")],
             [(f"♻️ دکمه تمدید: {'روشن ✅' if renew_enabled else 'خاموش ❌'}", "admin:toggle:renew")],
             [(f"⏱ خرید ساعتی: {'روشن ✅' if hourly_buy else 'خاموش ❌'}", "admin:toggle:hourlybuy")],
             [(f"🧾 فروش دستی: {'روشن ✅' if manual_sale else 'خاموش ❌'}", "admin:toggle:manualsale")],
-            [(f"🫧 تغییر نمایش دکمه‌ها: {'شیشه‌ای ✅' if glass_btns else 'عادی'}", "admin:toggle:glassbuttons")],
-            [("📈 آمار", "admin:stats")],
-            [("👥 کاربران", "admin:users")],
-            [("🌍 تنظیم کشور", "admin:countrycfg")],
+            [(f"🫧 نمایش دکمه‌ها: {'شیشه‌ای ✅' if glass_btns else 'عادی'}", "admin:toggle:glassbuttons")],
+            [("🗄 بکاپ و بازیابی", "admin:backup")],
+            [("🌍 تنظیم کشور / لوکیشن", "admin:countrycfg")],
             [("💶 قیمت‌گذاری (یورو)", "admin:pricing")],
-            [("🗄 بکاپ", "admin:backup")],
-            [("برگشت","admin:home")]
+            [("📈 آمار", "admin:stats"), ("👥 کاربران", "admin:users")],
+            [("برگشت", "admin:home")],
         ])
-    )
-    await cq.answer()
-
+        await msg.answer(text, reply_markup=markup)
+    except Exception:
+        # never crash on text fallback
+        return
 
 # -------------------------
 # Admin: Backup submenu
