@@ -347,25 +347,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = {int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
-
-# Fallback: if ADMIN_IDS not set in .env, try to read mother admin id from baseInfo.php (DeltaBot)
-if not ADMIN_IDS:
-    try:
-        candidates = [
-            os.getenv('PARENT_BASEINFO', ''),
-            '/var/www/html/deltabotvps/baseInfo.php',
-            '/var/www/html/deltabot/baseInfo.php',
-        ]
-        for p in candidates:
-            if not p: continue
-            if os.path.isfile(p):
-                txt = open(p, 'r', encoding='utf-8', errors='ignore').read()
-                m = re.search(r"\$admin\s*=\s*'?([0-9]{4,20})'?\s*;", txt)
-                if m:
-                    ADMIN_IDS = {int(m.group(1))}
-                    break
-    except Exception:
-        pass
 HCLOUD_TOKEN = os.getenv("HCLOUD_TOKEN", "")
 
 DB_PATH = os.getenv("DB_PATH", "/opt/vpsbot/vpsbot.sqlite3")
