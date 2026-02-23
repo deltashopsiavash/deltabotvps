@@ -1,7 +1,6 @@
 \
 import asyncio
 import os
-import shutil
 import time
 import json
 import math
@@ -663,11 +662,6 @@ class AdminManualDeliverFlow(StatesGroup):
     login_pass = State()
     details = State()
 
-
-class AdminBackupFlow(StatesGroup):
-    auto_value = State()
-    upload_db = State()
-
 class RegistrationFlow(StatesGroup):
     phone = State()
 
@@ -1116,36 +1110,13 @@ def hcloud_reset_password(server_id: int) -> str:
     return data.get("root_password", "") or ""
 
 
-def hcloud_delete_server(server_id: int) -> bool:
-    """Delete a Hetzner Cloud server by id.
-
-    Returns True if deleted (or not found). Uses two strategies:
-    1) Direct REST DELETE (fast)
-    2) hcloud SDK fallback (helps in some edge cases)
-    """
+def hcloud_delete_server(server_id: int) -> None:
     if not HCLOUD_TOKEN:
         raise RuntimeError("HCLOUD_TOKEN missing")
-    sid = int(server_id)
-    url = f"https://api.hetzner.cloud/v1/servers/{sid}"
-    try:
-        r = requests.delete(url, headers={"Authorization": f"Bearer {HCLOUD_TOKEN}"}, timeout=30)
-        if r.status_code in (200, 204, 202, 404):
-            return True
-        # Some states may return other codes; fall back to SDK once before failing.
-        last_err = f"{r.status_code} {r.text}"
-    except Exception as e:
-        last_err = str(e)
-
-    # Fallback: hcloud SDK
-    try:
-        client = Client(token=HCLOUD_TOKEN)
-        srv = client.servers.get_by_id(sid)
-        if not srv:
-            return True
-        client.servers.delete(srv)
-        return True
-    except Exception as e:
-        raise RuntimeError(f"Hetzner delete failed: {last_err} / fallback: {e}")
+    client = Client(token=HCLOUD_TOKEN)
+    srv = client.servers.get_by_id(int(server_id))
+    if srv:
+        srv.delete()
 
 def hcloud_get_network_bytes(server_id: int, start: datetime, end: datetime) -> Optional[float]:
     if not HCLOUD_TOKEN:
@@ -1337,16 +1308,19 @@ async def main_menu(db: DB, user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         return str(v)[:32] if v else default
 
     # Default layout (admins can override via menu_layout setting)
-    # Two-column layout similar to the main DeltaBot.
     default_layout = [
-        ["buy", "orders"],
-        ["profile", "ip_status"],
+        ["buy"],
+        ["orders", "profile"],
+        ["ip_status"],
         ["admin"],
     ]
 
-    # Layout is forced to the default two-column layout (like the main DeltaBot).
-    # This prevents old DB overrides from breaking the UI.
-    layout = default_layout
+    try:
+        layout = json.loads(await db.get_setting("menu_layout", "") or "null")
+        if not isinstance(layout, list):
+            layout = default_layout
+    except Exception:
+        layout = default_layout
 
     keymap: Dict[str, Tuple[str, str]] = {
         "buy": (L("buy", "🛒 خرید سرویس"), "buy:start"),
@@ -1384,11 +1358,10 @@ async def main_menu(db: DB, user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
     # fallback (never return empty)
     if not rows:
-        rows = [[keymap["buy"], keymap["orders"]], [keymap["profile"], keymap["ip_status"]]]
+        rows = [[keymap["buy"]], [keymap["orders"], keymap["profile"]], [keymap["ip_status"]]]
         if is_admin(user_id):
             rows.append([keymap["admin"]])
 
-    rows.append([(L('back_to_main', 'برگشت'), 'returnToDelta')])
     return start_text, kb(rows)
 def ensure_invoice_api(DB_cls):
     """Ensure invoice helpers exist even if db.py is older."""
@@ -1406,34 +1379,6 @@ def ensure_invoice_api(DB_cls):
 
 
 router = Router()
-
-# Entry points when called from DeltaBot (webhook-bridge)
-@router.callback_query(F.data == "vpsbotStart")
-async def deltabotvps_entry(cq: CallbackQuery, db: DB, state: FSMContext):
-    # mimic /start behavior by showing main menu (registration flow still applies)
-    await db.upsert_user(cq.from_user.id, cq.from_user.username)
-    u = await db.get_user(cq.from_user.id)
-    if u and u.get("is_blocked"):
-        return await cq.answer("⛔️ دسترسی شما مسدود است.", show_alert=True)
-
-    # If phone not registered, start registration flow
-    if not u or not u.get("phone"):
-        await state.set_state(RegistrationFlow.waiting_contact)
-        return await cq.message.answer("برای ادامه، لطفاً شماره موبایل خود را ارسال کنید (Contact).")
-
-    text, markup = await main_menu(db, cq.from_user.id)
-    try:
-        await cq.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
-    except Exception:
-        await cq.message.answer(text, reply_markup=markup, parse_mode="HTML")
-    await cq.answer()
-
-@router.callback_query(F.data == "vpsbotAdminEntry")
-async def deltabotvps_admin_entry(cq: CallbackQuery, db: DB):
-    # jump directly to admin home
-    return await admin_home(cq, db)
-
-
 
 @router.message(CommandStart())
 async def on_start(msg: Message, db: DB, state: FSMContext):
@@ -1505,7 +1450,7 @@ async def ip_status_start(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(
         f"{glass_header('وضعیت IP')}\n{GLASS_DOT} لطفاً IP را ارسال کن.\nمثال: <code>91.107.146.247</code>",
         parse_mode="HTML",
-        reply_markup=kb([[("برگشت","home")]])
+        reply_markup=kb([[("⬅️ برگشت","home")]])
     )
     await cq.answer()
 
@@ -1566,7 +1511,7 @@ async def custom_show(cq: CallbackQuery, db: DB):
     if idx < 0 or idx >= len(cbtns):
         return await cq.answer("یافت نشد.", show_alert=True)
     txt = str(cbtns[idx].get("text", "")) or "—"
-    await cq.message.edit_text(f"{glass_header('اطلاعات')}\n{txt}", reply_markup=kb([[("برگشت","home")]]))
+    await cq.message.edit_text(f"{glass_header('اطلاعات')}\n{txt}", reply_markup=kb([[("⬅️ برگشت","home")]]))
     await cq.answer()
 
 # -------------------------
@@ -1596,7 +1541,7 @@ async def buy_start(cq: CallbackQuery, db: DB, state: FSMContext):
     rows = [[("🇩🇪 Hetzner Cloud", "buy:provider:hetzner")]]
     if manual_sale:
         rows.append([(manual_sale_label, "buy:provider:manual")])
-    rows.append([("برگشت", "home")])
+    rows.append([("⬅️ برگشت", "home")])
     await cq.message.edit_text(text, reply_markup=kb(rows))
     await cq.answer()
 
@@ -1618,7 +1563,7 @@ async def buy_provider(cq: CallbackQuery, db: DB, state: FSMContext):
         if not countries:
             await cq.message.edit_text(
                 f"{glass_header('انتخاب کشور')}\n{GLASS_DOT} فعلاً پلن دستی فعالی وجود ندارد.",
-                reply_markup=kb([[("برگشت", "buy:start")]]),
+                reply_markup=kb([[("⬅️ برگشت", "buy:start")]]),
             )
             return await cq.answer()
         btns = []
@@ -1629,7 +1574,7 @@ async def buy_provider(cq: CallbackQuery, db: DB, state: FSMContext):
         rows: List[List[Tuple[str, str]]] = []
         for i in range(0, len(btns), 2):
             rows.append(btns[i:i+2])
-        rows.append([("برگشت", "buy:start")])
+        rows.append([("⬅️ برگشت", "buy:start")])
         await cq.message.edit_text(text, reply_markup=kb(rows))
         return await cq.answer()
 
@@ -1643,7 +1588,7 @@ async def buy_provider(cq: CallbackQuery, db: DB, state: FSMContext):
     if not enabled:
         await cq.message.edit_text(
             f"{glass_header('انتخاب کشور')}\n{GLASS_DOT} فعلاً هیچ کشوری برای فروش فعال نیست.",
-            reply_markup=kb([[("برگشت", "buy:start")]]),
+            reply_markup=kb([[("⬅️ برگشت", "buy:start")]]),
         )
         return await cq.answer()
 
@@ -1657,7 +1602,7 @@ async def buy_provider(cq: CallbackQuery, db: DB, state: FSMContext):
     rows = []
     for i in range(0, len(btns), 2):
         rows.append(btns[i:i+2])
-    rows.append([("برگشت", "buy:start")])
+    rows.append([("⬅️ برگشت", "buy:start")])
 
     await cq.message.edit_text(text, reply_markup=kb(rows))
     await cq.answer()
@@ -1676,7 +1621,7 @@ async def buy_country(cq: CallbackQuery, db: DB, state: FSMContext):
         if not plans:
             await cq.message.edit_text(
                 f"{glass_header('پلنی وجود ندارد')}\n{GLASS_DOT} فعلاً هیچ پلن دستی‌ای تعریف نشده.",
-                reply_markup=kb([[("برگشت", "buy:start")]]),
+                reply_markup=kb([[("⬅️ برگشت", "buy:start")]]),
             )
             return await cq.answer()
 
@@ -1699,7 +1644,7 @@ async def buy_country(cq: CallbackQuery, db: DB, state: FSMContext):
             )
             btn_rows.append([(f"🔵 PLAN{idx}", f"buy:plan:{p['id']}")])
 
-        btn_rows.append([("برگشت", "buy:start")])
+        btn_rows.append([("⬅️ برگشت", "buy:start")])
 
         await cq.message.edit_text(
             f"{glass_header('انتخاب پلن: ترافیک تمامی پلن ها 10 گیگ میباشد میتوانید بعد از خرید از قسمت سفارش های من ترافیک اضافه برای سرویس خود خریداری نمایید قیمت هر یک ترابایت ترافیک 550,000 هزار تومان میباشد')}\n" + "\n\n".join(lines),
@@ -1713,10 +1658,10 @@ async def buy_country(cq: CallbackQuery, db: DB, state: FSMContext):
     await state.update_data(country=country)
     await state.set_state(BuyFlow.location)
     if not locs:
-        await cq.message.edit_text("این کشور فعلاً لوکیشن ندارد.", reply_markup=kb([[("برگشت","buy:start")]]))
+        await cq.message.edit_text("این کشور فعلاً لوکیشن ندارد.", reply_markup=kb([[("⬅️ برگشت","buy:start")]]))
         return await cq.answer()
     rows = [[(f"📍 {location_label(loc)}", f"buy:loc:{loc}")] for loc in locs]
-    rows.append([("برگشت", "buy:start")])
+    rows.append([("⬅️ برگشت", "buy:start")])
     await cq.message.edit_text(f"{glass_header('انتخاب لوکیشن')}\n{GLASS_DOT} لوکیشن موردنظر:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -1734,7 +1679,7 @@ async def buy_location(cq: CallbackQuery, state: FSMContext):
             os_rows.append([(f"🧊 {os_name} ✅", f"buy:os:{os_name}")])
         else:
             os_rows.append([(f"🧊 {os_name} ❌", "noop")])
-    os_rows.append([("برگشت", "buy:start")])
+    os_rows.append([("⬅️ برگشت", "buy:start")])
     await cq.message.edit_text(
         f"{glass_header('انتخاب سیستم‌عامل')}\n{GLASS_DOT} فقط گزینه‌های ✅ قابل ساخت هستند.",
         reply_markup=kb(os_rows)
@@ -1767,13 +1712,13 @@ async def buy_os(cq: CallbackQuery, db: DB, state: FSMContext):
     if not groups:
         await cq.message.edit_text(
             f"{glass_header('سرور تایپ')}\n{GLASS_DOT} برای این لوکیشن فعلاً هیچ سرور تایپی فعال نیست.",
-            reply_markup=kb([[('برگشت','buy:start')]]),
+            reply_markup=kb([[('⬅️ برگشت','buy:start')]]),
         )
         return await cq.answer()
 
 
     rows = [[(f"🧩 {label}", f"buy:grp:{key}")] for (label, key) in groups]
-    rows.append([("برگشت", "buy:start")])
+    rows.append([("⬅️ برگشت", "buy:start")])
 
     await cq.message.edit_text(
         f"{glass_header('سرور تایپ')}\n{GLASS_DOT} معماری/سری سرور را انتخاب کن:",
@@ -1805,12 +1750,12 @@ async def buy_back_to_groups(cq: CallbackQuery, db: DB, state: FSMContext):
     if not groups:
         await cq.message.edit_text(
             f"{glass_header('سرور تایپ')}\n{GLASS_DOT} برای این لوکیشن فعلاً هیچ سرور تایپی فعال نیست.",
-            reply_markup=kb([[('برگشت','buy:start')]]),
+            reply_markup=kb([[('⬅️ برگشت','buy:start')]]),
         )
         return await cq.answer()
 
     rows = [[(f"🧩 {label}", f"buy:grp:{key}")] for (label, key) in groups]
-    rows.append([("برگشت", "buy:start")])
+    rows.append([("⬅️ برگشت", "buy:start")])
     await cq.message.edit_text(
         f"{glass_header('سرور تایپ')}\n{GLASS_DOT} معماری/سری سرور را انتخاب کن:",
         reply_markup=kb(rows),
@@ -1833,7 +1778,7 @@ async def buy_server_type_group(cq: CallbackQuery, db: DB, state: FSMContext):
     if not plans:
         await cq.message.edit_text(
             f"{glass_header('پلنی وجود ندارد')}\n{GLASS_DOT} فعلاً برای این لوکیشن پلنی تعریف نشده.",
-            reply_markup=kb([[("برگشت","buy:back:grps")]])
+            reply_markup=kb([[("⬅️ برگشت","buy:back:grps")]])
         )
         return await cq.answer()
 
@@ -1842,7 +1787,7 @@ async def buy_server_type_group(cq: CallbackQuery, db: DB, state: FSMContext):
     if not plans:
         await cq.message.edit_text(
             f"{glass_header('پلنی وجود ندارد')}\n{GLASS_DOT} برای این سرور تایپ فعلاً پلنی تعریف نشده.",
-            reply_markup=kb([[("برگشت","buy:back:grps")]])
+            reply_markup=kb([[("⬅️ برگشت","buy:back:grps")]])
         )
         return await cq.answer()
 
@@ -1912,7 +1857,7 @@ async def buy_server_type_group(cq: CallbackQuery, db: DB, state: FSMContext):
         else:
             btn_rows.append([(f"🔵 PLAN{idx} ❌", "noop")])
 
-    btn_rows.append([("برگشت", "buy:back:grps")])
+    btn_rows.append([("⬅️ برگشت", "buy:back:grps")])
 
     header = "🫧 انتخاب پلن\n━━━━━━━━━━━━━━━"
     text_block = "\n\n".join(lines)
@@ -1933,7 +1878,7 @@ async def buy_plan(cq: CallbackQuery, db: DB, state: FSMContext):
     await state.set_state(BuyFlow.name)
     await cq.message.edit_text(
         f"{glass_header('نام سرور')}\n{GLASS_DOT} نام سرور را بفرست (مثلاً: DELTA)\n{GLASS_DOT} فقط حروف/عدد/خط تیره.",
-        reply_markup=kb([[("برگشت","buy:start")]])
+        reply_markup=kb([[("⬅️ برگشت","buy:start")]])
     )
     await cq.answer()
 
@@ -1955,7 +1900,7 @@ async def buy_name(msg: Message, db: DB, state: FSMContext):
     hourly_global = (await db.get_setting("hourly_buy_enabled", "0")) == "1"
     if hourly_global and plan.get('hourly_enabled') and eff['hourly_irt'] > 0:
         rows.append([(f"⏱ ساعتی ({money(plan['price_hourly_irt'])}/ساعت)", "buy:billing:hourly")])
-    rows.append([("برگشت", "buy:start")])
+    rows.append([("⬅️ برگشت", "buy:start")])
 
     await msg.answer(f"{glass_header('نوع خرید')}\n{GLASS_DOT} ماهانه یا ساعتی؟", reply_markup=kb(rows))
 
@@ -1989,7 +1934,7 @@ async def buy_billing(cq: CallbackQuery, db: DB, state: FSMContext):
         reply_markup=kb([
             [("💳 پرداخت از موجودی", "buy:pay:wallet")],
             [("🏦 کارت به کارت", "buy:pay:card")],
-            [("برگشت", "buy:start")],
+            [("⬅️ برگشت", "buy:start")],
         ])
     )
     await cq.answer()
@@ -2040,7 +1985,7 @@ async def _finalize_purchase(cq: CallbackQuery, db: DB, state: FSMContext, pay_m
                 f"{GLASS_DOT} موجودی شما کافی نیست.\n"
                 f"{GLASS_DOT} مبلغ: {money(amount)}\n"
                 f"{GLASS_DOT} موجودی: {money(u['balance_irt'])}",
-                reply_markup=kb([[("برگشت","buy:start")],[("➕ افزایش موجودی","me:topup")]])
+                reply_markup=kb([[("⬅️ برگشت","buy:start")],[("➕ افزایش موجودی","me:topup")]])
             )
             await state.clear()
             return
@@ -2076,7 +2021,7 @@ async def _finalize_purchase(cq: CallbackQuery, db: DB, state: FSMContext, pay_m
             f"{GLASS_DOT} مبلغ قابل پرداخت: {money(amount)}\n"
             f"{GLASS_DOT} {card_text}\n\n"
             f"{GLASS_DOT} رسید پرداخت را همینجا ارسال کن (عکس یا فایل).",
-            reply_markup=kb([[("برگشت","home")]]),
+            reply_markup=kb([[("⬅️ برگشت","home")]]),
             parse_mode="HTML"
         )
 
@@ -2147,7 +2092,7 @@ async def _finalize_purchase(cq: CallbackQuery, db: DB, state: FSMContext, pay_m
     if not img:
         if pay_method == "wallet":
             await db.add_balance(user_id, amount)
-        await cq.message.edit_text("❌ این سیستم‌عامل برای هتزنر موجود نیست.", reply_markup=kb([[("برگشت","buy:start")]]))
+        await cq.message.edit_text("❌ این سیستم‌عامل برای هتزنر موجود نیست.", reply_markup=kb([[("⬅️ برگشت","buy:start")]]))
         await state.clear()
         return
 
@@ -2267,7 +2212,7 @@ async def me_profile(cq: CallbackQuery, db: DB):
     )
     await cq.message.edit_text(
         text,
-        reply_markup=kb([[("➕ افزایش موجودی","me:topup")],[("برگشت","home")]]),
+        reply_markup=kb([[("➕ افزایش موجودی","me:topup")],[("⬅️ برگشت","home")]]),
         parse_mode="HTML"
     )
     await cq.answer()
@@ -2280,7 +2225,7 @@ async def me_topup(cq: CallbackQuery, state: FSMContext):
         f"{GLASS_DOT} مبلغ شارژ را به تومان ارسال کن.\n"
         f"{GLASS_DOT} مثال: <code>200000</code>",
         parse_mode="HTML",
-        reply_markup=kb([[("برگشت","home")]])
+        reply_markup=kb([[("⬅️ برگشت","home")]])
     )
     await cq.answer()
 
@@ -2294,9 +2239,9 @@ async def me_renew(cq: CallbackQuery, db: DB):
         label = o["ip4"] or f"Order#{o['id']}"
         rows.append([(f"♻️ {label} | {o['server_type']}", f"renew:pick:{o['id']}")])
     if not rows:
-        await cq.message.edit_text(f"{glass_header('تمدید')}\n{GLASS_DOT} سرویس ماهانه قابل تمدید ندارید.", reply_markup=kb([[("برگشت","home")]]))
+        await cq.message.edit_text(f"{glass_header('تمدید')}\n{GLASS_DOT} سرویس ماهانه قابل تمدید ندارید.", reply_markup=kb([[("⬅️ برگشت","home")]]))
         return await cq.answer()
-    rows.append([("برگشت","home")])
+    rows.append([("⬅️ برگشت","home")])
     await cq.message.edit_text(f"{glass_header('تمدید سرویس')}\n{GLASS_DOT} سرویس را انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -2318,7 +2263,7 @@ async def renew_pick(cq: CallbackQuery, db: DB):
         text,
         reply_markup=kb([
             [("✅ پرداخت و تمدید", f"renew:pay:{oid}")],
-            [("برگشت", f"order:view:{oid}")],
+            [("⬅️ برگشت", f"order:view:{oid}")],
         ]),
         parse_mode="Markdown",
     )
@@ -2358,17 +2303,17 @@ async def traffic_order(cq: CallbackQuery, db: DB):
         return await cq.answer("یافت نشد.", show_alert=True)
     cc = (o.get("country_code") or "").upper().strip() or LOCATION_TO_COUNTRY.get((o.get("location_name") or "").strip(), "")
     if not cc:
-        await cq.message.edit_text(f"{glass_header('حجم اضافه')}\n{GLASS_DOT} کشور سرویس مشخص نیست.", reply_markup=kb([[('برگشت', f'order:view:{oid}')]]))
+        await cq.message.edit_text(f"{glass_header('حجم اضافه')}\n{GLASS_DOT} کشور سرویس مشخص نیست.", reply_markup=kb([[('⬅️ برگشت', f'order:view:{oid}')]]))
         return await cq.answer()
     pkgs = await db.list_traffic_packages(cc, active_only=True)
     if not pkgs:
-        await cq.message.edit_text(f"{glass_header('حجم اضافه')}\n{GLASS_DOT} برای این کشور پکیجی ثبت نشده.", reply_markup=kb([[('برگشت', f'order:view:{oid}')]]))
+        await cq.message.edit_text(f"{glass_header('حجم اضافه')}\n{GLASS_DOT} برای این کشور پکیجی ثبت نشده.", reply_markup=kb([[('⬅️ برگشت', f'order:view:{oid}')]]))
         return await cq.answer()
     rows = []
     for p in pkgs[:30]:
         title = p.get('title') or f"{p['volume_gb']}GB"
         rows.append([(f"➕ {title} | {p['volume_gb']}GB | {money(int(p['price_irt']))}", f"traffic:pkg:{oid}:{p['id']}")])
-    rows.append([("برگشت", f"order:view:{oid}")])
+    rows.append([("⬅️ برگشت", f"order:view:{oid}")])
     await cq.message.edit_text(
         f"{glass_header('حجم اضافه')}\n{GLASS_DOT} سرویس: <code>#{oid}</code>\n{GLASS_DOT} کشور: {cc}",
         reply_markup=kb(rows),
@@ -2403,7 +2348,7 @@ async def traffic_pkg(cq: CallbackQuery, db: DB):
         reply_markup=kb([
             [("💳 پرداخت از موجودی", f"traffic:pay:wallet:{oid}:{pid}")],
             [("🏦 کارت به کارت", f"traffic:pay:card:{oid}:{pid}")],
-            [("برگشت", f"traffic:order:{oid}")],
+            [("⬅️ برگشت", f"traffic:order:{oid}")],
         ]),
     )
     await cq.answer()
@@ -2426,7 +2371,7 @@ async def traffic_pay_wallet(cq: CallbackQuery, db: DB):
     if bal < amount:
         await cq.message.edit_text(
             f"{glass_header('عدم موجودی')}\n{GLASS_DOT} موجودی کافی نیست.\n{GLASS_DOT} مبلغ: {money(amount)}\n{GLASS_DOT} موجودی: {money(bal)}",
-            reply_markup=kb([[('برگشت', f'traffic:pkg:{oid}:{pid}')],[('➕ افزایش موجودی','me:topup')]]),
+            reply_markup=kb([[('⬅️ برگشت', f'traffic:pkg:{oid}:{pid}')],[('➕ افزایش موجودی','me:topup')]]),
         )
         return await cq.answer()
     await db.add_balance(cq.from_user.id, -amount)
@@ -2436,7 +2381,7 @@ async def traffic_pay_wallet(cq: CallbackQuery, db: DB):
     await db.create_traffic_purchase(user_id=cq.from_user.id, order_id=oid, package_id=pid, volume_gb=int(pkg['volume_gb']), price_irt=amount, invoice_id=inv_id, status='paid')
     await cq.message.edit_text(
         f"{glass_header('حجم اضافه')}\n✅ خرید انجام شد و {pkg['volume_gb']}GB به سقف ترافیک سرویس اضافه شد.",
-        reply_markup=kb([[('برگشت', f'order:view:{oid}')]]),
+        reply_markup=kb([[('⬅️ برگشت', f'order:view:{oid}')]]),
     )
     await cq.answer()
 
@@ -2473,7 +2418,7 @@ async def traffic_pay_card(cq: CallbackQuery, db: DB, state: FSMContext):
         f"{GLASS_DOT} {card_text}\n\n"
         f"{GLASS_DOT} رسید پرداخت را همینجا ارسال کن.",
         parse_mode="HTML",
-        reply_markup=kb([[('برگشت', f'order:view:{oid}')]]),
+        reply_markup=kb([[('⬅️ برگشت', f'order:view:{oid}')]]),
     )
 
     for aid in ADMIN_IDS:
@@ -2498,13 +2443,13 @@ async def traffic_pay_card(cq: CallbackQuery, db: DB, state: FSMContext):
 async def me_orders(cq: CallbackQuery, db: DB):
     orders = await db.list_user_orders(cq.from_user.id)
     if not orders:
-        await cq.message.edit_text(f"{glass_header('سفارش‌های من')}\n{GLASS_DOT} سفارشی ندارید.", reply_markup=kb([[("برگشت","home")]]))
+        await cq.message.edit_text(f"{glass_header('سفارش‌های من')}\n{GLASS_DOT} سفارشی ندارید.", reply_markup=kb([[("⬅️ برگشت","home")]]))
         return await cq.answer()
     rows = []
     for o in orders:
         label = o["ip4"] or f"Order#{o['id']}"
         rows.append([(f"🧊 {label} | {o['status']}", f"order:view:{o['id']}")])
-    rows.append([("برگشت","home")])
+    rows.append([("⬅️ برگشت","home")])
     await cq.message.edit_text(f"{glass_header('سفارش‌های من')}\n{GLASS_DOT} روی آی‌پی بزن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -2558,7 +2503,7 @@ async def order_view(cq: CallbackQuery, db: DB):
         [("⏻ خاموش کردن", f"order:off:{oid}"), ("⏽ روشن کردن", f"order:on:{oid}")],
         [("📊 نمایش حجم", f"order:traffic:{oid}")],
         [("🗑 حذف سرور", f"order:del:{oid}")],
-        [("برگشت", "me:orders")]
+        [("⬅️ برگشت", "me:orders")]
     ]
     await cq.message.edit_text(text, reply_markup=kb(rows), parse_mode="Markdown")
     await cq.answer()
@@ -2638,7 +2583,7 @@ async def order_delete_confirm(cq: CallbackQuery, db: DB):
     msg = "✅ سرور حذف شد."
     if billing == "hourly" and extra_cost > 0:
         msg += f"\nمبلغ کسر شده بابت دقایق استفاده: {fmt_money(extra_cost)}"
-    await cq.message.edit_text(msg, reply_markup=kb([[("برگشت", "me:orders")]]))
+    await cq.message.edit_text(msg, reply_markup=kb([[("⬅️ برگشت", "me:orders")]]))
     await cq.answer("✅ حذف شد.")
 
 @router.callback_query(F.data.startswith("order:del:"))
@@ -2762,7 +2707,7 @@ async def topup_amount(msg: Message, db: DB, state: FSMContext):
         f"{GLASS_DOT} {card_text}\n\n"
         f"{GLASS_DOT} بعد از واریز، رسید را همینجا ارسال کن (عکس یا فایل).",
         parse_mode="HTML",
-        reply_markup=kb([[("برگشت","home")]])
+        reply_markup=kb([[("⬅️ برگشت","home")]])
     )
 
     for aid in ADMIN_IDS:
@@ -2860,7 +2805,7 @@ async def receive_receipt(msg: Message, db: DB, state: FSMContext):
 @router.callback_query(F.data == "ticket:new")
 async def ticket_new(cq: CallbackQuery, state: FSMContext):
     await state.set_state(TicketFlow.new_subject)
-    await cq.message.edit_text(f"{glass_header('تیکت جدید')}\n{GLASS_DOT} موضوع را بنویس:", reply_markup=kb([[("برگشت","support:start")]]))
+    await cq.message.edit_text(f"{glass_header('تیکت جدید')}\n{GLASS_DOT} موضوع را بنویس:", reply_markup=kb([[("⬅️ برگشت","support:start")]]))
     await cq.answer()
 
 @router.message(TicketFlow.new_subject)
@@ -2898,13 +2843,13 @@ async def ticket_new_text(msg: Message, db: DB, state: FSMContext):
 async def ticket_mine(cq: CallbackQuery, db: DB):
     tickets = await db.list_user_tickets(cq.from_user.id, limit=20)
     if not tickets:
-        await cq.message.edit_text(f"{glass_header('تیکت‌های من')}\n{GLASS_DOT} موردی ندارید.", reply_markup=kb([[("برگشت","support:start")]]))
+        await cq.message.edit_text(f"{glass_header('تیکت‌های من')}\n{GLASS_DOT} موردی ندارید.", reply_markup=kb([[("⬅️ برگشت","support:start")]]))
         return await cq.answer()
     rows=[]
     for t in tickets:
         st = "🟢 باز" if t["status"]=="open" else "⚪️ بسته"
         rows.append([(f"{st} #{t['id']} | {t['subject']}", f"ticket:view:{t['id']}")])
-    rows.append([("برگشت","support:start")])
+    rows.append([("⬅️ برگشت","support:start")])
     await cq.message.edit_text(f"{glass_header('تیکت‌های من')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -2923,7 +2868,7 @@ async def ticket_view(cq: CallbackQuery, db: DB):
     rows=[]
     if t["status"]=="open":
         rows.append([("✉️ ارسال پیام", f"ticket:reply:{tid}")])
-    rows.append([("برگشت","ticket:mine")])
+    rows.append([("⬅️ برگشت","ticket:mine")])
     await cq.message.edit_text(text, reply_markup=kb(rows))
     await cq.answer()
 
@@ -2932,7 +2877,7 @@ async def ticket_reply_start(cq: CallbackQuery, state: FSMContext):
     tid = int(cq.data.split(":")[-1])
     await state.set_state(TicketFlow.reply_text)
     await state.update_data(reply_ticket_id=tid, reply_role="user")
-    await cq.message.edit_text(f"{glass_header('پاسخ تیکت')}\n{GLASS_DOT} پیام را بنویس:", reply_markup=kb([[("برگشت", f"ticket:view:{tid}")]]))
+    await cq.message.edit_text(f"{glass_header('پاسخ تیکت')}\n{GLASS_DOT} پیام را بنویس:", reply_markup=kb([[("⬅️ برگشت", f"ticket:view:{tid}")]]))
     await cq.answer()
 
 @router.message(TicketFlow.reply_text)
@@ -3036,7 +2981,7 @@ async def admin_user_list(cq: CallbackQuery, db: DB):
         nav.append(("⬅️ قبلی", f"admin:userlist:{offset-10}"))
     nav.append(("بعدی ➡️", f"admin:userlist:{offset+10}"))
     rows.append(nav)
-    rows.append([("برگشت","admin:users")])
+    rows.append([("⬅️ برگشت","admin:users")])
     await cq.message.edit_text(f"{glass_header('لیست کاربران')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -3045,7 +2990,7 @@ async def admin_user_search(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     await state.set_state(AdminUserFlow.search_id)
-    await cq.message.edit_text(f"{glass_header('جستجو کاربر')}\n{GLASS_DOT} ایدی عددی را بفرست:", reply_markup=kb([[("برگشت","admin:users")]]))
+    await cq.message.edit_text(f"{glass_header('جستجو کاربر')}\n{GLASS_DOT} ایدی عددی را بفرست:", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
     await cq.answer()
 
 @router.message(AdminUserFlow.search_id)
@@ -3080,7 +3025,7 @@ async def admin_user_view_common(bot_: Bot, chat_id: int, db: DB, uid: int):
         [("➕ افزایش", f"admin:ubal:add:{uid}"), ("➖ کاهش", f"admin:ubal:sub:{uid}")],
         [("📦 سفارش‌ها", f"admin:uorders:{uid}")],
         [("⛔️ بلاک/آن‌بلاک", f"admin:ublock:{uid}")],
-        [("برگشت","admin:users")]
+        [("⬅️ برگشت","admin:users")]
     ]))
 
 @router.callback_query(F.data.startswith("admin:user:"))
@@ -3111,7 +3056,7 @@ async def admin_user_balance_begin(cq: CallbackQuery, state: FSMContext):
     uid = int(uid)
     await state.set_state(AdminUserFlow.amount)
     await state.update_data(ubal_uid=uid, ubal_mode=mode)
-    await cq.message.edit_text(f"{glass_header('موجودی')}\n{GLASS_DOT} مبلغ تومان:", reply_markup=kb([[("برگشت","admin:users")]]))
+    await cq.message.edit_text(f"{glass_header('موجودی')}\n{GLASS_DOT} مبلغ تومان:", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
     await cq.answer()
 
 @router.message(AdminUserFlow.amount)
@@ -3138,7 +3083,7 @@ async def admin_user_balance_apply(msg: Message, db: DB, state: FSMContext):
         await msg.bot.send_message(uid, f"💰 تغییر موجودی: {money(delta)}")
     except Exception:
         pass
-    await msg.answer("✅ انجام شد.", reply_markup=kb([[("برگشت","admin:users")]]))
+    await msg.answer("✅ انجام شد.", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
 
 @router.callback_query(F.data.startswith("admin:umsg:"))
 async def admin_user_msg_begin(cq: CallbackQuery, state: FSMContext):
@@ -3147,7 +3092,7 @@ async def admin_user_msg_begin(cq: CallbackQuery, state: FSMContext):
     uid = int(cq.data.split(":")[-1])
     await state.set_state(AdminUserFlow.msg_text)
     await state.update_data(umsg_uid=uid)
-    await cq.message.edit_text(f"{glass_header('پیام')}\n{GLASS_DOT} متن پیام:", reply_markup=kb([[("برگشت","admin:users")]]))
+    await cq.message.edit_text(f"{glass_header('پیام')}\n{GLASS_DOT} متن پیام:", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
     await cq.answer()
 
 @router.message(AdminUserFlow.msg_text)
@@ -3161,7 +3106,7 @@ async def admin_user_msg_send(msg: Message, state: FSMContext):
         return await msg.answer("متن خالی است.")
     try:
         await msg.bot.send_message(uid, f"📩 پیام مدیر:\n\n{txt}")
-        await msg.answer("✅ ارسال شد.", reply_markup=kb([[("برگشت","admin:users")]]))
+        await msg.answer("✅ ارسال شد.", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
     except Exception:
         await msg.answer("❌ ارسال نشد.")
     await state.clear()
@@ -3173,7 +3118,7 @@ async def admin_user_orders(cq: CallbackQuery, db: DB):
     uid = int(cq.data.split(":")[-1])
     orders = await db.list_user_orders(uid)
     if not orders:
-        await cq.message.edit_text("سفارشی ندارد.", reply_markup=kb([[("برگشت","admin:users")]]))
+        await cq.message.edit_text("سفارشی ندارد.", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
         return await cq.answer()
     rows: List[List[Tuple[str, str]]] = []
     rows.append([("🗑 حذف همه سفارش‌ها", f"admin:uorders:clear:{uid}")])
@@ -3183,7 +3128,7 @@ async def admin_user_orders(cq: CallbackQuery, db: DB):
             (f"{label} | {o.get('status')}", f"admin:ord:{o['id']}"),
             ("🗑", f"admin:orddel:{o['id']}:{uid}"),
         ])
-    rows.append([("برگشت", "admin:users")])
+    rows.append([("⬅️ برگشت", "admin:users")])
     await cq.message.edit_text(
         f"{glass_header('سفارش‌های کاربر')}\n{GLASS_DOT} کاربر: {uid}\n{GLASS_DOT} روی 🗑 هر سفارش بزن تا حذف شود.",
         reply_markup=kb(rows),
@@ -3227,7 +3172,7 @@ async def admin_user_orders_clear(cq: CallbackQuery, db: DB):
     # refresh list
     await cq.message.edit_text(
         f"{glass_header('سفارش‌های کاربر')}\n{GLASS_DOT} سفارش‌های کاربر {uid} پاک شد.",
-        reply_markup=kb([[('برگشت', 'admin:users')]]),
+        reply_markup=kb([[('⬅️ برگشت', 'admin:users')]]),
     )
 
 
@@ -3275,14 +3220,48 @@ async def admin_home(cq: CallbackQuery, db: DB):
     await cq.message.edit_text(
         f"{glass_header('پنل مدیریت')}\n{GLASS_DOT} انتخاب کن:",
         reply_markup=kb([
-            [("➕ افزودن پلن", "admin:addplan"), ("📋 لیست پلن‌ها", "admin:plans")],
-            [("🟢 سرورهای فعال", "admin:active"), ("🧾 پرداخت‌های کارت‌به‌کارت", "admin:payments")],
-            [("➕ ترافیک اضافه", "admin:traffic"), ("🧾 فروش دستی", "admin:manual")],
-            [("🧩 تنظیم دکمه‌ها", "admin:buttons"), ("🧰 مدیریت عمومی", "admin:general")],
-            [("برگشت","home")],
+            [("➕ افزودن پلن", "admin:addplan")],
+            [("📋 لیست پلن‌ها", "admin:plans")],
+            [("➕ ترافیک اضافه", "admin:traffic")],
+            [("🧾 فروش دستی", "admin:manual")],
+            [("🧩 تنظیم دکمه‌ها", "admin:buttons")],
+            [("🧰 مدیریت عمومی", "admin:general")],
+            [("🗄 دریافت بکاپ دیتابیس", "admin:db:get")],
+            [("🟢 سرورهای فعال", "admin:active")],
+            [("🧾 پرداخت‌های کارت‌به‌کارت", "admin:payments")],
+                        [("⬅️ برگشت","home")]
         ])
     )
     await cq.answer()
+
+
+@router.callback_query(F.data == "admin:db:get")
+async def admin_get_db_backup(cq: CallbackQuery, db: DB):
+    if not is_admin(cq.from_user.id):
+        return await cq.answer("دسترسی ندارید.", show_alert=True)
+
+    await cq.answer("در حال آماده‌سازی…")
+
+    try:
+        # Always create a fresh backup for safety/consistency, then send the newest file.
+        path = await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
+    except Exception:
+        # If backup fails for any reason, try to send the latest existing backup.
+        path = db.get_latest_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX)
+
+    if not path or not os.path.exists(path):
+        return await cq.message.answer("❌ بکاپی پیدا نشد.")
+
+    try:
+        cap = f"🗄 بکاپ دیتابیس\n{GLASS_DOT} فایل: <code>{htmlesc(os.path.basename(path))}</code>"
+        await cq.bot.send_document(
+            cq.from_user.id,
+            FSInputFile(path),
+            caption=cap,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        return await cq.message.answer(f"❌ خطا در ارسال فایل: {htmlesc(str(e))}")
 
 
 # -------------------------
@@ -3297,7 +3276,7 @@ async def admin_traffic_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     for cc in COUNTRY_LOCATIONS.keys():
         name = COUNTRY_NAMES.get(cc, cc)
         rows.append([(f"🌍 {name}", f"admin:traffic:cc:{cc}")])
-    rows.append([("برگشت", "admin:home")])
+    rows.append([("⬅️ برگشت", "admin:home")])
     await cq.message.edit_text(
         f"{glass_header('ترافیک اضافه')}\n{GLASS_DOT} کشور را انتخاب کن:",
         reply_markup=kb(rows),
@@ -3323,7 +3302,7 @@ async def admin_traffic_cc_toggle(cq: CallbackQuery, db: DB):
         st = "✅" if p.get('is_active') else "❌"
         rows.append([(f"{st} {title} | {p['volume_gb']}GB | {money(int(p['price_irt']))}", f"admin:traffic:pkg:{p['id']}:{cc}")])
     rows.append([("➕ افزودن پکیج", f"admin:traffic:add:{cc}")])
-    rows.append([("برگشت", "admin:traffic")])
+    rows.append([("⬅️ برگشت", "admin:traffic")])
     await cq.message.edit_text(
         f"{glass_header('ترافیک اضافه')}\n{GLASS_DOT} کشور: {_country_label(cc)}\n{GLASS_DOT} پکیج‌ها:",
         reply_markup=kb(rows),
@@ -3347,7 +3326,7 @@ async def admin_traffic_country(cq: CallbackQuery, db: DB, state: FSMContext):
         st = "✅" if p.get('is_active') else "❌"
         rows.append([(f"{st} {title} | {p['volume_gb']}GB | {money(int(p['price_irt']))}", f"admin:traffic:pkg:{p['id']}:{cc}")])
     rows.append([( "➕ افزودن پکیج", f"admin:traffic:add:{cc}")])
-    rows.append([( "برگشت", "admin:traffic")])
+    rows.append([( "⬅️ برگشت", "admin:traffic")])
     await cq.message.edit_text(
         f"{glass_header('ترافیک اضافه')}\n{GLASS_DOT} کشور: {_country_label(cc)}\n{GLASS_DOT} پکیج‌ها:",
         reply_markup=kb(rows),
@@ -3381,7 +3360,7 @@ async def admin_traffic_pkg(cq: CallbackQuery, db: DB):
         reply_markup=kb([
             [("🔁 تغییر وضعیت", f"admin:traffic:toggle:{pid}:{cc}")],
             [("🗑 حذف", f"admin:traffic:del:{pid}:{cc}")],
-            [("برگشت", f"admin:traffic:cc:{cc or pkg.get('country_code')}")],
+            [("⬅️ برگشت", f"admin:traffic:cc:{cc or pkg.get('country_code')}")],
         ]),
     )
     await cq.answer()
@@ -3405,7 +3384,7 @@ async def admin_traffic_toggle(cq: CallbackQuery, db: DB):
         st = "✅" if p.get('is_active') else "❌"
         rows.append([(f"{st} {title} | {p['volume_gb']}GB | {money(int(p['price_irt']))}", f"admin:traffic:pkg:{p['id']}:{cc}")])
     rows.append([( "➕ افزودن پکیج", f"admin:traffic:add:{cc}")])
-    rows.append([( "برگشت", "admin:traffic")])
+    rows.append([( "⬅️ برگشت", "admin:traffic")])
     await cq.message.edit_text(
         f"{glass_header('ترافیک اضافه')}\n{GLASS_DOT} کشور: {_country_label(cc)}\n{GLASS_DOT} پکیج‌ها:",
         reply_markup=kb(rows),
@@ -3421,7 +3400,7 @@ async def admin_traffic_delete(cq: CallbackQuery, db: DB):
     cc = parts[4].upper() if len(parts) > 4 else ""
     await db.delete_traffic_package(pid)
     await cq.answer("حذف شد ✅")
-    await cq.message.edit_text("✅ حذف شد.", reply_markup=kb([[('برگشت', f'admin:traffic:cc:{cc}')]]))
+    await cq.message.edit_text("✅ حذف شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:traffic:cc:{cc}')]]))
 
 
 @router.callback_query(F.data.startswith("admin:traffic:add:"))
@@ -3434,7 +3413,7 @@ async def admin_traffic_add_start(cq: CallbackQuery, db: DB, state: FSMContext):
     await state.set_state(AdminTrafficFlow.title)
     await cq.message.edit_text(
         f"{glass_header('پکیج جدید')}\n{GLASS_DOT} کشور: {_country_label(cc)}\n{GLASS_DOT} عنوان پکیج را بفرست (مثلاً 50GB):",
-        reply_markup=kb([[('برگشت', f'admin:traffic:cc:{cc}')]]),
+        reply_markup=kb([[('⬅️ برگشت', f'admin:traffic:cc:{cc}')]]),
     )
     await cq.answer()
 
@@ -3482,7 +3461,7 @@ async def admin_traffic_add_price(msg: Message, db: DB, state: FSMContext):
     gb = int(data.get('volume_gb') or 0)
     await db.create_traffic_package(country_code=cc, title=title, volume_gb=gb, price_irt=price, is_active=True)
     await state.clear()
-    await msg.answer("✅ پکیج ثبت شد.", reply_markup=kb([[('برگشت', f'admin:traffic:cc:{cc}')]]))
+    await msg.answer("✅ پکیج ثبت شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:traffic:cc:{cc}')]]))
 
 
 # -------------------------
@@ -3502,7 +3481,7 @@ async def admin_manual_menu(cq: CallbackQuery, db: DB, state: FSMContext):
     else:
         rows.append([( "✅ سفارشی در انتظار نیست", "noop")])
     rows.append([("📋 لیست پلن‌های دستی", "admin:manual:plans")])
-    rows.append([( "برگشت", "admin:home")])
+    rows.append([( "⬅️ برگشت", "admin:home")])
     await cq.message.edit_text(
         f"{glass_header('فروش دستی')}\n{GLASS_DOT} سفارش‌های در انتظار تحویل:",
         reply_markup=kb(rows),
@@ -3520,7 +3499,7 @@ async def admin_manual_plans(cq: CallbackQuery, db: DB, state: FSMContext):
     if not plans:
         await cq.message.edit_text(
             f"{glass_header('پلن‌های دستی')}\n{GLASS_DOT} هنوز پلن دستی‌ای ثبت نشده.",
-            reply_markup=kb([[("برگشت", "admin:manual")]]),
+            reply_markup=kb([[("⬅️ برگشت", "admin:manual")]]),
         )
         return await cq.answer()
 
@@ -3541,7 +3520,7 @@ async def admin_manual_plans(cq: CallbackQuery, db: DB, state: FSMContext):
         )
         rows.append([(f"{status} #{p['id']} | {title[:18]}", f"admin:manualplan:{p['id']}")])
 
-    rows.append([("برگشت", "admin:manual")])
+    rows.append([("⬅️ برگشت", "admin:manual")])
 
     await cq.message.edit_text(
         f"{glass_header('پلن‌های دستی')}\n{GLASS_DOT} لیست پلن‌های دستی (۵۰ مورد اول):\n\n" + "\n\n".join(lines),
@@ -3556,7 +3535,7 @@ async def _render_manual_plan_panel(cq: CallbackQuery, db: DB, plan_id: int, not
     if not p or (p.get("provider") or "").lower() != "manual":
         await cq.message.edit_text(
             f"{glass_header('پلن دستی')}\n{GLASS_DOT} پلن یافت نشد.",
-            reply_markup=kb([[('برگشت', 'admin:manual:plans')]]),
+            reply_markup=kb([[('⬅️ برگشت', 'admin:manual:plans')]]),
         )
         return
 
@@ -3591,7 +3570,7 @@ async def _render_manual_plan_panel(cq: CallbackQuery, db: DB, plan_id: int, not
 
         [(f"🔁 {'غیرفعال کن' if active else 'فعال کن'}", f"admin:manualplan:toggle:{p['id']}")],
         [("🗑 حذف پلن", f"admin:manualplan:delete:{p['id']}")],
-        [("برگشت", "admin:manual:plans")],
+        [("⬅️ برگشت", "admin:manual:plans")],
     ]
 
     await cq.message.edit_text(info, parse_mode="HTML", reply_markup=kb(rows))
@@ -3636,7 +3615,7 @@ async def admin_manual_plan_router(cq: CallbackQuery, db: DB, state: FSMContext)
             await state.set_state(AdminManualPlanEditFlow.set_title)
             await cq.message.edit_text(
                 f"{glass_header('تغییر عنوان')}\n{GLASS_DOT} عنوان جدید را بفرست:",
-                reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]),
+                reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]),
             )
             await cq.answer()
             return
@@ -3644,7 +3623,7 @@ async def admin_manual_plan_router(cq: CallbackQuery, db: DB, state: FSMContext)
             await state.set_state(AdminManualPlanEditFlow.set_server_type)
             await cq.message.edit_text(
                 f"{glass_header('تغییر کد/سرور')}\n{GLASS_DOT} کد جدید را بفرست (مثلاً CX22):",
-                reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]),
+                reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]),
             )
             await cq.answer()
             return
@@ -3652,7 +3631,7 @@ async def admin_manual_plan_router(cq: CallbackQuery, db: DB, state: FSMContext)
             await state.set_state(AdminManualPlanEditFlow.set_country_code)
             await cq.message.edit_text(
                 f"{glass_header('تغییر کشور')}\n{GLASS_DOT} کد کشور را بفرست (مثلاً IR / DE / FI):",
-                reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]),
+                reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]),
             )
             await cq.answer()
             return
@@ -3660,7 +3639,7 @@ async def admin_manual_plan_router(cq: CallbackQuery, db: DB, state: FSMContext)
             await state.set_state(AdminManualPlanEditFlow.set_price_irt)
             await cq.message.edit_text(
                 f"{glass_header('تغییر قیمت')}\n{GLASS_DOT} قیمت جدید (عدد) را بفرست:",
-                reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]),
+                reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]),
             )
             await cq.answer()
             return
@@ -3668,7 +3647,7 @@ async def admin_manual_plan_router(cq: CallbackQuery, db: DB, state: FSMContext)
             await state.set_state(AdminManualPlanEditFlow.set_traffic_gb)
             await cq.message.edit_text(
                 f"{glass_header('تغییر ترافیک')}\n{GLASS_DOT} سقف ترافیک (GB) را عدد بفرست. برای نامحدود 0:",
-                reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]),
+                reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]),
             )
             await cq.answer()
             return
@@ -3689,7 +3668,7 @@ async def admin_manual_plan_set_title(msg: Message, db: DB, state: FSMContext):
         return await msg.answer("عنوان نامعتبر است.")
     await db.update_plan_fields(plan_id, title=title)
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]))
 
 
 @router.message(AdminManualPlanEditFlow.set_server_type)
@@ -3702,7 +3681,7 @@ async def admin_manual_plan_set_server(msg: Message, db: DB, state: FSMContext):
         return await msg.answer("کد نامعتبر است.")
     await db.update_plan_fields(plan_id, server_type=st)
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]))
 
 
 @router.message(AdminManualPlanEditFlow.set_country_code)
@@ -3715,7 +3694,7 @@ async def admin_manual_plan_set_country(msg: Message, db: DB, state: FSMContext)
         return await msg.answer("کد کشور نامعتبر است. مثال: IR")
     await db.update_plan_fields(plan_id, country_code=cc)
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]))
 
 
 @router.message(AdminManualPlanEditFlow.set_price_irt)
@@ -3731,7 +3710,7 @@ async def admin_manual_plan_set_price(msg: Message, db: DB, state: FSMContext):
         return await msg.answer("عدد معتبر نیست.")
     await db.update_plan_fields(plan_id, price_monthly_irt=price)
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]))
 
 
 @router.message(AdminManualPlanEditFlow.set_traffic_gb)
@@ -3747,7 +3726,7 @@ async def admin_manual_plan_set_traffic(msg: Message, db: DB, state: FSMContext)
         return await msg.answer("عدد معتبر نیست. برای نامحدود 0")
     await db.update_plan_fields(plan_id, traffic_limit_gb=gb)
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('برگشت', f'admin:manualplan:{plan_id}')]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[('⬅️ برگشت', f'admin:manualplan:{plan_id}')]]))
 
 @router.callback_query(F.data.startswith('admin:manual:deliver:'))
 async def admin_manual_deliver_start(cq: CallbackQuery, db: DB, state: FSMContext):
@@ -3762,7 +3741,7 @@ async def admin_manual_deliver_start(cq: CallbackQuery, db: DB, state: FSMContex
     await state.set_state(AdminManualDeliverFlow.ip4)
     await cq.message.edit_text(
         f"{glass_header('تحویل سفارش دستی')}\n{GLASS_DOT} سرویس: #{oid}\n{GLASS_DOT} کاربر: {o.get('user_id')}\n\n{GLASS_DOT} IP را بفرست:",
-        reply_markup=kb([[('برگشت','admin:manual')]]),
+        reply_markup=kb([[('⬅️ برگشت','admin:manual')]]),
     )
     await cq.answer()
 
@@ -3841,7 +3820,7 @@ async def admin_manual_deliver_done(msg: Message, db: DB, state: FSMContext):
     except Exception:
         pass
 
-    await msg.answer('✅ تحویل ثبت شد و به کاربر ارسال شد.', reply_markup=kb([[('برگشت','admin:manual')]]))
+    await msg.answer('✅ تحویل ثبت شد و به کاربر ارسال شد.', reply_markup=kb([[('⬅️ برگشت','admin:manual')]]))
 
 # -------------------------
 # Admin: EUR pricing config
@@ -3893,7 +3872,7 @@ async def admin_pricing_menu(cq: CallbackQuery, db: DB, state: FSMContext):
             [("✏️ درصد سود پلن گران", "admin:pricing:set:high")],
             [("✏️ مرز قیمت (€)", "admin:pricing:set:thr")],
         ]
-    rows += [[("برگشت", "admin:general")]]
+    rows += [[("⬅️ برگشت", "admin:general")]]
     await _safe_edit(cq.message, text, reply_markup=kb(rows))
     await cq.answer()
 
@@ -4030,12 +4009,12 @@ async def admin_plans_countries(cq: CallbackQuery, db: DB, state: FSMContext):
     await state.clear()
     ccs = await db.list_all_plan_countries()
     if not ccs:
-        return await _safe_edit(cq.message, f"{glass_header('لیست پلن‌ها')}\n{GLASS_DOT} هنوز پلنی ثبت نشده.", reply_markup=kb([[("برگشت","admin:home")]]))
+        return await _safe_edit(cq.message, f"{glass_header('لیست پلن‌ها')}\n{GLASS_DOT} هنوز پلنی ثبت نشده.", reply_markup=kb([[("⬅️ برگشت","admin:home")]]))
     rows = []
     for cc in ccs:
         name = COUNTRY_NAMES.get(cc.upper(), cc.upper())
         rows.append([(f"{name} ({cc.upper()})", f"admin:plans:cc:{cc.upper()}:grp:all")])
-    rows.append([("برگشت", "admin:home")])
+    rows.append([("⬅️ برگشت", "admin:home")])
     await _safe_edit(cq.message, f"{glass_header('کشورها')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -4054,7 +4033,7 @@ async def _render_admin_plans_list(msg: Message, db: DB, cc: str, grp: str):
 
     if not plans:
         text += "\n\n▫️ هیچ پلنی ثبت نشده."
-        return await _safe_edit(msg, text, reply_markup=kb([[("برگشت", "admin:plans")]]))
+        return await _safe_edit(msg, text, reply_markup=kb([[("⬅️ برگشت", "admin:plans")]]))
 
     rows = []
     for p in plans[:50]:
@@ -4107,7 +4086,7 @@ async def _render_admin_plans_list(msg: Message, db: DB, cc: str, grp: str):
         ("CX",  f"admin:plans:cc:{cc}:grp:cx"),
         ("CPX", f"admin:plans:cc:{cc}:grp:cpx"),
         ("CAX", f"admin:plans:cc:{cc}:grp:cax"),
-    ]] + rows + [[("برگشت", "admin:plans")]]
+    ]] + rows + [[("⬅️ برگشت", "admin:plans")]]
 
     await _safe_edit(msg, text, reply_markup=kb(rows))
 
@@ -4189,7 +4168,7 @@ async def admin_plan_edit(cq: CallbackQuery, db: DB, state: FSMContext):
         [("✏️ تغییر ساعتی (€)", "admin:plan:edit:set_hourly")],
         [("✏️ تغییر حجم (GB)", "admin:plan:edit:set_traffic")],
         [("🔁 ساعتی روشن/خاموش", "admin:plan:edit:toggle_hourly")],
-        [("برگشت", f"admin:plans:cc:{cc}:grp:{grp}")],
+        [("⬅️ برگشت", f"admin:plans:cc:{cc}:grp:{grp}")],
     ]
     await _safe_edit(cq.message, text, reply_markup=kb(rows))
     await cq.answer()
@@ -4266,7 +4245,7 @@ async def admin_plan_edit_set_traffic(cq: CallbackQuery, state: FSMContext):
     await state.set_state(AdminPlanEditFlow.set_traffic_gb)
     await cq.message.edit_text(
         f"{glass_header('ویرایش حجم')}\n{GLASS_DOT} سقف ترافیک را به GB بفرست (مثلاً 20000). 0 = نامحدود:",
-        reply_markup=kb([[("برگشت", "admin:plan:edit:back")]]),
+        reply_markup=kb([[("⬅️ برگشت", "admin:plan:edit:back")]]),
     )
     await cq.answer()
 
@@ -4303,7 +4282,7 @@ async def admin_plan_edit_back(cq: CallbackQuery, db: DB, state: FSMContext):
         [("✏️ تغییر ساعتی (€)", "admin:plan:edit:set_hourly")],
         [("✏️ تغییر حجم (GB)", "admin:plan:edit:set_traffic")],
         [("🔁 ساعتی روشن/خاموش", "admin:plan:edit:toggle_hourly")],
-        [("برگشت", f"admin:plans:cc:{cc}:grp:{grp}")],
+        [("⬅️ برگشت", f"admin:plans:cc:{cc}:grp:{grp}")],
     ]
     await _safe_edit(cq.message, text, reply_markup=kb(rows))
     await cq.answer()
@@ -4365,7 +4344,7 @@ async def admin_addplan_start(cq: CallbackQuery, state: FSMContext):
         reply_markup=kb([
             [("Hetzner Cloud", "admin:addplan:provider:hetzner")],
             [("Manual DC", "admin:addplan:provider:manual")],
-            [("برگشت", "admin:home")]
+            [("⬅️ برگشت", "admin:home")]
         ])
     )
     await cq.answer()
@@ -4382,7 +4361,7 @@ async def admin_addplan_provider(cq: CallbackQuery, state: FSMContext):
             f"{glass_header('کشور')}\n{GLASS_DOT} انتخاب کشور:",
             reply_markup=kb([
                 [("ایران (IR)", "admin:addplan:country:IR")],
-                [("برگشت","admin:home")]
+                [("⬅️ برگشت","admin:home")]
             ])
         )
         return await cq.answer()
@@ -4393,7 +4372,7 @@ async def admin_addplan_provider(cq: CallbackQuery, state: FSMContext):
         reply_markup=kb([
             [("آلمان (DE)", "admin:addplan:country:DE"), ("فنلاند (FI)", "admin:addplan:country:FI")],
             [("آمریکا (US)", "admin:addplan:country:US"), ("سنگاپور (SG)", "admin:addplan:country:SG")],
-            [("برگشت","admin:home")]
+            [("⬅️ برگشت","admin:home")]
         ])
     )
     await cq.answer()
@@ -4410,14 +4389,14 @@ async def admin_addplan_country(cq: CallbackQuery, state: FSMContext):
         await state.set_state(AdminAddPlan.server_type)
         await cq.message.edit_text(
             f"{glass_header('پلن دستی')}\n{GLASS_DOT} نام/کد پلن را بنویس (مثلاً M-...):",
-            reply_markup=kb([[('برگشت','admin:home')]]),
+            reply_markup=kb([[('⬅️ برگشت','admin:home')]]),
         )
         return await cq.answer()
 
     await state.set_state(AdminAddPlan.location)
     locs = list_locations_for_country(cc)
     rows = [[(f"📍 {location_label(l)}", f"admin:addplan:loc:{l}")] for l in locs]
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
     await cq.message.edit_text(f"{glass_header('لوکیشن')}\n{GLASS_DOT} انتخاب لوکیشن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -4437,7 +4416,7 @@ async def admin_addplan_loc(cq: CallbackQuery, state: FSMContext):
         groups = [("x86 (intel/AMD)", "cx"), ("Arm64 (Ampere)", "cax"), ("x86 AMD", "cpx")]
 
     rows = [[(f"🧩 {label}", f"admin:addplan:grp:{key}")] for (label, key) in groups]
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
 
     await cq.message.edit_text(
         f"{glass_header('سرور تایپ')}\n{GLASS_DOT} معماری/سری سرور را انتخاب کن:",
@@ -4459,7 +4438,7 @@ async def admin_addplan_group(cq: CallbackQuery, state: FSMContext):
     for st in types_:
         specs = get_server_type_specs(client, st) or {}
         rows.append([(f"{st.upper()} | {specs.get('vcpu','?')}vCPU {specs.get('ram_gb','?')}GB {specs.get('disk_gb','?')}GB", f"admin:addplan:stype:{st}")])
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
     await cq.message.edit_text(f"{glass_header('سرور تایپ')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -4477,13 +4456,13 @@ async def admin_addplan_stype_text(msg: Message, state: FSMContext):
         return await msg.answer('نام/کد پلن نامعتبر است.')
     await state.update_data(server_type=st)
     await state.set_state(AdminAddPlan.title)
-    await msg.answer(f"{glass_header('عنوان')}\n{GLASS_DOT} عنوان پلن را بفرست:", reply_markup=kb([[('برگشت','admin:home')]]))
+    await msg.answer(f"{glass_header('عنوان')}\n{GLASS_DOT} عنوان پلن را بفرست:", reply_markup=kb([[('⬅️ برگشت','admin:home')]]))
 
 @router.callback_query(F.data.startswith("admin:addplan:stype:"))
 async def admin_addplan_stype(cq: CallbackQuery, state: FSMContext):
     await state.update_data(server_type=cq.data.split(":")[-1])
     await state.set_state(AdminAddPlan.title)
-    await cq.message.edit_text(f"{glass_header('عنوان')}\n{GLASS_DOT} عنوان پلن را بفرست:", reply_markup=kb([[("برگشت","admin:home")]]))
+    await cq.message.edit_text(f"{glass_header('عنوان')}\n{GLASS_DOT} عنوان پلن را بفرست:", reply_markup=kb([[("⬅️ برگشت","admin:home")]]))
     await cq.answer()
 
 @router.message(AdminAddPlan.title)
@@ -4529,7 +4508,7 @@ async def admin_addplan_traffic(msg: Message, state: FSMContext):
     await state.set_state(AdminAddPlan.hourly_enabled)
     await msg.answer(
         f"{glass_header('حالت ساعتی')}\n{GLASS_DOT} برای این پلن ساعتی فعال باشد؟",
-        reply_markup=kb([[("✅ بله","admin:addplan:hourly:1"),("❌ خیر","admin:addplan:hourly:0")],[("برگشت","admin:home")]])
+        reply_markup=kb([[("✅ بله","admin:addplan:hourly:1"),("❌ خیر","admin:addplan:hourly:0")],[("⬅️ برگشت","admin:home")]])
     )
 
 @router.callback_query(F.data.startswith("admin:addplan:hourly:"))
@@ -4597,7 +4576,7 @@ async def admin_buttons(cq: CallbackQuery, db: DB, state: FSMContext):
             [("➕ اضافه کردن دکمه جدید", "admin:addbtn")],
             [("🧷 دکمه‌های اضافه شده", "admin:cbtns")],
             [("🏦 تنظیم متن شماره کارت", "admin:set:card_text")],
-            [("برگشت","admin:home")]
+            [("⬅️ برگشت","admin:home")]
         ])
     )
     await cq.answer()
@@ -4610,7 +4589,7 @@ async def admin_set_begin(cq: CallbackQuery, state: FSMContext):
     await state.update_data(admin_set_key=key)
     await state.set_state(AdminSetText.text)
     label = "متن استارت" if key == "start_text" else "متن شماره کارت"
-    await cq.message.edit_text(f"{glass_header(label)}\n{GLASS_DOT} متن جدید را ارسال کن:", reply_markup=kb([[("برگشت","admin:buttons")]]))
+    await cq.message.edit_text(f"{glass_header(label)}\n{GLASS_DOT} متن جدید را ارسال کن:", reply_markup=kb([[("⬅️ برگشت","admin:buttons")]]))
     await cq.answer()
 
 @router.message(AdminSetText.text)
@@ -4674,7 +4653,7 @@ async def _admin_labels_show_page(cq: CallbackQuery, db: DB, page: int = 0):
     if len(nav) > 2:
         rows.append(nav[2:])
 
-    rows.append([("برگشت", "admin:buttons")])
+    rows.append([("⬅️ برگشت", "admin:buttons")])
 
     await cq.message.edit_text(
         f"{glass_header('تغییر اسم دکمه‌ها')}\n{GLASS_DOT} روی هر دکمه بزن تا اسم جدید براش بفرستی.\n{GLASS_DOT} (همهٔ زیرمنوها و کشورها هم شامل می‌شود.)",
@@ -4717,7 +4696,7 @@ async def admin_label_edit(cq: CallbackQuery, db: DB, state: FSMContext):
         f"{glass_header('تغییر اسم دکمه')}\n{GLASS_DOT} کلید: <code>{htmlesc(key)}</code>\n{GLASS_DOT} فعلی: {htmlesc(str(cur))}\n\n{GLASS_DOT} اسم جدید را ارسال کن:",
         reply_markup=kb([
             [("♻️ بازنشانی به پیش‌فرض", f"admin:lblreset:{_id}")],
-            [("برگشت", "admin:labels")],
+            [("⬅️ برگشت", "admin:labels")],
         ]),
     )
     await cq.answer()
@@ -4775,7 +4754,7 @@ async def admin_label_set_value(msg: Message, db: DB, state: FSMContext):
     await load_button_labels(db)
 
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("برگشت", "admin:labels")]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("⬅️ برگشت", "admin:labels")]]))
 
 @router.callback_query(F.data == "admin:layout")
 async def admin_layout(cq: CallbackQuery, db: DB, state: FSMContext):
@@ -4792,7 +4771,7 @@ async def admin_layout(cq: CallbackQuery, db: DB, state: FSMContext):
         f"نمونه:\n<code>{htmlesc(sample)}</code>\n\n"
         f"فعلی:\n<code>{htmlesc(show_cur)}</code>",
         parse_mode="HTML",
-        reply_markup=kb([[("برگشت", "admin:buttons")]]),
+        reply_markup=kb([[("⬅️ برگشت", "admin:buttons")]]),
     )
     await cq.answer()
 
@@ -4817,7 +4796,7 @@ async def admin_layout_set(msg: Message, db: DB, state: FSMContext):
         return await msg.answer("JSON نامعتبر است یا کلید غیرمجاز دارد.")
     await db.set_setting("menu_layout", json.dumps(obj, ensure_ascii=False))
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("برگشت","admin:buttons")]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("⬅️ برگشت","admin:buttons")]]))
 
 @router.callback_query(F.data == "admin:cbtns")
 async def admin_cbtns(cq: CallbackQuery, db: DB, state: FSMContext):
@@ -4834,7 +4813,7 @@ async def admin_cbtns(cq: CallbackQuery, db: DB, state: FSMContext):
     for i, b in enumerate(cbtns):
         title = str(b.get("title", ""))[:30] or f"#{i+1}"
         rows.append([(f"✏️ {title}", f"admin:cbtn:view:{i}")])
-    rows.append([("برگشت", "admin:buttons")])
+    rows.append([("⬅️ برگشت", "admin:buttons")])
     await cq.message.edit_text(
         f"{glass_header('دکمه‌های اضافه شده')}\n{GLASS_DOT} یکی را انتخاب کن:",
         reply_markup=kb(rows),
@@ -4865,7 +4844,7 @@ async def admin_cbtn_view(cq: CallbackQuery, db: DB, state: FSMContext):
             [("✏️ تغییر عنوان", "admin:cbtn:edit_title")],
             [("📝 تغییر متن", "admin:cbtn:edit_text")],
             [("🗑 حذف", "admin:cbtn:delete")],
-            [("برگشت", "admin:cbtns")],
+            [("⬅️ برگشت", "admin:cbtns")],
         ]),
     )
     await cq.answer()
@@ -4875,7 +4854,7 @@ async def admin_cbtn_edit_title(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     await state.set_state(AdminButtonsFlow.cbtn_edit_title)
-    await cq.message.edit_text(f"{glass_header('تغییر عنوان')}\n{GLASS_DOT} عنوان جدید را بفرست:", reply_markup=kb([[("برگشت","admin:cbtns")]]))
+    await cq.message.edit_text(f"{glass_header('تغییر عنوان')}\n{GLASS_DOT} عنوان جدید را بفرست:", reply_markup=kb([[("⬅️ برگشت","admin:cbtns")]]))
     await cq.answer()
 
 @router.message(AdminButtonsFlow.cbtn_edit_title)
@@ -4900,14 +4879,14 @@ async def admin_cbtn_edit_title_set(msg: Message, db: DB, state: FSMContext):
     cbtns[idx]["title"] = title
     await db.set_setting("custom_buttons", json.dumps(cbtns, ensure_ascii=False))
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("برگشت","admin:cbtns")]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("⬅️ برگشت","admin:cbtns")]]))
 
 @router.callback_query(F.data == "admin:cbtn:edit_text")
 async def admin_cbtn_edit_text(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     await state.set_state(AdminButtonsFlow.cbtn_edit_text)
-    await cq.message.edit_text(f"{glass_header('تغییر متن')}\n{GLASS_DOT} متن جدید را بفرست:", reply_markup=kb([[("برگشت","admin:cbtns")]]))
+    await cq.message.edit_text(f"{glass_header('تغییر متن')}\n{GLASS_DOT} متن جدید را بفرست:", reply_markup=kb([[("⬅️ برگشت","admin:cbtns")]]))
     await cq.answer()
 
 @router.message(AdminButtonsFlow.cbtn_edit_text)
@@ -4932,7 +4911,7 @@ async def admin_cbtn_edit_text_set(msg: Message, db: DB, state: FSMContext):
     cbtns[idx]["text"] = txt
     await db.set_setting("custom_buttons", json.dumps(cbtns, ensure_ascii=False))
     await state.clear()
-    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("برگشت","admin:cbtns")]]))
+    await msg.answer("✅ ذخیره شد.", reply_markup=kb([[("⬅️ برگشت","admin:cbtns")]]))
 
 @router.callback_query(F.data == "admin:cbtn:delete")
 async def admin_cbtn_delete(cq: CallbackQuery, db: DB, state: FSMContext):
@@ -4952,14 +4931,14 @@ async def admin_cbtn_delete(cq: CallbackQuery, db: DB, state: FSMContext):
     cbtns.pop(idx)
     await db.set_setting("custom_buttons", json.dumps(cbtns, ensure_ascii=False))
     await state.clear()
-    await cq.message.edit_text("✅ حذف شد.", reply_markup=kb([[("برگشت","admin:cbtns")]]))
+    await cq.message.edit_text("✅ حذف شد.", reply_markup=kb([[("⬅️ برگشت","admin:cbtns")]]))
     await cq.answer()
 @router.callback_query(F.data == "admin:addbtn")
 async def admin_addbtn_start(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     await state.set_state(AdminButtonsFlow.newbtn_title)
-    await cq.message.edit_text(f"{glass_header('دکمه جدید')}\n{GLASS_DOT} اسم دکمه را بفرست:", reply_markup=kb([[("برگشت","admin:buttons")]]))
+    await cq.message.edit_text(f"{glass_header('دکمه جدید')}\n{GLASS_DOT} اسم دکمه را بفرست:", reply_markup=kb([[("⬅️ برگشت","admin:buttons")]]))
     await cq.answer()
 
 @router.message(AdminButtonsFlow.newbtn_title)
@@ -4991,7 +4970,7 @@ async def admin_addbtn_text(msg: Message, db: DB, state: FSMContext):
     cbtns.append({"title": title, "text": txt})
     await db.set_setting("custom_buttons", json.dumps(cbtns, ensure_ascii=False))
     await state.clear()
-    await msg.answer("✅ اضافه شد.", reply_markup=kb([[("برگشت","admin:buttons")]]))
+    await msg.answer("✅ اضافه شد.", reply_markup=kb([[("⬅️ برگشت","admin:buttons")]]))
 
 @router.callback_query(F.data == "admin:general")
 async def admin_general(cq: CallbackQuery, db: DB):
@@ -5014,146 +4993,11 @@ async def admin_general(cq: CallbackQuery, db: DB):
             [("👥 کاربران", "admin:users")],
             [("🌍 تنظیم کشور", "admin:countrycfg")],
             [("💶 قیمت‌گذاری (یورو)", "admin:pricing")],
-            [("🗄 بکاپ", "admin:backup")],
-            [("برگشت","admin:home")]
+            [("🗄 دریافت بکاپ دیتابیس", "admin:db:get")],
+            [("⬅️ برگشت","admin:home")]
         ])
     )
     await cq.answer()
-
-
-# -------------------------
-# Admin: Backup submenu
-# -------------------------
-@router.callback_query(F.data == "admin:backup")
-async def admin_backup_menu(cq: CallbackQuery, db: DB, state: FSMContext):
-    if not is_admin(cq.from_user.id):
-        return await cq.answer("دسترسی ندارید.", show_alert=True)
-    await state.clear()
-    auto_enabled = (await db.get_setting("backup_auto_send", "0")) == "1"
-    st = "روشن ✅" if auto_enabled else "خاموش ❌"
-    await cq.message.edit_text(
-        f"{glass_header('بکاپ')}\n{GLASS_DOT} انتخاب کن:",
-        reply_markup=kb([
-            [(f"🕒 دریافت بکاپ خودکار: {st}", "admin:backup:auto")],
-            [("🗄 دریافت بکاپ دستی (همین الان)", "admin:backup:manual")],
-            [("📤 آپلود دیتابیس", "admin:backup:upload")],
-            [("برگشت","admin:general")],
-        ])
-    )
-    await cq.answer()
-
-@router.callback_query(F.data == "admin:backup:auto")
-async def admin_backup_auto_prompt(cq: CallbackQuery, db: DB, state: FSMContext):
-    if not is_admin(cq.from_user.id):
-        return await cq.answer("دسترسی ندارید.", show_alert=True)
-    await state.set_state(AdminBackupFlow.auto_value)
-    await cq.message.edit_text(
-        f"{glass_header('بکاپ خودکار')}\n{GLASS_DOT} عدد بفرست:\n\n0 = خاموش\n1 یا هر عددی = همین الان بکاپ بفرست و خودکار را روشن کن",
-        reply_markup=kb([[("برگشت","admin:backup")]])
-    )
-    await cq.answer()
-
-@router.message(AdminBackupFlow.auto_value)
-async def admin_backup_auto_set(msg: Message, db: DB, state: FSMContext):
-    if not is_admin(msg.from_user.id):
-        return
-    val = (msg.text or "").strip()
-    try:
-        n = int(val)
-    except Exception:
-        n = 1
-    if n <= 0:
-        await db.set_setting("backup_auto_send", "0")
-        await state.clear()
-        return await msg.answer("✅ بکاپ خودکار خاموش شد.", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-    # Enable + send immediately
-    await db.set_setting("backup_auto_send", "1")
-    await db.set_setting("backup_auto_value", str(n))
-    try:
-        path = await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
-    except Exception:
-        path = db.get_latest_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX)
-
-    if not path or not os.path.exists(path):
-        await state.clear()
-        return await msg.answer("❌ بکاپی پیدا نشد.", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-    cap = f"🗄 بکاپ دیتابیس (خودکار)\n{GLASS_DOT} فایل: <code>{htmlesc(os.path.basename(path))}</code>"
-    try:
-        await msg.bot.send_document(msg.from_user.id, FSInputFile(path), caption=cap, parse_mode="HTML")
-    except Exception as e:
-        await state.clear()
-        return await msg.answer(f"❌ خطا در ارسال فایل: {htmlesc(str(e))}", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-    await state.clear()
-    await msg.answer("✅ فعال شد و بکاپ همین الان ارسال شد.", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-@router.callback_query(F.data == "admin:backup:manual")
-async def admin_backup_manual(cq: CallbackQuery, db: DB):
-    if not is_admin(cq.from_user.id):
-        return await cq.answer("دسترسی ندارید.", show_alert=True)
-    await cq.answer("در حال آماده‌سازی…")
-    try:
-        path = await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
-    except Exception:
-        path = db.get_latest_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX)
-    if not path or not os.path.exists(path):
-        return await cq.message.answer("❌ بکاپی پیدا نشد.")
-    cap = f"🗄 بکاپ دیتابیس (دستی)\n{GLASS_DOT} فایل: <code>{htmlesc(os.path.basename(path))}</code>"
-    try:
-        await cq.bot.send_document(cq.from_user.id, FSInputFile(path), caption=cap, parse_mode="HTML")
-    except Exception as e:
-        return await cq.message.answer(f"❌ خطا در ارسال فایل: {htmlesc(str(e))}")
-    await cq.message.answer("✅ بکاپ ارسال شد.", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-@router.callback_query(F.data == "admin:backup:upload")
-async def admin_backup_upload_prompt(cq: CallbackQuery, db: DB, state: FSMContext):
-    if not is_admin(cq.from_user.id):
-        return await cq.answer("دسترسی ندارید.", show_alert=True)
-    await state.set_state(AdminBackupFlow.upload_db)
-    await cq.message.edit_text(
-        f"{glass_header('آپلود دیتابیس')}\n{GLASS_DOT} فایل دیتابیس SQLite را ارسال کن (پسوند .sqlite3):",
-        reply_markup=kb([[("برگشت","admin:backup")]])
-    )
-    await cq.answer()
-
-@router.message(AdminBackupFlow.upload_db)
-async def admin_backup_upload_apply(msg: Message, db: DB, state: FSMContext):
-    if not is_admin(msg.from_user.id):
-        return
-    if not msg.document:
-        return await msg.answer("❌ لطفاً فایل دیتابیس را به صورت Document ارسال کن.", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-    await msg.answer("⏳ در حال دانلود و اعمال…")
-    try:
-        f = await msg.bot.get_file(msg.document.file_id)
-        tmp_dir = os.path.join(DB_BACKUP_DIR, "_uploads")
-        os.makedirs(tmp_dir, exist_ok=True)
-        tmp_path = os.path.join(tmp_dir, f"uploaded_{int(time.time())}.sqlite3")
-        await msg.bot.download_file(f.file_path, destination=tmp_path)
-
-        # Safety backup of current DB
-        try:
-            await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
-        except Exception:
-            pass
-
-        # Replace DB file
-        shutil.copyfile(tmp_path, DB_PATH)
-
-        # Ensure schema/migrations exist
-        try:
-            await db.init()
-        except Exception:
-            pass
-
-    except Exception as e:
-        await state.clear()
-        return await msg.answer(f"❌ خطا: {htmlesc(str(e))}", reply_markup=kb([[("برگشت","admin:backup")]]))
-
-    await state.clear()
-    await msg.answer("✅ دیتابیس اعمال شد.", reply_markup=kb([[("برگشت","admin:backup")]]))
 
 @router.callback_query(F.data.startswith("admin:toggle:"))
 async def admin_toggle(cq: CallbackQuery, db: DB):
@@ -5200,7 +5044,7 @@ async def _render_location_groups_screen(msg, db: DB, cc: str, loc: str):
         st = "موجود ✅" if enabled else "ناموجود ❌"
         rows.append([(f"{label} — {st}", f"admin:countrycfg:toggle:{cc}:{loc}:{key}")])
 
-    rows.append([("برگشت", f"admin:countrycfg:pick:{cc}")])
+    rows.append([("⬅️ برگشت", f"admin:countrycfg:pick:{cc}")])
     await msg.edit_text(
         f"{glass_header('تنظیم کشور')}\n"
         f"{GLASS_DOT} کشور: {_country_label(cc)}\n"
@@ -5227,7 +5071,7 @@ async def admin_countrycfg(cq: CallbackQuery, db: DB):
             (f"{_country_label(cc_u)} — {st}", f"admin:countrycfg:pick:{cc_u}"),
             (f"🔁 {toggle_txt}", f"admin:countrycfg:ctoggle:{cc_u}")
         ])
-    rows.append([("برگشت", "admin:general")])
+    rows.append([("⬅️ برگشت", "admin:general")])
 
     await cq.message.edit_text(
         f"{glass_header('تنظیم کشور')}\n{GLASS_DOT} کشور را انتخاب کن (یا وضعیت را تغییر بده):",
@@ -5255,7 +5099,7 @@ async def admin_countrycfg_pick(cq: CallbackQuery, db: DB):
     rows = []
     for loc in locs:
         rows.append([(_loc_label(loc), f"admin:countrycfg:loc:{cc}:{loc}")])
-    rows.append([("برگشت", "admin:countrycfg")])
+    rows.append([("⬅️ برگشت", "admin:countrycfg")])
 
     await cq.message.edit_text(
         f"{glass_header('تنظیم کشور')}\n{GLASS_DOT} کشور: {_country_label(cc)}\n{GLASS_DOT} شهر/لوکیشن را انتخاب کن:",
@@ -5298,7 +5142,7 @@ async def admin_stats(cq: CallbackQuery, db: DB):
     st = await db.stats()
     await cq.message.edit_text(
         f"{glass_header('آمار')}\n{GLASS_DOT} کاربران: {st['users']}\n{GLASS_DOT} کل سفارش‌ها: {st['orders']}\n{GLASS_DOT} فعال: {st['active_orders']}",
-        reply_markup=kb([[("برگشت","admin:general")]])
+        reply_markup=kb([[("⬅️ برگشت","admin:general")]])
     )
     await cq.answer()
 
@@ -5313,7 +5157,7 @@ async def admin_users(cq: CallbackQuery, state: FSMContext):
             [("📣 پیام همگانی", "admin:broadcast")],
             [("📋 لیست کاربران", "admin:userlist:0")],
             [("🔎 جستجو کاربر", "admin:usersearch")],
-            [("برگشت","admin:general")]
+            [("⬅️ برگشت","admin:general")]
         ])
     )
     await cq.answer()
@@ -5323,7 +5167,7 @@ async def admin_broadcast_start(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     await state.set_state(AdminBroadcast.text)
-    await cq.message.edit_text(f"{glass_header('پیام همگانی')}\n{GLASS_DOT} متن پیام را ارسال کن:", reply_markup=kb([[("برگشت","admin:users")]]))
+    await cq.message.edit_text(f"{glass_header('پیام همگانی')}\n{GLASS_DOT} متن پیام را ارسال کن:", reply_markup=kb([[("⬅️ برگشت","admin:users")]]))
     await cq.answer()
 
 @router.message(AdminBroadcast.text)
@@ -5352,13 +5196,13 @@ async def admin_active(cq: CallbackQuery, db: DB):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     orders = await db.list_active_orders()
     if not orders:
-        await cq.message.edit_text("فعلاً سفارشی فعال نیست.", reply_markup=kb([[("برگشت","admin:home")]]))
+        await cq.message.edit_text("فعلاً سفارشی فعال نیست.", reply_markup=kb([[("⬅️ برگشت","admin:home")]]))
         return await cq.answer()
     rows = []
     for o in orders[:50]:
         label = o["ip4"] or f"Order#{o['id']}"
         rows.append([(f"🧊 {label} | {o['status']}", f"admin:ord:{o['id']}"), ("🗑 حذف", f"admin:orddel:{o['id']}")])
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
     await cq.message.edit_text(f"{glass_header('سرورهای فعال')}\n{GLASS_DOT} روی آی‌پی بزن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -5391,7 +5235,7 @@ async def admin_order_view(cq: CallbackQuery, db: DB):
             [("🔐 بازیابی پسورد", f"admin:act:resetpw:{oid}")],
             [("📊 ترافیک باقی‌مانده", f"admin:act:traffic:{oid}")],
             [("🗑 حذف سرور", f"admin:orddel:{oid}")],
-            [("برگشت","admin:active")]
+            [("⬅️ برگشت","admin:active")]
         ])
     )
     await cq.answer()
@@ -5443,9 +5287,8 @@ async def admin_order_delete_confirm(cq: CallbackQuery, db: DB):
     if sid:
         try:
             hcloud_delete_server(int(sid))
-        except Exception as e:
-            # Do not mark as deleted if Hetzner deletion failed
-            return await cq.answer(f"خطا در حذف سرور: {e}", show_alert=True)
+        except Exception:
+            pass
 
     await db.set_order_status(oid, "deleted")
 
@@ -5469,7 +5312,7 @@ async def admin_order_delete_confirm(cq: CallbackQuery, db: DB):
     msg = "✅ سرور حذف شد."
     if billing == "hourly" and extra_cost > 0:
         msg += f"\nمبلغ کسر شده بابت دقایق استفاده: {fmt_money(extra_cost)}"
-    await cq.message.edit_text(msg, reply_markup=kb([[("برگشت", "admin:active")]]))
+    await cq.message.edit_text(msg, reply_markup=kb([[("⬅️ برگشت", "admin:active")]]))
     await cq.answer("✅ حذف شد.")
 
 
@@ -5857,13 +5700,13 @@ async def admin_payments(cq: CallbackQuery, db: DB):
         return await cq.answer("دسترسی ندارید.", show_alert=True)
     items = await db.list_pending_card_purchases(limit=30)
     if not items:
-        await cq.message.edit_text(f"{glass_header('پرداخت‌ها')}\n{GLASS_DOT} موردی نیست.", reply_markup=kb([[("برگشت","admin:home")]]))
+        await cq.message.edit_text(f"{glass_header('پرداخت‌ها')}\n{GLASS_DOT} موردی نیست.", reply_markup=kb([[("⬅️ برگشت","admin:home")]]))
         return await cq.answer()
     rows = []
     for it in items:
         st = "🟡 منتظر رسید" if it["status"] == "waiting_receipt" else "🟠 منتظر تایید"
         rows.append([(f"{st} #{it['invoice_id']} | {it['user_id']}", f"admin:payment:{it['invoice_id']}")])
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
     await cq.message.edit_text(f"{glass_header('پرداخت‌های کارت‌به‌کارت')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -5892,7 +5735,7 @@ async def admin_payment_view(cq: CallbackQuery, db: DB):
     rows += [
         [("✅ تایید و ساخت", f"admin:pay:approve:{inv_id}")],
         [("❌ رد", f"admin:pay:reject:{inv_id}")],
-        [("برگشت","admin:payments")]
+        [("⬅️ برگشت","admin:payments")]
     ]
     await cq.message.edit_text(text, reply_markup=kb(rows))
     await cq.answer()
@@ -5938,7 +5781,7 @@ async def admin_tickets_removed(cq: CallbackQuery):
     rows=[]
     for t in items:
         rows.append([(f"🎫 #{t['id']} | {t['user_id']} | {t['subject']}", f"admin:ticket:view:{t['id']}")])
-    rows.append([("برگشت","admin:home")])
+    rows.append([("⬅️ برگشت","admin:home")])
     await cq.message.edit_text(f"{glass_header('تیکت‌های باز')}\n{GLASS_DOT} انتخاب کن:", reply_markup=kb(rows))
     await cq.answer()
 
@@ -5959,7 +5802,7 @@ async def admin_ticket_view(cq: CallbackQuery, db: DB):
     await cq.message.edit_text(text, reply_markup=kb([
         [("✉️ پاسخ", f"admin:ticket:reply:{tid}")],
         [("✅ بستن", f"admin:ticket:close:{tid}")],
-        [("برگشت","admin:tickets")]
+        [("⬅️ برگشت","admin:tickets")]
     ]))
     await cq.answer()
 
@@ -6100,10 +5943,7 @@ async def hourly_billing_job(bot_: Bot, db: DB):
 
 # -------------------------
 async def daily_db_backup_loop(db: DB, bot: Bot):
-    """Create a DB backup once per day at configured local time.
-
-    If 'backup_auto_send' setting is enabled, also sends the newest backup to admins.
-    """
+    """Create a DB backup once per day at configured local time."""
     while True:
         try:
             # compute next run time in configured TZ
@@ -6114,31 +5954,17 @@ async def daily_db_backup_loop(db: DB, bot: Bot):
             sleep_s = max(1.0, (next_run - now_local).total_seconds())
             await asyncio.sleep(sleep_s)
 
-            path = None
+            # best-effort: do not block the bot if backup fails
             try:
-                path = await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
-            except Exception:
-                path = None
-
-            try:
-                auto_send = (await db.get_setting('backup_auto_send', '0')) == '1'
-                if auto_send:
-                    if not path:
-                        path = db.get_latest_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX)
-                    if path and os.path.exists(path):
-                        cap = f"🗄 بکاپ دیتابیس (خودکار)\n{GLASS_DOT} فایل: <code>{htmlesc(os.path.basename(path))}</code>"
-                        for aid in ADMIN_IDS:
-                            try:
-                                await bot.send_document(aid, FSInputFile(path), caption=cap, parse_mode='HTML')
-                            except Exception:
-                                pass
+                await db.create_backup(DB_BACKUP_DIR, prefix=DB_BACKUP_PREFIX, keep_last=DB_BACKUP_KEEP_LAST)
             except Exception:
                 pass
-
         except Exception:
             # if loop fails, wait a bit and retry
             await asyncio.sleep(60)
 
+
+# -------------------------
 async def job_loop(db: DB, bot: Bot):
     while True:
         try:
@@ -6292,12 +6118,7 @@ def build_purchase_summary(plan: dict, data: dict) -> str:
     return "\n".join(parts)
 
 
-# Runtime singletons (used by bridge server)
-BOT_OBJ: Optional[Bot] = None
-DP_OBJ: Optional[Dispatcher] = None
-DB_OBJ: Optional[DB] = None
-
-async def init_runtime(start_polling: bool = True) -> Tuple[Bot, Dispatcher, DB]:
+async def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing in .env")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -6319,27 +6140,16 @@ async def init_runtime(start_polling: bool = True) -> Tuple[Bot, Dispatcher, DB]
             if not str(cur_card).strip():
                 await db.set_setting("card_number_text", DEFAULT_CARD_TEXT)
         except Exception:
+            # best effort; never block startup
             pass
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
 
-    # background jobs
     asyncio.create_task(job_loop(db, bot))
     asyncio.create_task(daily_db_backup_loop(db, bot))
-
-    global BOT_OBJ, DP_OBJ, DB_OBJ
-    BOT_OBJ, DP_OBJ, DB_OBJ = bot, dp, db
-
-    if start_polling:
-        await dp.start_polling(bot, db=db)
-
-    return bot, dp, db
-
-async def main():
-    await init_runtime(start_polling=True)
-
+    await dp.start_polling(bot, db=db)
 
 if __name__ == "__main__":
     asyncio.run(main())
