@@ -1,1 +1,0 @@
-ALTER TABLE `server_plans` ADD `npv_lock` TINYINT(1) NOT NULL DEFAULT 0;
