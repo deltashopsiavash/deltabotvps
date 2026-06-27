@@ -1,0 +1,14 @@
+NPV Device Lock - Version 1
+
+What changed:
+- Added npv_lock column to server_plans.
+- When adding a PasarGuard plan, after entering volume the bot asks:
+  "Should this plan be NapsternetV Device ID locked?"
+- If enabled, when user selects that plan, bot asks for NapsternetV Device ID before payment.
+- Device ID is saved inside the pending payment description.
+- After payment approval / wallet delivery, raw config/sub link is NOT sent to the user for locked plans.
+- Bot sends a waiting message to the user.
+- Bot sends admins the Device ID + PasarGuard sub link so admin can manually generate .npvtsub and send it to the user.
+
+Important:
+This is Version 1 and does NOT automatically generate .npvtsub files, because NapsternetV locked-file generation is not implemented server-side yet.
