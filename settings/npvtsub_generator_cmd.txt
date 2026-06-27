@@ -1,0 +1,3 @@
+# دستور سازنده فایل NPVTSUB را اینجا بگذارید و اول خط # را حذف کنید.
+# نمونه:
+# /usr/local/bin/npvtsub-maker --sub {sub} --device {device} --out {out} --name {name}
