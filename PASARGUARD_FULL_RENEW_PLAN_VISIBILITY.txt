@@ -1,4 +1,0 @@
-PasarGuard full-renew plan visibility
-- Each PasarGuard plan has an ON/OFF toggle in plan details.
-- OFF hides it only from Full Renewal. Normal purchase is unchanged.
-- Existing plans default to ON.
