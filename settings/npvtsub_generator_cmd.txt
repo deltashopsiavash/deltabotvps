@@ -1,0 +1,3 @@
+# دیگر نیازی به تنظیم دستی نیست؛ ربات به‌صورت پیش‌فرض از tools/npvtsub-maker استفاده می‌کند.
+# اگر خواستی ابزار دیگری استفاده کنی، دستور را اینجا بدون # بگذار:
+# /usr/local/bin/npvtsub-maker --sub {sub} --device {device} --out {out} --name {name}
