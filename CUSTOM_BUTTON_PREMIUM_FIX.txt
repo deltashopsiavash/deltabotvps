@@ -1,7 +1,0 @@
-Custom main button fixes
-
-- Fixed admin pre-router false positive where any long text containing both "list" and "bot" could open the reseller-bot list while the admin was entering a custom button response.
-- Custom button creation now supports Telegram Premium custom emoji in the button name.
-- The visible title and icon_custom_emoji_id are stored separately.
-- Premium icon is restored when building the user main menu and when showing the custom-button admin list.
-- Deleting a custom button also deletes its saved premium icon.
