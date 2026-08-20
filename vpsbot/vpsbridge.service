@@ -1,0 +1,14 @@
+[Unit]
+Description=VPSBot Bridge Server (DeltaBot integration)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vpsbot
+EnvironmentFile=/opt/vpsbot/.env
+ExecStart=/opt/vpsbot/venv/bin/python /opt/vpsbot/bridge_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
