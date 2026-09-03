@@ -34,7 +34,12 @@ function deltaPatchReplaceOnce(string $content, string $search, string $replace,
     if (strpos($content, $search) === false) {
         throw new RuntimeException("Patch anchor not found: {$label}");
     }
-    return preg_replace('/' . preg_quote($search, '/') . '/', str_replace(['\\', '$'], ['\\\\', '\\$'], $replace), $content, 1) ?? $content;
+    $count = 0;
+    $result = str_replace($search, $replace, $content, $count);
+    if ($count < 1) {
+        throw new RuntimeException("Patch replacement failed: {$label}");
+    }
+    return $result;
 }
 
 function deltaPatchLint(string $path): void
