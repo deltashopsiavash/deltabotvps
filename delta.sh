@@ -284,6 +284,8 @@ wait
         read YOUR_CHAT_ID
         printf "\e[33m[+] \e[36mDomain: \033[0m"
         read YOUR_DOMAIN
+        printf "\e[33m[+] \e[36mPayment Domain (example: pay.example.com, blank = skip): \033[0m"
+        read YOUR_PAYMENT_DOMAIN
         printf "\e[33m[+] \e[36mHetzner Cloud Token: \033[0m"
         read YOUR_HCLOUD_TOKEN
         echo " "
@@ -316,6 +318,9 @@ wait
         echo -e "${ASAS}dbPassword = '${dbpass}';" >> /var/www/html/deltabotvps/baseInfo.php
         echo -e "${ASAS}dbName = '${dbname}';" >> /var/www/html/deltabotvps/baseInfo.php
         echo -e "${ASAS}botUrl = 'https://${YOUR_DOMAIN}/deltabotvps/';" >> /var/www/html/deltabotvps/baseInfo.php
+        if [ "$YOUR_PAYMENT_DOMAIN" != "" ]; then
+          echo -e "${ASAS}paymentDomain = '${YOUR_PAYMENT_DOMAIN}';" >> /var/www/html/deltabotvps/baseInfo.php
+        fi
         echo -e "${ASAS}admin = ${YOUR_CHAT_ID};" >> /var/www/html/deltabotvps/baseInfo.php
         echo -e "?>" >> /var/www/html/deltabotvps/baseInfo.php
 
@@ -357,11 +362,23 @@ EOF
         MESSAGE="✅ The delta bot has been successfully installed! @deltach"
         curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" -d chat_id="${YOUR_CHAT_ID}" -d text="$MESSAGE"
         
-        
         sleep 1
         
         url="https://${YOUR_DOMAIN}/deltabotvps/createDB.php"
         curl $url
+
+        # ---------------- DeltaPay branded payment domain ----------------
+        # DNS for the payment domain must already point to this server. The
+        # installer creates/repairs the Apache vhost, obtains/reuses SSL and
+        # points DocumentRoot directly at the repository's DeltaPay files.
+        if [ "$YOUR_PAYMENT_DOMAIN" != "" ] && [ -f "/var/www/html/deltabotvps/deltapay/install.sh" ]; then
+            echo -e "\n\e[33m[+] \e[36mInstalling DeltaPay on ${YOUR_PAYMENT_DOMAIN}...\033[0m"
+            chmod +x /var/www/html/deltabotvps/deltapay/install.sh
+            if ! bash /var/www/html/deltabotvps/deltapay/install.sh --domain "$YOUR_PAYMENT_DOMAIN" --yes; then
+                echo -e "\n\e[91mDeltaPay setup was not completed. Check DNS and run deltapay/install.sh again.\033[0m\n"
+            fi
+        fi
+        # ------------------------------------------------------------------
         
         sleep 1
         
@@ -389,6 +406,9 @@ EOF
         echo " "
         echo -e "\e[100mdelta panel:\033[0m"
         echo -e "\e[33maddres: \e[36mhttps://${YOUR_DOMAIN}/${RANDOM_CODE}/login.php\033[0m"
+        if [ "$YOUR_PAYMENT_DOMAIN" != "" ]; then
+          echo -e "\e[33mDeltaPay: \e[36mhttps://${YOUR_PAYMENT_DOMAIN}/pay/start/?order_id=ORDER_ID\033[0m"
+        fi
         
         echo " "
         

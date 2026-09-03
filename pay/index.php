@@ -4,10 +4,32 @@ require_once __DIR__ . "/../baseInfo.php";
 require_once __DIR__ . "/../config.php";
 
 //====================//  Get  //==============================
-$hash_id = $_GET['hash_id'];
-if(!isset($_GET['zarinpal']) && !isset($_GET['nowpayment']) && !isset($_GET['nextpay'])){
+$hash_id = trim((string)($_GET['hash_id'] ?? ''));
+$requestedGateway = '';
+if(isset($_GET['zarinpal'])) $requestedGateway = 'zarinpal';
+elseif(isset($_GET['nowpayment'])) $requestedGateway = 'nowpayment';
+elseif(isset($_GET['nextpay'])) $requestedGateway = 'nextpay';
+
+if($requestedGateway === ''){
     showForm("درگاه پرداخت شناسایی نشد!");
     exit();
+}
+
+// DeltaPay is a branded order/checkout layer in front of the actual provider.
+// Existing bot buttons keep working, while the customer first sees a stable
+// URL such as https://pay.example.com/pay/start/?order_id=....  The `direct`
+// flag is only used internally after the customer presses Continue; it does
+// not bypass provider verification or the callback in back.php.
+$deltaPayDirect = ((string)($_GET['direct'] ?? '') === '1');
+if(!$deltaPayDirect && isset($paymentDomain)){
+    $deltaPayDomain = strtolower(trim((string)$paymentDomain));
+    $deltaPayDomain = preg_replace('#^https?://#i', '', $deltaPayDomain);
+    $deltaPayDomain = preg_replace('#/.*$#', '', $deltaPayDomain);
+    if($deltaPayDomain !== '' && preg_match('/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $deltaPayDomain)){
+        $deltaPayUrl = 'https://' . $deltaPayDomain . '/pay/start/?order_id=' . rawurlencode($hash_id) . '&method=' . rawurlencode($requestedGateway);
+        header('Location: ' . $deltaPayUrl, true, 302);
+        exit();
+    }
 }
 
 $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ? AND `state` = 'pending'");
@@ -45,12 +67,10 @@ if(mysqli_num_rows($payInfo)==0){
     $acount = $file_detail['acount'];
     $inbound_id = $file_detail['inbound_id'];
     
-    
     $orderId= $payParam['id'];
     $amount = $payParam['price'];
     $payType = $payParam['type'];
     //========================== // config // ==============================
-    
     
     if($acount == 0 and $inbound_id != 0 && $payType == "BUY_SUB"){
         showForm('ظرفیت این کانکشن پر شده است');
@@ -65,7 +85,7 @@ if(mysqli_num_rows($payInfo)==0){
 
         if($server_info['ucount'] == 0) {
             showForm('ظرفیت این سرور پر شده است');
-            exit;
+            exit();
         }
     }elseif($payType == "BUY_SUB"){
         if($acount != 0 && $acount < $text){
@@ -93,8 +113,6 @@ if(mysqli_num_rows($payInfo)==0){
     elseif($payType == "INCREASE_WALLET") $type ="شارژ کیف پول";
     elseif(preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType)) $type = "افزایش زمان اکانت";
     elseif(preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType)) $type = "افزایش حجم اکانت";
-    
-    
     
     $stmt = $connection->prepare("SELECT * FROM `setting` WHERE `type` = 'PAYMENT_KEYS'");
     $stmt->execute();
@@ -131,6 +149,7 @@ if(mysqli_num_rows($payInfo)==0){
         $stmt->execute();
         $stmt->close();
         header('Location: '.$res->invoice_url);
+        exit();
     }
     elseif(isset($_GET['zarinpal'])){
         $CallbackURL = $botUrl . "pay/back.php?zarinpal&hash_id=$hash_id";
@@ -145,6 +164,7 @@ if(mysqli_num_rows($payInfo)==0){
         ]);
         //==============================================================
         Header('Location: https://www.zarinpal.com/pg/StartPay/'.$result->Authority.'/ZarinGate');
+        exit();
     }
     elseif(isset($_GET['nextpay'])){        
         $Description = "خرید اشتراک";
@@ -173,14 +193,12 @@ if(mysqli_num_rows($payInfo)==0){
             $stmt->execute();
             $stmt->close();
             header('location: '.$startGateWayUrl);
+            exit();
         } else {
             showForm("تراکنش با خطا مواجه شده است");
         }
-        
-        
     }
 }
-
 
 function showForm($msg){
     ?>
