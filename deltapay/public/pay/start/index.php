@@ -18,6 +18,22 @@ if ($method === '') {
     $method = strtolower(trim((string)($config['default_method'] ?? '')));
 }
 
+// Backward-compatible fallback: if no explicit DeltaPay provider has been
+// saved yet, but exactly one supported online gateway is enabled in BOT_STATES,
+// use that provider automatically. This makes an existing ZarinPal-only setup
+// work immediately after enabling the Personal Gateway.
+if ($method === '') {
+    $enabledMethods = [];
+    foreach (['zarinpal', 'nextpay', 'nowpayment'] as $candidate) {
+        if (deltaPayMethodEnabled($deltaPayDb, $candidate)) {
+            $enabledMethods[] = $candidate;
+        }
+    }
+    if (count($enabledMethods) === 1) {
+        $method = $enabledMethods[0];
+    }
+}
+
 $error = '';
 $order = null;
 $statusLabel = '';

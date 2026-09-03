@@ -87,6 +87,14 @@ if [ -f "$SCRIPT_DIR/apply-bot-integration.php" ]; then
     php "$SCRIPT_DIR/apply-bot-integration.php"
 fi
 
+# Avoid showing a second direct online-provider button on the same invoice when
+# the branded Personal Gateway is enabled. Provider settings themselves remain
+# untouched so DeltaPay can still use the selected backend processor.
+if [ -f "$SCRIPT_DIR/apply-invoice-dedup.php" ]; then
+    echo "[DeltaPay] Applying invoice payment button de-duplication..."
+    php "$SCRIPT_DIR/apply-invoice-dedup.php"
+fi
+
 # The original bot still contains ZarinPal's old SOAP/WebGate implementation.
 # Upgrade it to REST v4 on every fresh install/update. This patcher is also
 # idempotent and restores both payment files if syntax validation fails.
@@ -196,7 +204,8 @@ if [ ! -f "${CERT_DIR}/fullchain.pem" ]; then
     fi
 fi
 
-# Seed/update the runtime configuration after the database exists.
+# Seed/update the runtime configuration after the database exists. Existing
+# provider selection is preserved unless configure.php is called with --method.
 php "$SCRIPT_DIR/configure.php" --domain "$DOMAIN" >/dev/null 2>&1 || true
 
 systemctl enable certbot.timer >/dev/null 2>&1 || true
