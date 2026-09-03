@@ -1,7 +1,7 @@
 <?php
 /**
  * Upgrade the legacy ZarinPal SOAP/WebGate implementation in pay/index.php
- * and pay/back.php to the current REST v4 request/verify flow.
+ * and pay/back.php to the REST v4 request/verify flow.
  *
  * Safe/idempotent: if the v4 markers already exist nothing is changed. If a
  * patch or PHP syntax check fails, both files are restored exactly.
@@ -118,6 +118,7 @@ $newRequest = <<<'PHP'
         $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
         $result = json_decode((string)$rawResult, true);
+        if(!is_array($result)) $result = [];
 
         $code = (int)($result['data']['code'] ?? 0);
         $authority = trim((string)($result['data']['authority'] ?? ''));
@@ -133,7 +134,8 @@ $newRequest = <<<'PHP'
             exit();
         }
 
-        $apiCode = (string)($result['errors']['code'] ?? $code ?: 'unknown');
+        $apiCodeValue = $result['errors']['code'] ?? ($code !== 0 ? $code : 'unknown');
+        $apiCode = (string)$apiCodeValue;
         $apiMessage = (string)($result['errors']['message'] ?? '');
         error_log('ZarinPal v4 request failed. HTTP=' . $httpCode . ' code=' . $apiCode . ' curl=' . $curlError . ' message=' . $apiMessage);
         showForm('اتصال به زرین پال ناموفق بود (کد: ' . htmlspecialchars($apiCode, ENT_QUOTES, 'UTF-8') . ')');
@@ -141,19 +143,6 @@ $newRequest = <<<'PHP'
     }
 PHP;
 
-$oldVerify = <<<'PHP'
-elif_placeholder
-PHP;
-
-// Build the exact legacy verify block separately to keep the nowdoc readable.
-$oldVerify = <<<'PHP'
-elif_placeholder
-PHP;
-$oldVerify = str_replace('elif_placeholder', <<<'BLOCK'
-elif_placeholder
-BLOCK, $oldVerify);
-
-// Exact block from the legacy back.php.
 $oldVerify = <<<'PHP'
 elseif(isset($_GET['zarinpal'])){
 $hash_id = $_GET['hash_id'];
@@ -273,12 +262,14 @@ if(mysqli_num_rows($payInfo)==0){
     $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     $result = json_decode((string)$rawResult, true);
+    if(!is_array($result)) $result = [];
 
     $code = (int)($result['data']['code'] ?? 0);
     if($curlError === '' && $httpCode >= 200 && $httpCode < 300 && ($code === 100 || $code === 101)){
         doAction($rowId, "zarinpal");
     }else{
-        $apiCode = (string)($result['errors']['code'] ?? $code ?: 'unknown');
+        $apiCodeValue = $result['errors']['code'] ?? ($code !== 0 ? $code : 'unknown');
+        $apiCode = (string)$apiCodeValue;
         $apiMessage = (string)($result['errors']['message'] ?? '');
         error_log('ZarinPal v4 verify failed. order=' . $hash_id . ' HTTP=' . $httpCode . ' code=' . $apiCode . ' curl=' . $curlError . ' message=' . $apiMessage);
         showForm("تأیید پرداخت زرین پال ناموفق بود (کد: " . htmlspecialchars($apiCode, ENT_QUOTES, 'UTF-8') . ")","درگاه زرین پال");
