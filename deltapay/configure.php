@@ -9,7 +9,10 @@ if (PHP_SAPI !== 'cli') {
 
 require_once __DIR__ . '/bootstrap.php';
 
-$options = getopt('', ['domain:', 'method::', 'enabled::', 'title::']);
+// Values are required only when the corresponding option is present. Using a
+// single colon is intentional: PHP getopt() may ignore a space-separated value
+// for optional-value (::) long options such as `--method zarinpal`.
+$options = getopt('', ['domain:', 'method:', 'enabled:', 'title:']);
 $domain = strtolower(trim((string)($options['domain'] ?? '')));
 $method = strtolower(trim((string)($options['method'] ?? '')));
 $title = trim((string)($options['title'] ?? 'درگاه پرداخت دلتا'));
