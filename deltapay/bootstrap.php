@@ -3,8 +3,8 @@
  * DeltaPay bootstrap.
  *
  * This layer intentionally never receives bank-card credentials. It only
- * reads an existing bot invoice and hands the customer back to a configured
- * payment provider handled by the main bot.
+ * reads an existing bot invoice and hands the customer to the configured
+ * provider through the dedicated DeltaPay domain.
  */
 
 declare(strict_types=1);
@@ -119,9 +119,14 @@ function deltaPayMethodEnabled(mysqli $db, string $method): bool
 
 function deltaPayBotGatewayUrl(string $method, string $orderId): string
 {
-    global $botUrl;
-    $base = rtrim((string)$botUrl, '/') . '/pay/';
-    return $base . '?' . rawurlencode($method) . '&hash_id=' . rawurlencode($orderId) . '&direct=1';
+    global $paymentDomain;
+    $domain = strtolower(trim((string)($paymentDomain ?? '')));
+    $domain = preg_replace('#^https?://#i', '', $domain);
+    $domain = preg_replace('#/.*$#', '', $domain);
+    if ($domain === '' || !preg_match('/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain)) {
+        return '';
+    }
+    return 'https://' . $domain . '/pay/provider/?method=' . rawurlencode($method) . '&order_id=' . rawurlencode($orderId);
 }
 
 function deltaPayPublicBaseUrl(array $config): string
