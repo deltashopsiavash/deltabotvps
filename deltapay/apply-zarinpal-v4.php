@@ -86,7 +86,14 @@ $newRequest = <<<'PHP'
             exit();
         }
 
-        $CallbackURL = $botUrl . "pay/back.php?zarinpal&hash_id=" . rawurlencode($hash_id);
+        $callbackDomain = strtolower(trim((string)($paymentDomain ?? '')));
+        $callbackDomain = preg_replace('#^https?://#i', '', $callbackDomain);
+        $callbackDomain = preg_replace('#/.*$#', '', $callbackDomain);
+        if($callbackDomain === '' || !preg_match('/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $callbackDomain)){
+            showForm('دامنه درگاه شخصی برای بازگشت پرداخت تنظیم نشده است');
+            exit();
+        }
+        $CallbackURL = 'https://' . $callbackDomain . '/pay/callback/?method=zarinpal&order_id=' . rawurlencode($hash_id);
         // Bot prices are stored/displayed in toman. ZarinPal v4 payment amount
         // is sent in rial, therefore convert toman -> rial for request/verify.
         $zarinAmount = max(10, ((int)$amount) * 10);
