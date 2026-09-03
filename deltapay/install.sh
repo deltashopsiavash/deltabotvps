@@ -79,6 +79,14 @@ ufw allow 443 >/dev/null 2>&1 || true
 # file, so the domain survives every bot update.
 php "$SCRIPT_DIR/write-baseinfo.php" "$BASE_INFO" "$DOMAIN"
 
+# Patch the legacy bot/config files so the admin gets a Personal Gateway toggle
+# and users see the branded payment button on invoices. The patcher is
+# idempotent and rolls back automatically if PHP syntax validation fails.
+if [ -f "$SCRIPT_DIR/apply-bot-integration.php" ]; then
+    echo "[DeltaPay] Applying Telegram bot personal-gateway integration..."
+    php "$SCRIPT_DIR/apply-bot-integration.php"
+fi
+
 chown www-data:www-data "$BASE_INFO" || true
 chmod 640 "$BASE_INFO" || true
 chown -R www-data:www-data "$PROJECT_ROOT/deltapay"
