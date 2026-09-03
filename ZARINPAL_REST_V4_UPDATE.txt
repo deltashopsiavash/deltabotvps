@@ -1,0 +1,13 @@
+DeltaPay / ZarinPal REST v4 update
+
+- Replaces the legacy ZarinPal SOAP/WebGate request and verification flow at install/update time.
+- Uses https://api.zarinpal.com/pg/v4/payment/request.json for payment creation.
+- Uses https://api.zarinpal.com/pg/v4/payment/verify.json for server-side verification.
+- Converts bot prices stored in toman to rial for ZarinPal v4 requests/verification.
+- Stores the ZarinPal Authority in pays.payid and requires the callback Authority to match the exact invoice before verification/delivery.
+- Accepts verification codes 100 (verified) and 101 (already verified) only after order/Authority matching.
+- Uses TLS verification, request timeouts, server-side error logging and PHP syntax validation.
+- The migration patcher is idempotent and automatically restores pay/index.php and pay/back.php if patching/lint fails.
+- deltapay/install.sh applies the migration on fresh installs and after DeltaPay update wrapper runs.
+
+Important: This technical integration does not override ZarinPal merchant/business policies. Use only with a merchant account authorized for the actual business activity.
