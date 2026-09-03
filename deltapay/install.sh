@@ -77,20 +77,7 @@ ufw allow 443 >/dev/null 2>&1 || true
 
 # Persist the payment domain in baseInfo.php. update.sh already preserves this
 # file, so the domain survives every bot update.
-php -r '
-$path=$argv[1]; $domain=$argv[2];
-$c=file_get_contents($path);
-if ($c===false) { fwrite(STDERR,"Cannot read baseInfo.php\n"); exit(1); }
-$line="\$paymentDomain = \"".$domain."\";";
-if (preg_match("/^\\s*\\$paymentDomain\\s*=.*?;\\s*$/m",$c)) {
-    $c=preg_replace("/^\\s*\\$paymentDomain\\s*=.*?;\\s*$/m",$line,$c,1);
-} elseif (strpos($c,"?>")!==false) {
-    $c=str_replace("?>",$line."\n?>",$c);
-} else {
-    $c=rtrim($c)."\n".$line."\n";
-}
-if (file_put_contents($path,$c)===false) { fwrite(STDERR,"Cannot update baseInfo.php\n"); exit(1); }
-' "$BASE_INFO" "$DOMAIN"
+php "$SCRIPT_DIR/write-baseinfo.php" "$BASE_INFO" "$DOMAIN"
 
 chown www-data:www-data "$BASE_INFO" || true
 chmod 640 "$BASE_INFO" || true
