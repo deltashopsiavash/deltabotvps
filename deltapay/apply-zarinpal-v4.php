@@ -86,7 +86,14 @@ $newRequest = <<<'PHP'
             exit();
         }
 
-        $CallbackURL = $botUrl . "pay/back.php?zarinpal&hash_id=" . rawurlencode($hash_id);
+        $callbackDomain = strtolower(trim((string)($paymentDomain ?? '')));
+        $callbackDomain = preg_replace('#^https?://#i', '', $callbackDomain);
+        $callbackDomain = preg_replace('#/.*$#', '', $callbackDomain);
+        if($callbackDomain === '' || !preg_match('/^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $callbackDomain)){
+            showForm('دامنه درگاه شخصی برای بازگشت پرداخت تنظیم نشده است');
+            exit();
+        }
+        $CallbackURL = 'https://' . $callbackDomain . '/pay/callback/?method=zarinpal&order_id=' . rawurlencode($hash_id);
         // Bot prices are stored/displayed in toman. ZarinPal v4 payment amount
         // is sent in rial, therefore convert toman -> rial for request/verify.
         $zarinAmount = max(10, ((int)$amount) * 10);
@@ -123,8 +130,6 @@ $newRequest = <<<'PHP'
         $code = (int)($result['data']['code'] ?? 0);
         $authority = trim((string)($result['data']['authority'] ?? ''));
         if($curlError === '' && $httpCode >= 200 && $httpCode < 300 && $code === 100 && $authority !== ''){
-            // Bind this provider authority to exactly this bot invoice. The
-            // callback must present the same Authority before verification.
             $stmt = $connection->prepare("UPDATE `pays` SET `payid`=? WHERE `hash_id`=? AND `state`='pending'");
             $stmt->bind_param('ss', $authority, $hash_id);
             $stmt->execute();
@@ -211,8 +216,6 @@ if(mysqli_num_rows($payInfo)==0){
     $amount = (int)$payParam['price'];
     $storedAuthority = trim((string)($payParam['payid'] ?? ''));
 
-    // Authority is issued during the request and stored on this exact invoice.
-    // Never verify/deliver a transaction belonging to a different order.
     if($storedAuthority === '' || !hash_equals($storedAuthority, $Authority)){
         error_log('ZarinPal callback authority mismatch for order ' . $hash_id);
         showForm("شناسه تراکنش با سفارش مطابقت ندارد","خطا!");
