@@ -1,0 +1,1 @@
+DeltaPay only provides the branded order/checkout layer. The underlying ZarinPal merchant account must be used in accordance with ZarinPal's current merchant/business rules. The integration must not be used to disguise or misclassify the actual goods/services being sold.
