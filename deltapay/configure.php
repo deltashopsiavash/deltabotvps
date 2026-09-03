@@ -37,12 +37,40 @@ if ($method !== '') {
 }
 
 $json = json_encode($current, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-$stmt = $deltaPayDb->prepare("INSERT INTO `setting` (`type`,`value`) VALUES ('DELTA_PAY_CONFIG', ?) ON DUPLICATE KEY UPDATE `value`=VALUES(`value`)");
-if (!$stmt) {
-    fwrite(STDERR, "Could not prepare DeltaPay configuration update.\n");
+if ($json === false) {
+    fwrite(STDERR, "Could not encode DeltaPay configuration.\n");
     exit(1);
 }
-$stmt->bind_param('s', $json);
+
+// The legacy `setting` table does not have a UNIQUE index on `type`, so use
+// an explicit SELECT + UPDATE/INSERT instead of ON DUPLICATE KEY UPDATE.
+$stmt = $deltaPayDb->prepare("SELECT `id` FROM `setting` WHERE `type`='DELTA_PAY_CONFIG' ORDER BY `id` ASC LIMIT 1");
+if (!$stmt) {
+    fwrite(STDERR, "Could not read DeltaPay configuration.\n");
+    exit(1);
+}
+$stmt->execute();
+$row = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+
+if ($row) {
+    $id = (int)$row['id'];
+    $stmt = $deltaPayDb->prepare("UPDATE `setting` SET `value`=? WHERE `id`=?");
+    if (!$stmt) {
+        fwrite(STDERR, "Could not update DeltaPay configuration.\n");
+        exit(1);
+    }
+    $stmt->bind_param('si', $json, $id);
+} else {
+    $type = 'DELTA_PAY_CONFIG';
+    $stmt = $deltaPayDb->prepare("INSERT INTO `setting` (`type`,`value`) VALUES (?,?)");
+    if (!$stmt) {
+        fwrite(STDERR, "Could not create DeltaPay configuration.\n");
+        exit(1);
+    }
+    $stmt->bind_param('ss', $type, $json);
+}
+
 $stmt->execute();
 $stmt->close();
 
