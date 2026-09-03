@@ -87,6 +87,14 @@ if [ -f "$SCRIPT_DIR/apply-bot-integration.php" ]; then
     php "$SCRIPT_DIR/apply-bot-integration.php"
 fi
 
+# The original bot still contains ZarinPal's old SOAP/WebGate implementation.
+# Upgrade it to REST v4 on every fresh install/update. This patcher is also
+# idempotent and restores both payment files if syntax validation fails.
+if [ -f "$SCRIPT_DIR/apply-zarinpal-v4.php" ]; then
+    echo "[DeltaPay] Applying ZarinPal REST v4 integration..."
+    php "$SCRIPT_DIR/apply-zarinpal-v4.php"
+fi
+
 chown www-data:www-data "$BASE_INFO" || true
 chmod 640 "$BASE_INFO" || true
 chown -R www-data:www-data "$PROJECT_ROOT/deltapay"
