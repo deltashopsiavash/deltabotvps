@@ -1,0 +1,147 @@
+--- /mnt/data/charity_campaign_v2.php	2026-09-14 08:27:18.232166143 +0000
++++ /mnt/data/charity_campaign_v3.php	2026-09-14 08:46:40.545944077 +0000
+@@ -4,14 +4,15 @@
+  * Loaded from bot.php after config.php.
+  *
+  * Admin controls:
+- * - enable/disable campaign; every OFF -> ON starts a fresh exact 7-day campaign
+- * - editable contribution percentage
+- * - editable main-menu campaign/report button labels
+- * - report/proof button visibility
+- * - upload/delete purchase-proof photos using Telegram file_id
++ * - start a fresh exact 7-day collection period / stop collection independently
++ * - show/hide the campaign button independently of collection state
++ * - only confirmed card-to-card payments contribute a percentage (wallet spending is excluded)
++ * - editable contribution percentage and fully editable campaign-page template
++ * - premium custom emoji support in campaign/report buttons and campaign text
++ * - editable report button visibility/label and purchase-proof photos via Telegram file_id
+  *
+  * User features:
+- * - campaign is pinned as the first main-menu row while enabled
++ * - campaign button is pinned as the first main-menu row while visible
+  * - optional proof/report button is immediately below it
+  * - live totals and exact remaining time on refresh
+  * - direct wallet donations with idempotent confirmation
+@@ -121,20 +122,38 @@
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+ 
+         charityEnsureColumn('charity_campaigns', 'active', "TINYINT(1) NOT NULL DEFAULT 1");
+-
+-        if (charitySetting('CHARITY_CONTROL_VERSION', '') !== '2') {
+-            // Disable the legacy auto-start behavior. The new campaign starts only
+-            // when the admin explicitly enables it from Bot Settings.
+-            charitySetSetting('CHARITY_ENABLED', '0');
++        // Explicit payment-source markers. The charity collector only trusts rows
++        // whose source is card_to_card and whose payment was actually confirmed.
++        charityEnsureColumn('pays', 'payment_channel', "VARCHAR(32) NOT NULL DEFAULT ''");
++        charityEnsureColumn('pays', 'payment_confirmed_at', "INT NOT NULL DEFAULT 0");
++
++        if (charitySetting('CHARITY_CONTROL_VERSION', '') !== '3') {
++            $oldEnabled = charitySetting('CHARITY_ENABLED', '0') === '1';
++            charitySetSetting('CHARITY_BUTTON_VISIBLE', charitySetting('CHARITY_BUTTON_VISIBLE', $oldEnabled ? '1' : '0'));
++            charitySetSetting('CHARITY_COLLECTING', charitySetting('CHARITY_COLLECTING', $oldEnabled ? '1' : '0'));
+             charitySetSetting('CHARITY_PERCENT', charitySetting('CHARITY_PERCENT', '10'));
+             charitySetSetting('CHARITY_MAIN_BUTTON_LABEL', charitySetting('CHARITY_MAIN_BUTTON_LABEL', '🎒 هزینه جمع‌آوری‌شده'));
++            charitySetSetting('CHARITY_MAIN_BUTTON_ICON', charitySetting('CHARITY_MAIN_BUTTON_ICON', ''));
+             charitySetSetting('CHARITY_REPORT_BUTTON_LABEL', charitySetting('CHARITY_REPORT_BUTTON_LABEL', '📸 گزارش خرید کمک‌ها'));
++            charitySetSetting('CHARITY_REPORT_BUTTON_ICON', charitySetting('CHARITY_REPORT_BUTTON_ICON', ''));
+             charitySetSetting('CHARITY_REPORT_VISIBLE', charitySetting('CHARITY_REPORT_VISIBLE', '0'));
+-            charitySetSetting('CHARITY_CONTROL_VERSION', '2');
+-            $now = time();
+-            @$connection->query("UPDATE `charity_campaigns` SET `active`=0, `ends_at`=LEAST(`ends_at`, {$now}) WHERE `active`=1");
++            charitySetSetting('CHARITY_PAGE_TEMPLATE', charitySetting('CHARITY_PAGE_TEMPLATE', "🎒 کمپین تهیه لوازم مدرسه\n\n💰 مبلغ جمع‌آوری‌شده: {TOTAL} تومان\n💳 سهم خریدهای کارت‌به‌کارت: {CARD_TOTAL} تومان\n❤️ کمک مستقیم: {DIRECT_TOTAL} تومان\n🤝 درصد اختصاص داده‌شده: {PERCENT}٪\n👥 مشارکت‌کنندگان: {PARTICIPANTS} نفر\n\n⏳ {TIME}\n{STATUS}"));
++            charitySetSetting('CHARITY_PAGE_ENTITIES', charitySetting('CHARITY_PAGE_ENTITIES', '[]'));
++            charitySetSetting('CHARITY_CONTROL_VERSION', '3');
++
++            // Backfill legacy rows conservatively. Manual card-to-card approvals in
++            // this bot are approved with no gateway payid; gateway/crypto rows either
++            // become paid or carry a payid. This lets existing card receipts survive
++            // the migration while removing wallet/gateway contributions.
++            @$connection->query("UPDATE `pays` SET `payment_channel`='wallet' WHERE `payment_channel`='' AND `state`='paid_with_wallet'");
++            @$connection->query("UPDATE `pays` SET `payment_channel`='gateway' WHERE `payment_channel`='' AND `state`='paid'");
++            @$connection->query("UPDATE `pays` SET `payment_channel`='card_to_card', `payment_confirmed_at`=IF(`payment_confirmed_at`>0,`payment_confirmed_at`,`request_date`) WHERE `payment_channel`='' AND `state`='approved' AND (`payid` IS NULL OR `payid`='')");
++            @$connection->query("UPDATE `pays` SET `payment_channel`='other' WHERE `payment_channel`='' AND `state`='approved' AND `payid` IS NOT NULL AND `payid`<>''");
++
++            // Rebuild automatic transaction contributions under the stricter v3 rule.
++            // Direct donations are intentionally preserved.
++            @$connection->query("DELETE FROM `charity_contributions` WHERE `source`='transaction'");
+ 
+-            // Remove the exact legacy custom button so it cannot appear twice.
+             $legacyType = 'MAIN_BUTTONS🎒 هزینه جمع‌آوری‌شده';
+             $stmt = $connection->prepare("DELETE FROM `setting` WHERE `type`=?");
+             if ($stmt) {
+@@ -143,17 +162,28 @@
+                 $stmt->close();
+             }
+         }
+-
+         return true;
+     }
+ }
+ 
+-if (!function_exists('charityIsEnabled')) {
+-    function charityIsEnabled(){
+-        return charitySetting('CHARITY_ENABLED', '0') === '1';
++if (!function_exists('charityButtonVisible')) {
++    function charityButtonVisible(){
++        return charitySetting('CHARITY_BUTTON_VISIBLE', '0') === '1';
++    }
++}
++
++if (!function_exists('charityIsCollecting')) {
++    function charityIsCollecting(){
++        return charitySetting('CHARITY_COLLECTING', '0') === '1';
+     }
+ }
+ 
++// Backward-compatible name used by older helper paths: "enabled" now means
++// the campaign has an active collection window, not merely that its button is visible.
++if (!function_exists('charityIsEnabled')) {
++    function charityIsEnabled(){ return charityIsCollecting(); }
++}
++
+ if (!function_exists('charityReportVisible')) {
+     function charityReportVisible(){
+         return charitySetting('CHARITY_REPORT_VISIBLE', '0') === '1';
+@@ -183,6 +213,26 @@
+     }
+ }
+ 
++if (!function_exists('charityMainButtonIcon')) {
++    function charityMainButtonIcon(){ return trim((string)charitySetting('CHARITY_MAIN_BUTTON_ICON', '')); }
++}
++if (!function_exists('charityReportButtonIcon')) {
++    function charityReportButtonIcon(){ return trim((string)charitySetting('CHARITY_REPORT_BUTTON_ICON', '')); }
++}
++if (!function_exists('charityPageTemplate')) {
++    function charityPageTemplate(){
++        $default="🎒 کمپین تهیه لوازم مدرسه\n\n💰 مبلغ جمع‌آوری‌شده: {TOTAL} تومان\n💳 سهم خریدهای کارت‌به‌کارت: {CARD_TOTAL} تومان\n❤️ کمک مستقیم: {DIRECT_TOTAL} تومان\n🤝 درصد اختصاص داده‌شده: {PERCENT}٪\n👥 مشارکت‌کنندگان: {PARTICIPANTS} نفر\n\n⏳ {TIME}\n{STATUS}";
++        $v=(string)charitySetting('CHARITY_PAGE_TEMPLATE',$default);
++        return trim($v)!==''?$v:$default;
++    }
++}
++if (!function_exists('charityPageEntities')) {
++    function charityPageEntities(){
++        $v=json_decode((string)charitySetting('CHARITY_PAGE_ENTITIES','[]'),true);
++        return is_array($v)?$v:[];
++    }
++}
++
+ if (!function_exists('charityGetCampaign')) {
+     function charityGetCampaign(){
+         global $connection;
+@@ -205,6 +255,7 @@
+                 $stmt->close();
+             }
+             $campaign['active'] = 0;
++            charitySetSetting('CHARITY_COLLECTING','0');
+         }
+         return $campaign;
+     }
+@@ -226,15 +277,17 @@
+         $percent = charityConfiguredPercent();
+         $title = 'کمپین مهر مهربانی';
+         $description = 'تهیه لوازم مدرسه برای دانش‌آموزانی که امکان خرید وسایل موردنیازشان را ندارند.';
+-
+-        // Close any older open campaign first.
+         @$connection->query("UPDATE `charity_campaigns` SET `active`=0, `ends_at`=LEAST(`ends_at`, {$now}) WHERE `active`=1");
