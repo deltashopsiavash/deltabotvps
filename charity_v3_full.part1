@@ -1,0 +1,55 @@
+<?php
+/**
+ * Managed 7-day school-supplies charity campaign (v3).
+ * Only confirmed card-to-card money is counted automatically.
+ * Spending an existing wallet balance is never counted as a purchase contribution.
+ */
+
+if (!function_exists('charitySetting')) {
+    function charitySetting($key, $default=''){
+        if (function_exists('getSettingValue')) return getSettingValue($key,$default);
+        global $connection;
+        $stmt=$connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? ORDER BY `id` ASC LIMIT 1");
+        if(!$stmt) return $default;
+        $stmt->bind_param('s',$key); $stmt->execute(); $row=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        return $row ? $row['value'] : $default;
+    }
+}
+if (!function_exists('charitySetSetting')) {
+    function charitySetSetting($key,$value){
+        if(function_exists('upsertSettingValue')) return upsertSettingValue($key,(string)$value);
+        global $connection;
+        $stmt=$connection->prepare("SELECT `id` FROM `setting` WHERE `type`=? ORDER BY `id` ASC LIMIT 1");
+        if(!$stmt) return false;
+        $stmt->bind_param('s',$key); $stmt->execute(); $row=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        if($row){ $id=(int)$row['id']; $stmt=$connection->prepare("UPDATE `setting` SET `value`=? WHERE `id`=?"); $value=(string)$value; $stmt->bind_param('si',$value,$id); }
+        else { $stmt=$connection->prepare("INSERT INTO `setting` (`type`,`value`) VALUES (?,?)"); $value=(string)$value; $stmt->bind_param('ss',$key,$value); }
+        $ok=$stmt->execute(); $stmt->close(); return $ok;
+    }
+}
+if (!function_exists('charityEnsureColumn')) {
+    function charityEnsureColumn($table,$column,$definition){
+        global $connection;
+        $table=preg_replace('/[^a-zA-Z0-9_]/','',(string)$table); $column=preg_replace('/[^a-zA-Z0-9_]/','',(string)$column);
+        if($table===''||$column==='') return;
+        $res=$connection->query("SHOW COLUMNS FROM `{$table}` LIKE '".$connection->real_escape_string($column)."'");
+        if($res && $res->num_rows===0) @$connection->query("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$definition}");
+    }
+}
+if (!function_exists('charityDefaultTemplate')) {
+    function charityDefaultTemplate(){
+        return "🎒 کمپین تهیه لوازم مدرسه\n\n💰 مبلغ جمع‌آوری‌شده: {TOTAL} تومان\n💳 سهم خریدهای کارت‌به‌کارت: {CARD_TOTAL} تومان\n❤️ کمک مستقیم: {DIRECT_TOTAL} تومان\n🤝 درصد اختصاص داده‌شده: {PERCENT}٪\n👥 مشارکت‌کنندگان: {PARTICIPANTS} نفر\n\n⏳ {TIME}\n{STATUS}";
+    }
+}
+if (!function_exists('charityEnsureInfrastructure')) {
+    function charityEnsureInfrastructure(){
+        global $connection;
+        static $done=false; if($done) return true; $done=true;
+        if(!$connection || $connection->connect_error) return false;
+        $connection->query("CREATE TABLE IF NOT EXISTS `charity_campaigns` (`id` INT NOT NULL AUTO_INCREMENT,`title` VARCHAR(190) NOT NULL,`description` TEXT NULL,`percent` DECIMAL(5,2) NOT NULL DEFAULT 10.00,`starts_at` INT NOT NULL,`ends_at` INT NOT NULL,`active` TINYINT(1) NOT NULL DEFAULT 1,`created_at` INT NOT NULL,PRIMARY KEY (`id`),KEY `campaign_window` (`active`,`starts_at`,`ends_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $connection->query("CREATE TABLE IF NOT EXISTS `charity_contributions` (`id` BIGINT NOT NULL AUTO_INCREMENT,`campaign_id` INT NOT NULL,`pay_id` INT NULL DEFAULT NULL,`user_id` BIGINT NOT NULL DEFAULT 0,`source` VARCHAR(32) NOT NULL,`base_amount` BIGINT NOT NULL DEFAULT 0,`amount` BIGINT NOT NULL DEFAULT 0,`created_at` INT NOT NULL,`status` VARCHAR(20) NOT NULL DEFAULT 'confirmed',`direct_token` VARCHAR(64) NULL DEFAULT NULL,PRIMARY KEY (`id`),UNIQUE KEY `uniq_campaign_pay` (`campaign_id`,`pay_id`),UNIQUE KEY `uniq_direct_token` (`direct_token`),KEY `campaign_status` (`campaign_id`,`status`),KEY `campaign_user` (`campaign_id`,`user_id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $connection->query("CREATE TABLE IF NOT EXISTS `charity_proofs` (`id` INT NOT NULL AUTO_INCREMENT,`campaign_id` INT NOT NULL DEFAULT 0,`file_id` VARCHAR(255) NOT NULL,`caption` VARCHAR(1000) NULL,`active` TINYINT(1) NOT NULL DEFAULT 1,`created_at` INT NOT NULL,PRIMARY KEY (`id`),KEY `campaign_active` (`campaign_id`,`active`,`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        charityEnsureColumn('pays','payment_channel',"VARCHAR(32) NOT NULL DEFAULT ''");
+        charityEnsureColumn('pays','payment_confirmed_at',"INT NOT NULL DEFAULT 0");
+        if(charitySetting('CHARITY_CONTROL_VERSION','')!=='3'){
+            $oldEnabled=charitySetting('CHARITY_ENABLED','0')==='1';
