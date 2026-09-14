@@ -133,7 +133,7 @@ if (!function_exists('charityTemplateMap')) {
     function charityTemplateMap($c,$t){
         $pct=$c?charityPercentText($c['percent']):charityPercentText(charityConfiguredPercent());
         $time=($c&&charityCampaignIsOpen($c))?charityRemainingText((int)$c['ends_at']-time()):'۰ روز و ۰ ساعت و ۰ دقیقه و ۰ ثانیه';
-        return ['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];
+        return ['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{CARDTOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{DIRECTTOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{STARTTIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-','{ENDTIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];
     }
 }
 if (!function_exists('charityRenderTemplate')) {
