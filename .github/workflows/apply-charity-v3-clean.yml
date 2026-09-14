@@ -1,0 +1,35 @@
+name: Apply charity v3 card-only collection
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-charity-v3-clean.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Build and validate module
+        shell: bash
+        run: |
+          cat charity_v3_full.part1 charity_v3_full.part2 charity_v3_full.part3 charity_v3_full.part4 > charity_campaign.php
+          php -l charity_campaign.php
+          php -l config.php
+          php -l bot.php
+      - name: Commit clean source
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add charity_campaign.php
+          git rm -f charity_v3_full.part1 charity_v3_full.part2 charity_v3_full.part3 charity_v3_full.part4 charity_v3.part1.diff charity_v3.part2.diff charity_v3.src00 .github/workflows/apply-charity-v3-clean.yml || true
+          git commit -m 'Restrict charity collection to card-to-card payments'
+          git push
