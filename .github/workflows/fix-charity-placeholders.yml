@@ -1,0 +1,39 @@
+name: Fix charity placeholder aliases
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-charity-placeholders.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Add placeholder aliases
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('charity_campaign.php')
+          s = p.read_text(encoding='utf-8')
+          old = "return ['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];"
+          new = "return ['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{CARDTOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{DIRECTTOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{STARTTIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-','{ENDTIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];"
+          if old not in s:
+              raise SystemExit('template map target not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          php -l charity_campaign.php
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charity_campaign.php
+          git commit -m "Support charity placeholders with or without underscores"
+          git push
