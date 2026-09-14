@@ -1,0 +1,63 @@
+name: Apply charity admin v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-charity-admin-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch config integration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('config.php')
+          s=p.read_text(encoding='utf-8')
+
+          old="""    // Always the first row, always exactly one button.\n    if($todayOfferRow !== null){\n        array_unshift($mainKeys, $todayOfferRow);\n        if($todayNotifyRow !== null) array_splice($mainKeys,1,0,[$todayNotifyRow]);\n    }\n\n    deltaApplyInlineButtonStyles($mainKeys);\n"""
+          new="""    // Special offer stays above the normal menu.\n    if($todayOfferRow !== null){\n        array_unshift($mainKeys, $todayOfferRow);\n        if($todayNotifyRow !== null) array_splice($mainKeys,1,0,[$todayNotifyRow]);\n    }\n\n    // Charity rows are authoritative and always come before everything else.\n    // Row 1: campaign button (when enabled)\n    // Row 2: proof/report button (when enabled)\n    if(function_exists('charityBuildMainMenuRows')){\n        $charityRows = charityBuildMainMenuRows();\n        if(is_array($charityRows) && count($charityRows) > 0){\n            array_splice($mainKeys, 0, 0, $charityRows);\n        }\n    }\n\n    deltaApplyInlineButtonStyles($mainKeys);\n"""
+          if "charityBuildMainMenuRows" not in s:
+              if old not in s:
+                  raise SystemExit('main menu integration marker not found')
+              s=s.replace(old,new,1)
+
+          old2="""    return json_encode(['inline_keyboard'=>[\n        [\n            ['text'=>\"🎗 بنر بازاریابی 🎗\",'callback_data'=>\"inviteSetting\"]\n            ],\n"""
+          new2="""    return json_encode(['inline_keyboard'=>[\n        [\n            ['text'=>\"🎒 تنظیمات کمپین خیریه\",'callback_data'=>\"charityAdminSettings\"]\n            ],\n        [\n            ['text'=>\"🎗 بنر بازاریابی 🎗\",'callback_data'=>\"inviteSetting\"]\n            ],\n"""
+          if "callback_data'=>\"charityAdminSettings\"" not in s:
+              if old2 not in s:
+                  raise SystemExit('bot settings integration marker not found')
+              s=s.replace(old2,new2,1)
+
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Validate PHP syntax and integration
+        shell: bash
+        run: |
+          php -l charity_campaign.php
+          php -l config.php
+          php -l bot.php
+          grep -q "charityBuildMainMenuRows" config.php
+          grep -q "charityAdminSettings" config.php
+          grep -q "charity_campaign.php" bot.php
+      - name: Commit integration
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No integration changes needed.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add config.php
+          git commit -m 'Integrate managed charity controls into menus'
+          git push
