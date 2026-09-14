@@ -1,6 +1,6 @@
 <?php
 /**
- * Managed 7-day school-supplies charity campaign (v3).
+ * Managed 7-day school-supplies charity campaign (v4).
  * Only confirmed card-to-card money is counted automatically.
  * Spending an existing wallet balance is never counted as a purchase contribution.
  */
@@ -51,7 +51,7 @@ if (!function_exists('charityEnsureInfrastructure')) {
         $connection->query("CREATE TABLE IF NOT EXISTS `charity_proofs` (`id` INT NOT NULL AUTO_INCREMENT,`campaign_id` INT NOT NULL DEFAULT 0,`file_id` VARCHAR(255) NOT NULL,`caption` VARCHAR(1000) NULL,`active` TINYINT(1) NOT NULL DEFAULT 1,`created_at` INT NOT NULL,PRIMARY KEY (`id`),KEY `campaign_active` (`campaign_id`,`active`,`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         charityEnsureColumn('pays','payment_channel',"VARCHAR(32) NOT NULL DEFAULT ''");
         charityEnsureColumn('pays','payment_confirmed_at',"INT NOT NULL DEFAULT 0");
-        if(charitySetting('CHARITY_CONTROL_VERSION','')!=='3'){
+        if(charitySetting('CHARITY_CONTROL_VERSION','')!=='4'){
             $oldEnabled=charitySetting('CHARITY_ENABLED','0')==='1';
             charitySetSetting('CHARITY_BUTTON_VISIBLE',charitySetting('CHARITY_BUTTON_VISIBLE',$oldEnabled?'1':'0'));
             charitySetSetting('CHARITY_COLLECTING',charitySetting('CHARITY_COLLECTING',$oldEnabled?'1':'0'));
@@ -63,12 +63,15 @@ if (!function_exists('charityEnsureInfrastructure')) {
             charitySetSetting('CHARITY_REPORT_BUTTON_ICON',charitySetting('CHARITY_REPORT_BUTTON_ICON',''));
             charitySetSetting('CHARITY_PAGE_TEMPLATE',charitySetting('CHARITY_PAGE_TEMPLATE',charityDefaultTemplate()));
             charitySetSetting('CHARITY_PAGE_ENTITIES',charitySetting('CHARITY_PAGE_ENTITIES','[]'));
+
+            // v4 is strict: never infer card-to-card from state=approved/payid.
+            // Rebuild transaction totals only from payments explicitly tagged by the real card-to-card flow.
             @$connection->query("DELETE FROM `charity_contributions` WHERE `source`='transaction'");
+            @$connection->query("UPDATE `pays` SET `payment_channel`='legacy_unverified',`payment_confirmed_at`=0 WHERE `payment_channel`='card_to_card' AND `state`='approved' AND `payment_confirmed_at`=`request_date`");
             @$connection->query("UPDATE `pays` SET `payment_channel`='wallet' WHERE `payment_channel`='' AND `state`='paid_with_wallet'");
             @$connection->query("UPDATE `pays` SET `payment_channel`='gateway' WHERE `payment_channel`='' AND `state`='paid'");
-            @$connection->query("UPDATE `pays` SET `payment_channel`='card_to_card',`payment_confirmed_at`=IF(`payment_confirmed_at`>0,`payment_confirmed_at`,`request_date`) WHERE `payment_channel`='' AND `state`='approved' AND (`payid` IS NULL OR `payid`='' OR `payid`='0')");
             @$connection->query("UPDATE `pays` SET `payment_channel`='other' WHERE `payment_channel`='' AND `state`='approved'");
-            charitySetSetting('CHARITY_CONTROL_VERSION','3');
+            charitySetSetting('CHARITY_CONTROL_VERSION','4');
         }
         return true;
     }
@@ -126,14 +129,50 @@ if (!function_exists('charityBuildMainMenuRows')) {
 if (!function_exists('charityCampaignStatusText')) {
     function charityCampaignStatusText($c){ if(!$c)return 'هنوز دوره‌ای شروع نشده است.';if(charityCampaignIsOpen($c)&&charityIsCollecting())return '🟢 جمع‌آوری فعال است.';if(time()>=(int)$c['ends_at'])return '✅ مهلت جمع‌آوری این دوره تمام شده است.';return '⏸ جمع‌آوری متوقف شده است.'; }
 }
+if (!function_exists('charityTemplateMap')) {
+    function charityTemplateMap($c,$t){
+        $pct=$c?charityPercentText($c['percent']):charityPercentText(charityConfiguredPercent());
+        $time=($c&&charityCampaignIsOpen($c))?charityRemainingText((int)$c['ends_at']-time()):'۰ روز و ۰ ساعت و ۰ دقیقه و ۰ ثانیه';
+        return ['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];
+    }
+}
 if (!function_exists('charityRenderTemplate')) {
-    function charityRenderTemplate($c,$t){ $pct=$c?charityPercentText($c['percent']):charityPercentText(charityConfiguredPercent());$time=($c&&charityCampaignIsOpen($c))?charityRemainingText((int)$c['ends_at']-time()):'۰ روز و ۰ ساعت و ۰ دقیقه و ۰ ثانیه';$map=['{TOTAL}'=>number_format($t['total']??0),'{CARD_TOTAL}'=>number_format($t['transactions']??0),'{DIRECT_TOTAL}'=>number_format($t['direct']??0),'{PERCENT}'=>$pct,'{PARTICIPANTS}'=>number_format($t['participants']??0),'{TIME}'=>$time,'{STATUS}'=>charityCampaignStatusText($c),'{START_TIME}'=>$c?date('Y-m-d H:i',(int)$c['starts_at']):'-','{END_TIME}'=>$c?date('Y-m-d H:i',(int)$c['ends_at']):'-'];return strtr(charityPageTemplate(),$map); }
+    function charityRenderTemplate($c,$t){ return strtr(charityPageTemplate(),charityTemplateMap($c,$t)); }
+}
+if (!function_exists('charityBuildRenderedCustomEmojiEntities')) {
+    function charityBuildRenderedCustomEmojiEntities($template,$map,$saved){
+        $out=[];if(!is_array($saved))return $out;
+        foreach($saved as $e){
+            if((string)charityEntityValue($e,'type','')!=='custom_emoji')continue;
+            $id=(string)charityEntityValue($e,'custom_emoji_id','');$off=(int)charityEntityValue($e,'offset',0);$len=(int)charityEntityValue($e,'length',0);
+            if($id===''||$len<=0)continue;
+            $prefix=charityUtf16Prefix($template,$off);
+            $newOffset=charityUtf16Length(strtr($prefix,$map));
+            $out[]=['type'=>'custom_emoji','offset'=>$newOffset,'length'=>$len,'custom_emoji_id'=>$id];
+        }
+        return $out;
+    }
 }
 if (!function_exists('charitySendOrEditWithEntities')) {
-    function charitySendOrEditWithEntities($text,$markup,$template,$saved){ global $chat_id,$message_id,$update,$data; if(isset($update->callback_query)&&!empty($update->callback_query->id))bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);$payload=['chat_id'=>$chat_id,'text'=>$text,'reply_markup'=>is_string($markup)?$markup:json_encode($markup,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)];if(function_exists('deltaBuildRenderedCustomEmojiEntities')){$entities=deltaBuildRenderedCustomEmojiEntities($template,$text,$saved);if($entities)$payload['entities']=json_encode($entities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);}if(!empty($data)&&!empty($message_id)){$p=$payload;$p['message_id']=$message_id;$r=bot('editMessageText',$p);$ok=is_object($r)?!empty($r->ok):(is_array($r)?!empty($r['ok']):$r===true);if($ok)return $r;}return bot('sendMessage',$payload); }
+    function charitySendOrEditWithEntities($text,$markup,$entities=[]){
+        global $chat_id,$message_id,$update,$data;
+        if(isset($update->callback_query)&&!empty($update->callback_query->id))bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);
+        $payload=['chat_id'=>$chat_id,'text'=>$text,'reply_markup'=>is_string($markup)?$markup:json_encode($markup,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)];
+        if($entities)$payload['entities']=json_encode($entities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        if(!empty($data)&&!empty($message_id)){$p=$payload;$p['message_id']=$message_id;$r=bot('editMessageText',$p);$ok=is_object($r)?!empty($r->ok):(is_array($r)?!empty($r['ok']):$r===true);if($ok)return $r;}
+        return bot('sendMessage',$payload);
+    }
 }
 if (!function_exists('charityRenderCampaign')) {
-    function charityRenderCampaign(){ global $buttonValues;$c=charityRefreshCampaignState(charityGetCampaign());$tot=$c?charityTotals($c):['total'=>0,'transactions'=>0,'direct'=>0,'participants'=>0];$template=charityPageTemplate();$text=charityRenderTemplate($c,$tot);$rows=[];if($c&&charityCampaignIsOpen($c)&&charityIsCollecting())$rows[]=[['text'=>'❤️ کمک مستقیم به کمپین','callback_data'=>'charityDonate']];if(charityReportVisible()){$b=['text'=>charityReportButtonLabel(),'callback_data'=>'charityProofs'];$i=charityReportButtonIcon();if($i!=='')$b['icon_custom_emoji_id']=$i;$rows[]=[$b];}$rows[]=[['text'=>'🔄 بروزرسانی','callback_data'=>'charityCampaign']];$rows[]=[['text'=>$buttonValues['back_to_main']??'🏠 صفحه اصلی','callback_data'=>'mainMenu']];charitySendOrEditWithEntities($text,['inline_keyboard'=>$rows],$template,charityPageEntities()); }
+    function charityRenderCampaign(){
+        global $buttonValues;
+        $c=charityRefreshCampaignState(charityGetCampaign());$tot=$c?charityTotals($c):['total'=>0,'transactions'=>0,'direct'=>0,'participants'=>0];
+        $template=charityPageTemplate();$map=charityTemplateMap($c,$tot);$text=strtr($template,$map);$entities=charityBuildRenderedCustomEmojiEntities($template,$map,charityPageEntities());
+        $rows=[];if($c&&charityCampaignIsOpen($c)&&charityIsCollecting())$rows[]=[['text'=>'❤️ کمک مستقیم به کمپین','callback_data'=>'charityDonate']];
+        if(charityReportVisible()){$b=['text'=>charityReportButtonLabel(),'callback_data'=>'charityProofs'];$i=charityReportButtonIcon();if($i!=='')$b['icon_custom_emoji_id']=$i;$rows[]=[$b];}
+        $rows[]=[['text'=>'🔄 بروزرسانی','callback_data'=>'charityCampaign']];$rows[]=[['text'=>$buttonValues['back_to_main']??'🏠 صفحه اصلی','callback_data'=>'mainMenu']];
+        charitySendOrEditWithEntities($text,['inline_keyboard'=>$rows],$entities);
+    }
 }
 
 if (!function_exists('charityNormalizeAmountText')) { function charityNormalizeAmountText($v){$v=strtr((string)$v,['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9','٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9']);$v=str_replace([',','٬','،',' ','تومان','تومن','%','٪'],'',$v);return preg_match('/^\d+(?:\.\d+)?$/',$v)?$v:'';} }
@@ -155,8 +194,58 @@ if (!function_exists('charitySendProof')) {
     function charitySendProof($id,$adminMode=false){global $connection,$from_id;$id=(int)$id;$stmt=$connection->prepare("SELECT * FROM `charity_proofs` WHERE `id`=? LIMIT 1");if(!$stmt)return;$stmt->bind_param('i',$id);$stmt->execute();$r=$stmt->get_result()->fetch_assoc();$stmt->close();if(!$r||(!$adminMode&&(int)$r['active']!==1)){alert('تصویر پیدا نشد.',true);return;}$cap=trim((string)($r['caption']??''));if($cap==='')$cap='📸 گزارش خرید کمک‌ها';$keys=$adminMode?['inline_keyboard'=>[[['text'=>'🗑 حذف تصویر','callback_data'=>'charityAdminDeleteProof_'.$id]],[['text'=>'↩️ مدیریت تصاویر','callback_data'=>'charityAdminProofs']]]]:['inline_keyboard'=>[[['text'=>'↩️ بازگشت','callback_data'=>'charityProofs']]]];sendPhoto($r['file_id'],$cap,json_encode($keys,JSON_UNESCAPED_UNICODE),'HTML',$from_id);}
 }
 if (!function_exists('charityAdminIsAllowed')) { function charityAdminIsAllowed(){global $from_id,$admin,$userInfo,$isChildBot;return empty($isChildBot)&&((int)$from_id===(int)$admin||(($userInfo['isAdmin']??false)==true));} }
+if (!function_exists('charityEntityValue')) {
+    function charityEntityValue($entity,$key,$default=null){
+        if(is_array($entity)) return array_key_exists($key,$entity)?$entity[$key]:$default;
+        if(is_object($entity)) return isset($entity->$key)?$entity->$key:$default;
+        return $default;
+    }
+}
+if (!function_exists('charityUtf16Bytes')) {
+    function charityUtf16Bytes($text){
+        $text=(string)$text;
+        if(function_exists('mb_convert_encoding')) return mb_convert_encoding($text,'UTF-16LE','UTF-8');
+        if(function_exists('iconv')) { $v=@iconv('UTF-8','UTF-16LE//IGNORE',$text); return $v===false?'':$v; }
+        return '';
+    }
+}
+if (!function_exists('charityFromUtf16Bytes')) {
+    function charityFromUtf16Bytes($bytes){
+        if(function_exists('mb_convert_encoding')) return mb_convert_encoding($bytes,'UTF-8','UTF-16LE');
+        if(function_exists('iconv')) { $v=@iconv('UTF-16LE','UTF-8//IGNORE',$bytes); return $v===false?'':$v; }
+        return '';
+    }
+}
+if (!function_exists('charityUtf16Length')) {
+    function charityUtf16Length($text){ return intdiv(strlen(charityUtf16Bytes($text)),2); }
+}
+if (!function_exists('charityUtf16Prefix')) {
+    function charityUtf16Prefix($text,$units){ $b=charityUtf16Bytes($text); return charityFromUtf16Bytes(substr($b,0,max(0,(int)$units)*2)); }
+}
+if (!function_exists('charityUtf16Remove')) {
+    function charityUtf16Remove($text,$offset,$length){
+        $b=charityUtf16Bytes($text);$a=max(0,(int)$offset)*2;$z=max(0,(int)$length)*2;
+        return charityFromUtf16Bytes(substr($b,0,$a).substr($b,$a+$z));
+    }
+}
+if (!function_exists('charityExtractPremiumTextEntities')) {
+    function charityExtractPremiumTextEntities($entities){
+        $out=[];if(!is_array($entities)&&!($entities instanceof Traversable))return $out;
+        foreach($entities as $e){
+            if((string)charityEntityValue($e,'type','')!=='custom_emoji')continue;
+            $id=(string)charityEntityValue($e,'custom_emoji_id','');if($id==='')continue;
+            $out[]=['type'=>'custom_emoji','offset'=>(int)charityEntityValue($e,'offset',0),'length'=>(int)charityEntityValue($e,'length',0),'custom_emoji_id'=>$id];
+        }
+        return $out;
+    }
+}
 if (!function_exists('charityExtractButtonPremium')) {
-    function charityExtractButtonPremium($text,$entities){if(function_exists('deltaExtractPremiumButtonEmoji'))return deltaExtractPremiumButtonEmoji($text,$entities);return ['text'=>(string)$text,'custom_emoji_id'=>''];}
+    function charityExtractButtonPremium($text,$entities){
+        $text=(string)$text;$premium=charityExtractPremiumTextEntities($entities);
+        if(!$premium)return ['text'=>$text,'custom_emoji_id'=>''];
+        $e=$premium[0];$clean=charityUtf16Remove($text,$e['offset'],$e['length']);
+        return ['text'=>trim($clean),'custom_emoji_id'=>(string)$e['custom_emoji_id']];
+    }
 }
 if (!function_exists('charityAdminSettingsKeyboard')) {
     function charityAdminSettingsKeyboard(){ $collect=charityIsCollecting();$visible=charityButtonVisible();$report=charityReportVisible();$rows=[[['text'=>$collect?'⏹ توقف جمع‌آوری':'▶️ شروع دوره جدید ۷ روزه','callback_data'=>$collect?'charityAdminStop':'charityAdminStart']],[['text'=>$visible?'👁 دکمه کمپین: نمایان':'🙈 دکمه کمپین: مخفی','callback_data'=>'charityAdminToggleButton']],[['text'=>'📊 درصد سهم: '.charityPercentText(charityConfiguredPercent()).'٪','callback_data'=>'charityAdminSetPercent']],[['text'=>'📝 ویرایش کامل متن صفحه کمپین','callback_data'=>'charityAdminSetTemplate']],[['text'=>'🔣 راهنمای متغیرهای متن','callback_data'=>'charityAdminTemplateHelp']],[['text'=>'✏️ نام/ایموجی پرمیوم دکمه کمپین','callback_data'=>'charityAdminSetMainLabel']],[['text'=>$report?'🟢 دکمه گزارش: روشن':'🔴 دکمه گزارش: خاموش','callback_data'=>'charityAdminToggleReport']],[['text'=>'✏️ نام/ایموجی پرمیوم دکمه گزارش','callback_data'=>'charityAdminSetReportLabel']],[['text'=>'📸 مدیریت تصاویر خرید','callback_data'=>'charityAdminProofs']],[['text'=>'↩️ بازگشت به تنظیمات ربات','callback_data'=>'botSettings']]];return json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES); }
@@ -191,7 +280,7 @@ if($charityIsAdmin){
     if($charityData==='charityAdminSetPercent'){setUser('charityAdminWaitPercent','step');sendMessage('📊 درصد جدید را بفرستید؛ مثال 10 یا 7.5',$cancelKey??null);exit;}
     if($charityStep==='charityAdminWaitPercent'&&$charityText!==''&&$charityText!==($buttonValues['cancel']??'')){$n=charityNormalizeAmountText($charityText);if($n===''||(float)$n<0||(float)$n>100){sendMessage('❌ درصد باید بین ۰ تا ۱۰۰ باشد.');exit;}charityChangePercent((float)$n);setUser('none','step');sendMessage('✅ درصد تغییر کرد.');charityAdminRenderSettings();exit;}
     if($charityData==='charityAdminSetTemplate'){setUser('charityAdminWaitTemplate','step');sendMessage("📝 متن کامل صفحه کمپین را بفرستید.\nمی‌توانید متغیرهای {TOTAL} {CARD_TOTAL} {DIRECT_TOTAL} {PERCENT} {PARTICIPANTS} {TIME} {STATUS} {START_TIME} {END_TIME} را هرجا خواستید استفاده کنید یا اصلاً ننویسید.\nایموجی پرمیوم داخل همین پیام هم ذخیره می‌شود.",$cancelKey??null);exit;}
-    if($charityStep==='charityAdminWaitTemplate'&&$charityText!==''&&$charityText!==($buttonValues['cancel']??'')){$entities=function_exists('deltaExtractPremiumTextEntities')?deltaExtractPremiumTextEntities($update->message->entities??[]):[];charitySetSetting('CHARITY_PAGE_TEMPLATE',$charityText);charitySetSetting('CHARITY_PAGE_ENTITIES',json_encode($entities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));setUser('none','step');sendMessage('✅ متن صفحه و ایموجی‌های پرمیوم آن ذخیره شد.');charityAdminRenderSettings();exit;}
+    if($charityStep==='charityAdminWaitTemplate'&&$charityText!==''&&$charityText!==($buttonValues['cancel']??'')){$entities=charityExtractPremiumTextEntities($update->message->entities??[]);charitySetSetting('CHARITY_PAGE_TEMPLATE',$charityText);charitySetSetting('CHARITY_PAGE_ENTITIES',json_encode($entities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));setUser('none','step');sendMessage('✅ متن صفحه و ایموجی‌های پرمیوم آن ذخیره شد.');charityAdminRenderSettings();exit;}
     if($charityData==='charityAdminTemplateHelp'){sendMessage("🔣 متغیرها:\n{TOTAL} جمع کل\n{CARD_TOTAL} سهم کارت‌به‌کارت\n{DIRECT_TOTAL} کمک مستقیم\n{PERCENT} درصد\n{PARTICIPANTS} مشارکت‌کنندگان\n{TIME} زمان باقی‌مانده\n{STATUS} وضعیت\n{START_TIME} شروع\n{END_TIME} پایان\n\nهرکدام را نخواهید، از متن حذف کنید.");exit;}
     if($charityData==='charityAdminSetMainLabel'){setUser('charityAdminWaitMainLabel','step');sendMessage('✏️ نام جدید دکمه کمپین را بفرستید. می‌توانید یک ایموجی پرمیوم هم در پیام قرار دهید.',$cancelKey??null);exit;}
     if($charityStep==='charityAdminWaitMainLabel'&&$charityText!==''&&$charityText!==($buttonValues['cancel']??'')){$p=charityExtractButtonPremium($charityText,$update->message->entities??[]);$label=trim((string)($p['text']??$charityText));if($label==='')$label='کمک‌های جمع‌آوری‌شده';charitySetSetting('CHARITY_MAIN_BUTTON_LABEL',$label);charitySetSetting('CHARITY_MAIN_BUTTON_ICON',trim((string)($p['custom_emoji_id']??'')));setUser('none','step');sendMessage('✅ دکمه کمپین ذخیره شد.');charityAdminRenderSettings();exit;}
