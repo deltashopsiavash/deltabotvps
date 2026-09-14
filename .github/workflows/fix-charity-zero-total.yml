@@ -1,0 +1,38 @@
+name: Fix charity zero total
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-charity-zero-total.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch zero action
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('charity_campaign.php')
+          s=p.read_text(encoding='utf-8')
+          old="if($charityData==='charityAdminAdjustZeroConfirm'){$c=charityGetCampaign();if($c){$tot=charityTotals($c);$cur=max(0,(int)($tot['total']??0));if($cur>0)charityAddManualAdjustment(-$cur);}alert('مبلغ کمپین صفر شد.');charityAdminRenderAdjustMenu();exit;}"
+          new="if($charityData==='charityAdminAdjustZeroConfirm'){$c=charityGetCampaign();if($c){$cid=(int)$c['id'];$stmt=$connection->prepare(\"UPDATE `charity_contributions` SET `status`='reset' WHERE `campaign_id`=? AND `status`='confirmed'\");if($stmt){$stmt->bind_param('i',$cid);$stmt->execute();$stmt->close();}}alert('مبلغ کمپین و آمار جمع فعلی صفر شد.');charityAdminRenderAdjustMenu();exit;}"
+          if old not in s: raise SystemExit('zero handler target not found')
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          php -l charity_campaign.php
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charity_campaign.php
+          git commit -m "Reset all displayed charity totals when zeroing"
+          git push
