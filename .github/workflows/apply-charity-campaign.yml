@@ -1,0 +1,51 @@
+name: Apply charity campaign hook
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-charity-campaign.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Add charity hook
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('bot.php')
+          s = p.read_text()
+          hook = "// Seven-day school-supplies charity campaign (main bot only).\nrequire_once __DIR__ . '/charity_campaign.php';\n\n"
+          needle = "if(preg_match('/^\\/([Ss]tart)/', $text) or $text == $buttonValues['back_to_main'] or $data == 'mainMenu') {"
+          if "charity_campaign.php" not in s:
+              if needle not in s:
+                  raise SystemExit('Could not find main-menu insertion point')
+              s = s.replace(needle, hook + needle, 1)
+              p.write_text(s)
+          PY
+          php -l charity_campaign.php
+          php -l bot.php
+
+      - name: Commit hook
+        shell: bash
+        run: |
+          if git diff --quiet -- bot.php; then
+            echo "Hook already present"
+            exit 0
+          fi
+          git config user.name "delta-charity-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add bot.php
+          git commit -m "Enable 7-day charity campaign"
+          git push origin HEAD:main
