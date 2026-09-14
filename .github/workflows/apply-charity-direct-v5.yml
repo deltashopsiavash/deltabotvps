@@ -1,0 +1,36 @@
+name: Apply charity direct card payments
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-charity-direct-v5.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch charity direct payments
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/patch_charity_direct_v5.py')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace("$stmt->bind_param('iiiiiss'", "$stmt->bind_param('iiiiiis'")
+          p.write_text(s,encoding='utf-8')
+          PY
+          python3 .github/patch_charity_direct_v5.py
+          php -l charity_campaign.php
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add charity_campaign.php
+          git commit -m "Use card-to-card for direct charity donations and add manual total controls"
+          git push
