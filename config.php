@@ -3275,10 +3275,20 @@ if(count($menuOrder) > 0){
         $mainKeys[] = [['text'=>"مدیریت ربات ⚙️",'callback_data'=>"managePanel"]];
     }
 
-    // Always the first row, always exactly one button.
+    // Special offer stays above the normal menu.
     if($todayOfferRow !== null){
         array_unshift($mainKeys, $todayOfferRow);
         if($todayNotifyRow !== null) array_splice($mainKeys,1,0,[$todayNotifyRow]);
+    }
+
+    // Charity rows are authoritative and always come before everything else.
+    // Row 1: campaign button (when enabled)
+    // Row 2: proof/report button (when enabled)
+    if(function_exists('charityBuildMainMenuRows')){
+        $charityRows = charityBuildMainMenuRows();
+        if(is_array($charityRows) && count($charityRows) > 0){
+            array_splice($mainKeys, 0, 0, $charityRows);
+        }
     }
 
     deltaApplyInlineButtonStyles($mainKeys);
@@ -4639,6 +4649,9 @@ function getBotSettingKeys(){
     else $paymentKeys = array();
     $stmt->close();
     return json_encode(['inline_keyboard'=>[
+        [
+            ['text'=>"🎒 تنظیمات کمپین خیریه",'callback_data'=>"charityAdminSettings"]
+            ],
         [
             ['text'=>"🎗 بنر بازاریابی 🎗",'callback_data'=>"inviteSetting"]
             ],
