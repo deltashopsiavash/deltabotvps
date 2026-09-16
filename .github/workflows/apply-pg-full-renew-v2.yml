@@ -1,0 +1,32 @@
+name: Apply PasarGuard full renewal v2
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-pg-full-renew-v2.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Patch PasarGuard full renewal
+        shell: bash
+        run: |
+          python3 .github/patch_pg_full_renew_v2.py
+          php -l config.php
+          php -l bot.php
+          php -l pay/back.php
+          grep -q "function resetPasarguardTraffic" config.php
+          grep -q "full_reset" config.php
+          grep -q "pgRenewFullConfirm_" bot.php
+          grep -q "approvePgRenew' . \$hash" bot.php
+          grep -q "renew_failed_refunded" pay/back.php
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add config.php bot.php pay/back.php
+          git commit -m "Fix and redesign PasarGuard full renewal"
+          git push
