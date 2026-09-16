@@ -10399,6 +10399,54 @@ function editPasarguardUser($server_id, $remark, $fields){
     return (object)['success'=>false,'msg'=>$raw];
 }
 
+function resetPasarguardTraffic($server_id, $remark){
+    global $connection;
+    $server_id=(int)$server_id;
+    $remark=trim((string)$remark);
+    if($server_id<=0 || $remark==='') return (object)['success'=>false,'msg'=>'PasarGuard reset: invalid user'];
+
+    $stmt=$connection->prepare("SELECT * FROM `server_config` WHERE `id`=? LIMIT 1");
+    if(!$stmt) return (object)['success'=>false,'msg'=>'PasarGuard reset: server query failed'];
+    $stmt->bind_param('i',$server_id);$stmt->execute();$server=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$server) return (object)['success'=>false,'msg'=>'PasarGuard reset: server not found'];
+
+    $token=getPasarguardToken($server_id);
+    if(empty($token->success) || empty($token->access_token)) return (object)['success'=>false,'msg'=>$token->msg ?? 'PasarGuard token error'];
+
+    // Official PasarGuard route is POST /api/user/{username}/reset.
+    // Alternative paths are kept only for older compatible builds.
+    $paths=[
+        '/api/user/'.rawurlencode($remark).'/reset',
+        '/api/user/by-username/'.rawurlencode($remark).'/reset',
+        '/api/users/'.rawurlencode($remark).'/reset'
+    ];
+    $last='';$lastHttp=0;
+    foreach(pasarguardPanelApiBases($server['panel_url']) as $base){
+        foreach($paths as $path){
+            $ch=curl_init();
+            curl_setopt_array($ch,[
+                CURLOPT_URL=>$base.$path,
+                CURLOPT_POST=>true,
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_CONNECTTIMEOUT=>10,
+                CURLOPT_TIMEOUT=>30,
+                CURLOPT_SSL_VERIFYHOST=>false,
+                CURLOPT_SSL_VERIFYPEER=>false,
+                CURLOPT_FOLLOWLOCATION=>true,
+                CURLOPT_MAXREDIRS=>3,
+                CURLOPT_HTTPHEADER=>['Accept: application/json','Authorization: Bearer '.$token->access_token]
+            ]);
+            $raw=curl_exec($ch);$err=curl_error($ch);$http=curl_getinfo($ch,CURLINFO_HTTP_CODE);curl_close($ch);
+            $lastHttp=$http;
+            if($err){$last=$err;continue;}
+            if($http>=200 && $http<300) return (object)['success'=>true,'http'=>$http,'obj'=>json_decode((string)$raw)];
+            $last=trim((string)$raw)!==''?(string)$raw:('HTTP '.$http);
+            if($http===401 || $http===403) return (object)['success'=>false,'msg'=>$last,'http'=>$http];
+        }
+    }
+    return (object)['success'=>false,'msg'=>$last ?: 'PasarGuard traffic reset failed','http'=>$lastHttp];
+}
+
 function removePasarguardUser($server_id, $remark){
     global $connection;
     $stmt = $connection->prepare("SELECT * FROM server_config WHERE id=? LIMIT 1");
@@ -10556,35 +10604,43 @@ function editMarzbanConfig($server_id,$info){
     $typeRow = $stmtType->get_result()->fetch_assoc();
     $stmtType->close();
     if(($typeRow['type'] ?? '') === 'pasarguard'){
-        $fields = [];
-        $user = getPasarguardUserInfo($server_id, $info['remark']);
-        $currentLimit = 0;
-        if(is_object($user)){
-            $currentLimit = (int)($user->data_limit ?? $user->dataLimit ?? 0);
+        $fields=[];
+        $fullReset=!empty($info['full_reset']);
+
+        if($fullReset){
+            // Full renewal is a replacement, not an addition: burn old traffic/time,
+            // reset usage to zero, then apply the new limit/expiry from NOW.
+            $reset=resetPasarguardTraffic($server_id,$info['remark']);
+            if(!is_object($reset) || empty($reset->success)) return $reset ?: (object)['success'=>false,'msg'=>'PasarGuard traffic reset failed'];
+
+            $days=(int)($info['days']??0);
+            $volume=(float)($info['volume']??0);
+            $fields['expire']=$days>0 ? gmdate('c',time()+($days*86400)) : 0;
+            $fields['data_limit']=$volume>0 ? (int)floor($volume*1073741824) : 0;
+            $fields['status']='active';
+            return editPasarguardUser($server_id,$info['remark'],$fields);
         }
-        $currentExpireTs = 0;
+
+        // Volume/day-only renewals remain additive exactly as before.
+        $user=getPasarguardUserInfo($server_id,$info['remark']);
+        $currentLimit=0;
+        if(is_object($user)) $currentLimit=(int)($user->data_limit ?? $user->dataLimit ?? 0);
+        $currentExpireTs=0;
         if(is_object($user) && !empty($user->expire)){
-            $tmpTs = is_numeric($user->expire) ? (int)$user->expire : strtotime((string)$user->expire);
-            if($tmpTs) $currentExpireTs = $tmpTs;
+            $tmpTs=is_numeric($user->expire)?(int)$user->expire:strtotime((string)$user->expire);
+            if($tmpTs)$currentExpireTs=$tmpTs;
         }
-        $baseExpire = ($currentExpireTs > time()) ? $currentExpireTs : time();
+        $baseExpire=($currentExpireTs>time())?$currentExpireTs:time();
 
-        // PasarGuard renewals must ADD to the existing service, not reset it.
-        if(isset($info['plus_day'])){
-            $fields['expire'] = gmdate('c', $baseExpire + ((int)$info['plus_day'] * 86400));
-        } elseif(isset($info['days'])){
-            $fields['expire'] = gmdate('c', $baseExpire + ((int)$info['days'] * 86400));
-        }
+        if(isset($info['plus_day'])) $fields['expire']=gmdate('c',$baseExpire+((int)$info['plus_day']*86400));
+        elseif(isset($info['days'])) $fields['expire']=gmdate('c',$baseExpire+((int)$info['days']*86400));
 
-        if(isset($info['plus_volume'])){
-            $fields['data_limit'] = $currentLimit + (int)floor(((float)$info['plus_volume']) * 1073741824);
-        } elseif(isset($info['volume'])){
-            $fields['data_limit'] = $currentLimit + (int)floor(((float)$info['volume']) * 1073741824);
-        }
+        if(isset($info['plus_volume'])) $fields['data_limit']=$currentLimit+(int)floor(((float)$info['plus_volume'])*1073741824);
+        elseif(isset($info['volume'])) $fields['data_limit']=$currentLimit+(int)floor(((float)$info['volume'])*1073741824);
 
-        if(isset($info['status'])) $fields['status'] = $info['status'];
-        if(empty($fields)) return (object)['success'=>true, 'msg'=>'nothing to update'];
-        return editPasarguardUser($server_id, $info['remark'], $fields);
+        if(isset($info['status']))$fields['status']=$info['status'];
+        if(empty($fields))return (object)['success'=>true,'msg'=>'nothing to update'];
+        return editPasarguardUser($server_id,$info['remark'],$fields);
     }
     
     $stmt = $connection->prepare("SELECT * FROM server_config WHERE id=?");
@@ -11925,9 +11981,9 @@ function pgRenewUserCustomPlansKeyboard($orderId, $kind){
 function pgRenewQuotaInfoByPayType($payType){
     global $connection;
     $payType=(string)$payType;
-    $info=['eligible'=>false,'order_id'=>0,'days'=>0,'volume'=>0.0,'quota_charge'=>0,'kind'=>''];
+    $info=['eligible'=>false,'order_id'=>0,'days'=>0,'volume'=>0.0,'quota_charge'=>0,'kind'=>'','plan_id'=>0];
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$payType,$m)){
-        $info['order_id']=(int)$m[1]; $pid=(int)$m[2];
+        $info['order_id']=(int)$m[1]; $pid=(int)$m[2]; $info['plan_id']=$pid;
         $stmt=$connection->prepare("SELECT * FROM `server_plans` WHERE `id`=? AND `active`=1 LIMIT 1");
         if(!$stmt) return $info;
         $stmt->bind_param('i',$pid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
@@ -11989,21 +12045,52 @@ function pgRenewCreatePay($userId,$payType,$price){
     $stmt->execute(); $stmt->close();
     return $hash;
 }
-function pgRenewApply($orderId, $days, $volume){
+function pgRenewApply($orderId,$days,$volume,$fullReset=false,$fullPlanId=0){
     global $connection;
+    $orderId=(int)$orderId;$days=(int)$days;$volume=(float)$volume;$fullPlanId=(int)$fullPlanId;
     $stmt=$connection->prepare("SELECT * FROM `orders_list` WHERE `id`=? LIMIT 1");
-    $stmt->bind_param('i',$orderId); $stmt->execute(); $order=$stmt->get_result()->fetch_assoc(); $stmt->close();
-    if(!$order) return (object)['success'=>false,'msg'=>'order not found'];
-    $server_id=(int)$order['server_id']; $remark=$order['remark'];
+    $stmt->bind_param('i',$orderId);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$order)return (object)['success'=>false,'msg'=>'order not found'];
+    $server_id=(int)$order['server_id'];$remark=(string)$order['remark'];
+
+    if($fullReset){
+        $stmt=$connection->prepare("SELECT `type` FROM `server_config` WHERE `id`=? LIMIT 1");
+        $stmt->bind_param('i',$server_id);$stmt->execute();$srv=$stmt->get_result()->fetch_assoc();$stmt->close();
+        if(($srv['type']??'')!=='pasarguard')return (object)['success'=>false,'msg'=>'full reset is only available for PasarGuard'];
+
+        if($fullPlanId>0){
+            $stmt=$connection->prepare("SELECT `id` FROM `server_plans` WHERE `id`=? AND `server_id`=? AND `type`='pasarguard' AND `active`=1 AND COALESCE(`show_full_renew`,1)=1 LIMIT 1");
+            $stmt->bind_param('ii',$fullPlanId,$server_id);$stmt->execute();$valid=$stmt->get_result()->fetch_assoc();$stmt->close();
+            if(!$valid)return (object)['success'=>false,'msg'=>'renew plan does not belong to this PasarGuard server'];
+        }
+
+        $fields=['remark'=>$remark,'full_reset'=>1,'days'=>$days,'volume'=>$volume,'status'=>'active'];
+        $res=editMarzbanConfig($server_id,$fields);
+        if(!is_object($res)||empty($res->success))return $res ?: (object)['success'=>false,'msg'=>'bad response'];
+
+        // Full renewal always starts fresh from the approval/payment time.
+        $newExpire=$days>0 ? time()+($days*86400) : 0;
+        if($fullPlanId>0){
+            $stmt=$connection->prepare("UPDATE `orders_list` SET `expire_date`=?,`fileid`=?,`notif`=0,`expired_warned_at`=0,`delete_after`=0 WHERE `id`=?");
+            $stmt->bind_param('iii',$newExpire,$fullPlanId,$orderId);
+        }else{
+            $stmt=$connection->prepare("UPDATE `orders_list` SET `expire_date`=?,`notif`=0,`expired_warned_at`=0,`delete_after`=0 WHERE `id`=?");
+            $stmt->bind_param('ii',$newExpire,$orderId);
+        }
+        $stmt->execute();$stmt->close();
+        return (object)['success'=>true,'order'=>$order,'full_reset'=>true];
+    }
+
+    // Volume/day-only renewal behavior is unchanged: it adds to current service.
     $fields=['remark'=>$remark];
-    if($days>0) $fields['days']=(int)$days;
-    if($volume>0) $fields['volume']=(float)$volume;
+    if($days>0)$fields['days']=$days;
+    if($volume>0)$fields['volume']=$volume;
     $res=editMarzbanConfig($server_id,$fields);
-    if(!is_object($res) || empty($res->success)) return $res ?: (object)['success'=>false,'msg'=>'bad response'];
-    $newExpire=max((int)$order['expire_date'], time()) + ((int)$days * 86400);
-    $stmt=$connection->prepare("UPDATE `orders_list` SET `expire_date`=?, `notif`=0, `expired_warned_at`=0, `delete_after`=0 WHERE `id`=?");
-    $stmt->bind_param('ii',$newExpire,$orderId); $stmt->execute(); $stmt->close();
-    return (object)['success'=>true,'order'=>$order];
+    if(!is_object($res)||empty($res->success))return $res ?: (object)['success'=>false,'msg'=>'bad response'];
+    $newExpire=max((int)$order['expire_date'],time())+($days*86400);
+    $stmt=$connection->prepare("UPDATE `orders_list` SET `expire_date`=?,`notif`=0,`expired_warned_at`=0,`delete_after`=0 WHERE `id`=?");
+    $stmt->bind_param('ii',$newExpire,$orderId);$stmt->execute();$stmt->close();
+    return (object)['success'=>true,'order'=>$order,'full_reset'=>false];
 }
 
 

@@ -947,7 +947,9 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $payType = (string)$payInfo['type'];
     $receiptText = trim((string)$text);
     $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
-    if(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
+    if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_\d+_\d+$/',$payType)){
+        $keyboard = getReceiptAdminKeyboard('approvePgRenew' . $hash, 'decPgRenew' . $hash, $uid);
+    }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('approvePayment' . $hash, 'decPayment' . $hash, $uid);
     }elseif(strpos($originStep, 'payCustomWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('accCustom' . $hash, 'decline' . $uid, $uid);
@@ -9185,24 +9187,49 @@ if(preg_match('/^pgRenewMenu(\d+)$/', $data, $m)){
     smartSendOrEdit($message_id, "🔁 نوع تمدید سرویس را انتخاب کنید:", $kb);
     exit;
 }
-if(preg_match('/^pgRenewFull_(\d+)$/', $data, $m)){
+if(preg_match('/^pgRenewFull_(\d+)$/',$data,$m)){
     $oid=(int)$m[1];
-    $stmt=$connection->prepare("SELECT * FROM `orders_list` WHERE `id`=? AND `userid`=? LIMIT 1");
-    $stmt->bind_param('ii',$oid,$from_id); $stmt->execute(); $order=$stmt->get_result()->fetch_assoc(); $stmt->close();
-    if(!$order){ alert($mainValues['no_order_found'] ?? 'سرویس پیدا نشد'); exit; }
-    $sid=(int)$order['server_id'];
-    ensureServerPlansQuotaSchema();
-    $stmt=$connection->prepare("SELECT sp.*, sc.title AS cat_title FROM `server_plans` sp LEFT JOIN `server_categories` sc ON sp.catid=sc.id WHERE sp.server_id=? AND sp.active=1 AND sp.price>=0 AND sp.type='pasarguard' AND COALESCE(sp.show_full_renew,1)=1 ORDER BY sp.id ASC");
-    $stmt->bind_param('i',$sid); $stmt->execute(); $res=$stmt->get_result(); $stmt->close();
-    $rows=[];
-    while($p=$res->fetch_assoc()){
-        $label=trim(($p['cat_title']??'').' '.$p['title']).' | '.$p['volume'].' گیگ | '.$p['days'].' روز | '.number_format($p['price']).' تومان';
-        $rows[]=[['text'=>$label,'callback_data'=>'pgRenewBuyFull_'.$oid.'_'.$p['id']]];
-    }
-    if(empty($rows)) $rows[]=[['text'=>'پلنی برای این پنل ثبت نشده','callback_data'=>'deltach']];
-    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewMenu'.$oid]];
-    smartSendOrEdit($message_id, 'پلن تمدید کلی را انتخاب کنید:', json_encode(['inline_keyboard'=>$rows], JSON_UNESCAPED_UNICODE));
-    exit;
+    $stmt=$connection->prepare("SELECT o.*,sc.type AS server_type FROM `orders_list` o LEFT JOIN `server_config` sc ON sc.id=o.server_id WHERE o.id=? AND o.userid=? LIMIT 1");
+    $stmt->bind_param('ii',$oid,$from_id);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$order){alert($mainValues['no_order_found']??'سرویس پیدا نشد');exit;}
+    if(($order['server_type']??'')!=='pasarguard'){alert('تمدید کلی این بخش فقط برای سرویس پاسارگارد است.',true);exit;}
+    $warning="<b>⚠️ توجه ⚠️</b>\n\n<b>کاربر عزیز، با تمدید کلی اشتراک، حجم باقی‌مانده و زمان باقی‌مانده فعلی شما صفر خواهد شد و پلن جدید روی همان اشتراک قبلی فعال می‌شود. ✅️</b>\n\n<b>لینک اشتراک شما تغییر نخواهد کرد.</b>\n\nدر صورت رضایت، روی دکمه «تأیید و ادامه» بزنید تا به مرحله بعد هدایت شوید.";
+    $kb=json_encode(['inline_keyboard'=>[[['text'=>'✅ تأیید و ادامه','callback_data'=>'pgRenewFullConfirm_'.$oid]],[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewMenu'.$oid]]]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    smartSendOrEdit($message_id,$warning,$kb,'HTML');exit;
+}
+if(preg_match('/^pgRenewFullConfirm_(\d+)$/',$data,$m)){
+    $oid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT o.*,sc.type AS server_type FROM `orders_list` o LEFT JOIN `server_config` sc ON sc.id=o.server_id WHERE o.id=? AND o.userid=? LIMIT 1");
+    $stmt->bind_param('ii',$oid,$from_id);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$order||($order['server_type']??'')!=='pasarguard'){alert('سرویس پاسارگارد پیدا نشد.',true);exit;}
+    $sid=(int)$order['server_id'];ensureServerPlansQuotaSchema();
+    $stmt=$connection->prepare("SELECT COALESCE(sp.catid,0) AS catid,MAX(COALESCE(NULLIF(sc.title,''),'بدون دسته‌بندی')) AS cat_title FROM `server_plans` sp LEFT JOIN `server_categories` sc ON sc.id=sp.catid WHERE sp.server_id=? AND sp.active=1 AND sp.price>=0 AND sp.type='pasarguard' AND COALESCE(sp.show_full_renew,1)=1 GROUP BY COALESCE(sp.catid,0) ORDER BY catid ASC");
+    $stmt->bind_param('i',$sid);$stmt->execute();$res=$stmt->get_result();$rows=[];while($r=$res->fetch_assoc()){$rows[]=[['text'=>'📂 '.($r['cat_title']?:'بدون دسته‌بندی'),'callback_data'=>'pgRenewFullCat_'.$oid.'_'.(int)$r['catid']]];}$stmt->close();
+    if(!$rows)$rows[]=[['text'=>'پلنی برای تمدید کلی ثبت نشده','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewFull_'.$oid]];
+    smartSendOrEdit($message_id,'📂 دسته‌بندی موردنظر را انتخاب کنید:',json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));exit;
+}
+if(preg_match('/^pgRenewFullCat_(\d+)_(\d+)$/',$data,$m)){
+    $oid=(int)$m[1];$catid=(int)$m[2];
+    $stmt=$connection->prepare("SELECT o.*,sc.type AS server_type FROM `orders_list` o LEFT JOIN `server_config` sc ON sc.id=o.server_id WHERE o.id=? AND o.userid=? LIMIT 1");$stmt->bind_param('ii',$oid,$from_id);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$order||($order['server_type']??'')!=='pasarguard'){alert('سرویس پاسارگارد پیدا نشد.',true);exit;}$sid=(int)$order['server_id'];
+    $stmt=$connection->prepare("SELECT COUNT(*) AS c FROM `server_plans` WHERE server_id=? AND COALESCE(catid,0)=? AND active=1 AND price>=0 AND type='pasarguard' AND COALESCE(show_full_renew,1)=1");$stmt->bind_param('ii',$sid,$catid);$stmt->execute();$cnt=(int)($stmt->get_result()->fetch_assoc()['c']??0);$stmt->close();if($cnt<=0){alert('پلنی در این دسته وجود ندارد.',true);exit;}
+    $serverName='سرور #'.$sid;
+    $stmt=$connection->prepare("SELECT `remark` FROM `server_info` WHERE `id`=? LIMIT 1");if($stmt){$stmt->bind_param('i',$sid);$stmt->execute();$sr=$stmt->get_result()->fetch_assoc();$stmt->close();if(trim((string)($sr['remark']??''))!=='')$serverName=(string)$sr['remark'];}
+    $rows=[[['text'=>'🌐 '.$serverName,'callback_data'=>'pgRenewFullServer_'.$oid.'_'.$catid]],[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewFullConfirm_'.$oid]]];
+    smartSendOrEdit($message_id,"🌐 سرور این اشتراک را تأیید کنید:\n\nبرای حفظ لینک اشتراک، تمدید کلی فقط روی همین سرور انجام می‌شود.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));exit;
+}
+if(preg_match('/^pgRenewFullServer_(\d+)_(\d+)$/',$data,$m)){
+    $oid=(int)$m[1];$catid=(int)$m[2];
+    $stmt=$connection->prepare("SELECT o.server_id,sc.type AS server_type FROM `orders_list` o LEFT JOIN `server_config` sc ON sc.id=o.server_id WHERE o.id=? AND o.userid=? LIMIT 1");$stmt->bind_param('ii',$oid,$from_id);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();if(!$order||($order['server_type']??'')!=='pasarguard'){alert('سرویس پیدا نشد.',true);exit;}$sid=(int)$order['server_id'];
+    $stmt=$connection->prepare("SELECT DISTINCT `days` FROM `server_plans` WHERE server_id=? AND COALESCE(catid,0)=? AND active=1 AND price>=0 AND type='pasarguard' AND COALESCE(show_full_renew,1)=1 ORDER BY days ASC");$stmt->bind_param('ii',$sid,$catid);$stmt->execute();$res=$stmt->get_result();$rows=[];while($r=$res->fetch_assoc()){$days=(int)$r['days'];$label=$days>0&&$days%30===0?(int)($days/30).' ماهه':($days>0?$days.' روزه':'بدون محدودیت زمانی');$rows[]=[['text'=>'🗓 '.$label,'callback_data'=>'pgRenewFullDays_'.$oid.'_'.$catid.'_'.$days]];}$stmt->close();if(!$rows)$rows[]=[['text'=>'مدتی ثبت نشده','callback_data'=>'deltach']];$rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewFullCat_'.$oid.'_'.$catid]];
+    smartSendOrEdit($message_id,'🗓 مدت تمدید را انتخاب کنید:',json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));exit;
+}
+if(preg_match('/^pgRenewFullDays_(\d+)_(\d+)_(\d+)$/',$data,$m)){
+    $oid=(int)$m[1];$catid=(int)$m[2];$days=(int)$m[3];
+    $stmt=$connection->prepare("SELECT o.server_id,sc.type AS server_type FROM `orders_list` o LEFT JOIN `server_config` sc ON sc.id=o.server_id WHERE o.id=? AND o.userid=? LIMIT 1");$stmt->bind_param('ii',$oid,$from_id);$stmt->execute();$order=$stmt->get_result()->fetch_assoc();$stmt->close();if(!$order||($order['server_type']??'')!=='pasarguard'){alert('سرویس پیدا نشد.',true);exit;}$sid=(int)$order['server_id'];
+    $stmt=$connection->prepare("SELECT * FROM `server_plans` WHERE server_id=? AND COALESCE(catid,0)=? AND days=? AND active=1 AND price>=0 AND type='pasarguard' AND COALESCE(show_full_renew,1)=1 ORDER BY volume ASC,id ASC");$stmt->bind_param('iii',$sid,$catid,$days);$stmt->execute();$res=$stmt->get_result();$rows=[];while($p=$res->fetch_assoc()){$vol=(float)$p['volume'];$vlabel=$vol>0?rtrim(rtrim(number_format($vol,2,'.',''),'0'),'.').' گیگ':'نامحدود';$title=trim((string)$p['title']);$label='📦 '.$vlabel.($title!==''?' | '.$title:'').' | '.number_format((int)$p['price']).' تومان';$rows[]=[['text'=>$label,'callback_data'=>'pgRenewBuyFull_'.$oid.'_'.(int)$p['id']]];}$stmt->close();if(!$rows)$rows[]=[['text'=>'پلنی ثبت نشده','callback_data'=>'deltach']];$rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'pgRenewFullServer_'.$oid.'_'.$catid]];
+    smartSendOrEdit($message_id,'📦 حجم/پلن جدید را انتخاب کنید:',json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));exit;
 }
 if(preg_match('/^pgRenewVolList_(\d+)$/', $data, $m)){ smartSendOrEdit($message_id, 'پلن حجمی را انتخاب کنید:', pgRenewUserCustomPlansKeyboard((int)$m[1], 'volume')); exit; }
 if(preg_match('/^pgRenewDayList_(\d+)$/', $data, $m)){ smartSendOrEdit($message_id, 'پلن روز را انتخاب کنید:', pgRenewUserCustomPlansKeyboard((int)$m[1], 'day')); exit; }
@@ -9210,11 +9237,14 @@ if(preg_match('/^pgRenewBuyFull_(\d+)_(\d+)$/', $data, $m)){
     $oid=(int)$m[1]; $pid=(int)$m[2];
     $stmt=$connection->prepare("SELECT * FROM `orders_list` WHERE `id`=? AND `userid`=? LIMIT 1");
     $stmt->bind_param('ii',$oid,$from_id); $stmt->execute(); $order=$stmt->get_result()->fetch_assoc(); $stmt->close();
-    $stmt=$connection->prepare("SELECT * FROM `server_plans` WHERE `id`=? AND `active`=1 LIMIT 1");
-    $stmt->bind_param('i',$pid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
-    if(!$order || !$plan){ alert('سرویس یا پلن پیدا نشد'); exit; }
+    if(!$order){alert('سرویس پیدا نشد');exit;}
+    $sid=(int)$order['server_id'];
+    $stmt=$connection->prepare("SELECT * FROM `server_plans` WHERE `id`=? AND `server_id`=? AND `active`=1 AND `type`='pasarguard' AND COALESCE(`show_full_renew`,1)=1 LIMIT 1");
+    $stmt->bind_param('ii',$pid,$sid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$plan){ alert('پلن تمدید کلی معتبر نیست'); exit; }
     $hash=pgRenewCreatePay($from_id, 'PG_RENEW_FULL_'.$oid.'_'.$pid, (int)$plan['price']);
-    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم افزوده: {$plan['volume']} گیگ\n⏰ روز افزوده: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان";
+    $vlabel=((float)$plan['volume']>0)?rtrim(rtrim(number_format((float)$plan['volume'],2,'.',''),'0'),'.').' گیگ':'نامحدود';
+    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
     smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
 }
@@ -9277,7 +9307,8 @@ if(preg_match('/^pgRenewPayQuota(.+)$/', $data, $m)){
         $stmt=$connection->prepare("SELECT RELEASE_LOCK(?) AS rel");
         $stmt->bind_param('s',$lockName); $stmt->execute(); $stmt->close(); $lockAcquired=false;
 
-        $res=pgRenewApply($oid,$days,$volume);
+        $fullReset=(($qInfo['kind']??'')==='full');$fullPlanId=(int)($qInfo['plan_id']??0);
+        $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
         if(!is_object($res) || empty($res->success)){
             $stmt=$connection->prepare("UPDATE `pays` SET `state`='pending',`volume`=0,`day`=0 WHERE `hash_id`=? AND `user_id`=? AND `state`='processing_quota'");
             $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $stmt->close();
@@ -9319,9 +9350,9 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
     $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
     if((int)$userInfo['wallet'] < (int)$pay['price']){ alert('موجودی کیف پول کافی نیست', true); exit; }
-    $type=$pay['type']; $days=0; $volume=0; $oid=0;
+    $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){
-        $oid=(int)$mm[1]; $pid=(int)$mm[2];
+        $oid=(int)$mm[1]; $pid=(int)$mm[2]; $fullReset=true; $fullPlanId=$pid;
         $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close();
         $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0);
     } elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$type,$mm)){
@@ -9330,7 +9361,7 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
         $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['amount']??0);
     }
     if($oid<=0){ alert('نوع فاکتور نامعتبر است'); exit; }
-    $res=pgRenewApply($oid,$days,$volume);
+    $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید پاسارگارد: '.($res->msg??'خطای نامشخص'), true); exit; }
     $stmt=$connection->prepare("UPDATE `users` SET `wallet`=`wallet`-? WHERE `userid`=?"); $price=(int)$pay['price']; $stmt->bind_param('ii',$price,$from_id); $stmt->execute(); $stmt->close();
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
@@ -9362,11 +9393,11 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $hash=$m[1];
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1"); $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
-    $type=$pay['type']; $days=0; $volume=0; $oid=0;
-    if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0); }
+    $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
+    if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $fullReset=true; $fullPlanId=$pid; $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0); }
     elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $volume=(float)($pl['amount']??0); }
     elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['amount']??0); }
-    $res=pgRenewApply($oid,$days,$volume);
+    $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید: '.($res->msg??'خطا'), true); exit; }
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));

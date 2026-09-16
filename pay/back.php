@@ -196,6 +196,34 @@ elseif($payType == "INCREASE_WALLET") $payDescription ="شارژ کیف پول";
 elseif(preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType)) $payDescription = "افزایش زمان اکانت";
 elseif(preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType)) $payDescription = "افزایش حجم اکانت";    
 
+if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_(\d+)_(\d+)$/',$payType,$pgm)){
+    $kind=$pgm[1];$oid=(int)$pgm[2];$pid=(int)$pgm[3];$rDays=0;$rVolume=0.0;$fullReset=false;$fullPlanId=0;
+    if($kind==='FULL'){
+        $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? AND `active`=1 LIMIT 1");$stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();
+        $rDays=(int)($pl['days']??0);$rVolume=(float)($pl['volume']??0);$fullReset=true;$fullPlanId=$pid;
+    }elseif($kind==='VOLUME'){
+        $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? AND `active`=1 AND `kind`='volume' LIMIT 1");$stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();$rVolume=(float)($pl['amount']??0);
+    }else{
+        $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? AND `active`=1 AND `kind`='day' LIMIT 1");$stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();$rDays=(int)($pl['amount']??0);
+    }
+    $renew=pgRenewApply($oid,$rDays,$rVolume,$fullReset,$fullPlanId);
+    if(!is_object($renew)||empty($renew->success)){
+        // Money is already captured by the gateway; refund to bot wallet if panel action fails.
+        $stmt=$connection->prepare("UPDATE `pays` SET `state`='renew_failed_refunded' WHERE `id`=?");$stmt->bind_param('i',$payRowId);$stmt->execute();$stmt->close();
+        $stmt=$connection->prepare("UPDATE `users` SET `wallet`=`wallet`+? WHERE `userid`=?");$stmt->bind_param('ii',$amount,$user_id);$stmt->execute();$stmt->close();
+        sendMessage("⚠️ پرداخت تمدید انجام شد اما پنل پاسخ موفق نداد؛ مبلغ ".number_format($amount)." تومان به کیف پول شما برگشت داده شد.",null,null,$user_id);
+        sendToAdmins("⚠️ تمدید پاسارگارد در درگاه ناموفق بود و مبلغ به کیف پول برگشت داده شد. کاربر: {$user_id} | فاکتور: {$payRowId}",null,null);
+        showForm("پرداخت انجام شد اما تمدید پنل ناموفق بود؛ مبلغ به کیف پول ربات شما برگشت داده شد.","تمدید پاسارگارد",false);
+        return;
+    }
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid' WHERE `id`=?");$stmt->bind_param('i',$payRowId);$stmt->execute();$stmt->close();
+    $mode=$fullReset?'تمدید کلی (ریست کامل)':'تمدید';
+    sendMessage("✅ {$mode} پاسارگارد با موفقیت انجام شد.",null,null,$user_id);
+    sendToAdmins("✅ {$mode} پاسارگارد از طریق درگاه انجام شد. کاربر: {$user_id} | مبلغ: ".number_format($amount)." تومان",null,null);
+    showForm("تمدید سرویس با موفقیت انجام شد.","تمدید پاسارگارد",false);
+    return;
+}
+
 if($gateType == "zarinpal" || $gateType == "nextpay") $payDescription = "خرید اشتراک";
 
 $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =?");
