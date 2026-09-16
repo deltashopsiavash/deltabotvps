@@ -1,0 +1,47 @@
+name: Inspect PasarGuard renewal helpers
+on:
+  push:
+    paths:
+      - '.github/workflows/inspect-pg-renew-helpers.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect helpers
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          targets=[
+            'pgRenewApply','pgRenewQuotaInfoByPayType','pgRenewUserMenuKeyboard','pgRenewPaymentKeyboard','pgRenewCreatePay',
+            'selectCategory','selectSub','selectMonth','month','months','selectPlan','selectServerContinue',
+            'editMarzbanConfig','used_traffic','data_limit','resetTraffic','reset_traffic','pasarguard'
+          ]
+          for p in Path('.').rglob('*.php'):
+              if any(x in str(p) for x in ['vendor/','phpqrcode/']): continue
+              lines=p.read_text(encoding='utf-8',errors='replace').splitlines()
+              hits=[]
+              for i,line in enumerate(lines,1):
+                  low=line.lower()
+                  if any(t.lower() in low for t in targets): hits.append(i)
+              if not hits: continue
+              # focus helper defs + purchase callbacks + pasarguard API lines, cap ranges
+              chosen=[]
+              for i in hits:
+                  line=lines[i-1]
+                  if ('function ' in line or 'preg_match' in line or "if($data" in line or 'used_traffic' in line or 'data_limit' in line or 'editMarzbanConfig' in line):
+                      chosen.append(i)
+              if not chosen: continue
+              merged=[]
+              for i in chosen:
+                  a=max(1,i-12); b=min(len(lines),i+45)
+                  if merged and a<=merged[-1][1]+2: merged[-1][1]=max(merged[-1][1],b)
+                  else: merged.append([a,b])
+              print('\n######## FILE',p,'########')
+              for a,b in merged[:30]:
+                  print(f'\n===== {a}-{b} =====')
+                  for n in range(a,b+1): print(f'{n}: {lines[n-1]}')
+          PY
