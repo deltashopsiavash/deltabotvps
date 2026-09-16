@@ -10369,34 +10369,46 @@ function changePasarguardState($server_id, $remark){
     return editPasarguardUser($server_id, $remark, ['status'=>$newStatus]);
 }
 
-function editPasarguardUser($server_id, $remark, $fields){
+function editPasarguardUser($server_id,$remark,$fields){
     global $connection;
-    $stmt = $connection->prepare("SELECT * FROM server_config WHERE id=?");
-    $stmt->bind_param("i", $server_id);
-    $stmt->execute();
-    $server_info = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    $token = getPasarguardToken($server_id);
-    if(empty($token->success)) return (object)['success'=>false,'msg'=>$token->msg ?? 'PasarGuard token error'];
-    $curl = curl_init();
-    curl_setopt_array($curl, [
-        CURLOPT_URL => rtrim($server_info['panel_url'], '/') . '/api/user/by-username/' . rawurlencode($remark),
-        CURLOPT_CUSTOMREQUEST => 'PUT',
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_SSL_VERIFYHOST => false,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_HTTPHEADER => ['Accept: application/json','Content-Type: application/json','Authorization: Bearer ' . $token->access_token],
-        CURLOPT_POSTFIELDS => json_encode($fields, JSON_UNESCAPED_UNICODE)
-    ]);
-    $raw = curl_exec($curl);
-    $err = curl_error($curl);
-    $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-    curl_close($curl);
-    if($err) return (object)['success'=>false,'msg'=>$err];
-    if($http >= 200 && $http < 300) return (object)['success'=>true,'obj'=>json_decode($raw)];
-    return (object)['success'=>false,'msg'=>$raw];
+    $stmt=$connection->prepare("SELECT * FROM `server_config` WHERE `id`=? LIMIT 1");
+    $stmt->bind_param('i',$server_id);$stmt->execute();$server=$stmt->get_result()->fetch_assoc();$stmt->close();
+    if(!$server)return (object)['success'=>false,'msg'=>'PasarGuard server not found'];
+    $token=getPasarguardToken($server_id);
+    if(empty($token->success)||empty($token->access_token))return (object)['success'=>false,'msg'=>$token->msg??'PasarGuard token error'];
+
+    // Current official API: PUT /api/user/{username}; keep legacy by-username route as fallback.
+    $paths=[
+        '/api/user/'.rawurlencode($remark),
+        '/api/user/by-username/'.rawurlencode($remark),
+        '/api/users/'.rawurlencode($remark),
+        '/api/users/by-username/'.rawurlencode($remark)
+    ];
+    $last='';$lastHttp=0;
+    foreach(pasarguardPanelApiBases($server['panel_url']) as $base){
+        foreach($paths as $path){
+            $ch=curl_init();
+            curl_setopt_array($ch,[
+                CURLOPT_URL=>$base.$path,
+                CURLOPT_CUSTOMREQUEST=>'PUT',
+                CURLOPT_RETURNTRANSFER=>true,
+                CURLOPT_CONNECTTIMEOUT=>10,
+                CURLOPT_TIMEOUT=>30,
+                CURLOPT_SSL_VERIFYHOST=>false,
+                CURLOPT_SSL_VERIFYPEER=>false,
+                CURLOPT_FOLLOWLOCATION=>true,
+                CURLOPT_MAXREDIRS=>3,
+                CURLOPT_HTTPHEADER=>['Accept: application/json','Content-Type: application/json','Authorization: Bearer '.$token->access_token],
+                CURLOPT_POSTFIELDS=>json_encode($fields,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)
+            ]);
+            $raw=curl_exec($ch);$err=curl_error($ch);$http=curl_getinfo($ch,CURLINFO_HTTP_CODE);curl_close($ch);$lastHttp=$http;
+            if($err){$last=$err;continue;}
+            if($http>=200&&$http<300)return (object)['success'=>true,'obj'=>json_decode((string)$raw),'http'=>$http];
+            $last=trim((string)$raw)!==''?(string)$raw:('HTTP '.$http);
+            if($http===401||$http===403)return (object)['success'=>false,'msg'=>$last,'http'=>$http];
+        }
+    }
+    return (object)['success'=>false,'msg'=>$last?:'PasarGuard update failed','http'=>$lastHttp];
 }
 
 function resetPasarguardTraffic($server_id, $remark){

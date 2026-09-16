@@ -9349,6 +9349,7 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
     $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
+    if(($pay['state']??'')!=='pending'){alert('این فاکتور قبلاً پردازش شده است.',true);exit;}
     if((int)$userInfo['wallet'] < (int)$pay['price']){ alert('موجودی کیف پول کافی نیست', true); exit; }
     $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){
@@ -9393,6 +9394,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $hash=$m[1];
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1"); $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
+    if(!in_array((string)($pay['state']??''),['pending','have_sent','send'],true)){alert('این رسید قبلاً پردازش شده است.',true);exit;}
     $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $fullReset=true; $fullPlanId=$pid; $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0); }
     elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $volume=(float)($pl['amount']??0); }
@@ -9406,6 +9408,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     exit;
 }
 if(preg_match('/^decPgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $hash=$m[1];$stmt=$connection->prepare("UPDATE `pays` SET `state`='rejected' WHERE `hash_id`=? AND `state` IN ('pending','have_sent','send')");if($stmt){$stmt->bind_param('s',$hash);$stmt->execute();$stmt->close();}
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ رد شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     alert('رد شد'); exit;
 }
