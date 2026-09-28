@@ -542,6 +542,9 @@ function bot($method, $datas = []){
 function sendMessage($txt, $key = null, $parse ="MarkDown", $ci= null, $msg = null){
     global $from_id;
     $ci = $ci??$from_id;
+    if(function_exists('deltaEnhanceCustomerPaymentMessage')){
+        [$txt,$key]=deltaEnhanceCustomerPaymentMessage($txt,$key,$ci,$parse);
+    }
     $prepared=deltaPrepareEditableTextPayload($txt,$parse);
     $payload=[
         'chat_id'=>$ci,
