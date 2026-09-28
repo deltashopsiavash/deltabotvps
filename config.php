@@ -579,6 +579,12 @@ function getAllAdminIds(){
     return $ids;
 }
 function sendToAdmins($txt, $key = null, $parse = "MarkDown", $msg = null){
+    $paymentHash='';
+    if(function_exists('deltaAppendTrackingFromKeyboard')){
+        $paymentHash=deltaExtractPayHashFromKeyboard($key);
+        $txt=deltaAppendTrackingFromKeyboard($txt,$key,strtolower((string)$parse)==='html');
+    }
+    if($paymentHash!=='' && function_exists('deltaNotifyUserReceiptTracking')) deltaNotifyUserReceiptTracking($paymentHash);
     foreach(getAllAdminIds() as $aid){
         sendMessage($txt, $key, $parse, $aid, $msg);
     }
@@ -1985,9 +1991,12 @@ function getReceiptAdminKeyboard($approveCallback, $declineCallback, $uid){
 }
 
 function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown"){
+    $paymentHash='';
     if(function_exists('deltaAppendTrackingFromKeyboard')){
+        $paymentHash = deltaExtractPayHashFromKeyboard($keyboard);
         $caption = deltaAppendTrackingFromKeyboard($caption, $keyboard, strtolower((string)$parse)==='html');
     }
+    if($paymentHash!=='' && function_exists('deltaNotifyUserReceiptTracking')) deltaNotifyUserReceiptTracking($paymentHash);
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
         $res = sendPhoto($photo, $caption, $keyboard, $parse, $aid);
@@ -3093,6 +3102,10 @@ function getMainKeys(){
         ),
         ((($botState['serviceStatusButtonState'] ?? 'on') == 'on') ? [['text'=>$buttonValues['search_config'],'callback_data'=>"showUUIDLeft"]] : []),
     ]);
+
+    if((($botState['pendingOrdersState'] ?? 'off') === 'on')){
+        $mainKeys[] = [['text'=>'📦 سفارش‌های در حال انتظار','callback_data'=>'pendingOrders']];
+    }
 
     // --- Custom MAIN_BUTTONS
 // Reseller bot shop + my bots (only on main bot)
