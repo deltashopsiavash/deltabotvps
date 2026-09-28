@@ -4941,7 +4941,9 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     $stmt->execute();
     $stmt->close();
 
-    sendMessage("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",null,null,$userId);
+    $doneMsg="افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ ".number_format($price)." تومان به حساب شما اضافه شد";
+    if(function_exists('deltaAppendTrackingText')) $doneMsg=deltaAppendTrackingText($doneMsg,$payInfo,false);
+    sendMessage($doneMsg,null,null,$userId);
     
     unset($markup[count($markup)-1]);
     $markup[] = [['text' => '✅', 'callback_data' => "dontsendanymore"]];
@@ -14679,7 +14681,9 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
         $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
     
         editKeys($keys);
-        sendMessage("✅$volume روز به مدت زمان سرویس شما اضافه شد",null,null,$uid);
+        $doneMsg="✅$volume روز به مدت زمان سرویس شما اضافه شد";
+        if(function_exists('deltaAppendTrackingText')) $doneMsg=deltaAppendTrackingText($doneMsg,$payParam,false);
+        sendMessage($doneMsg,null,null,$uid);
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;
@@ -15038,7 +15042,9 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
         $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
     
         editKeys($keys);
-        sendMessage("✅$volume گیگ به حجم سرویس شما اضافه شد",null,null,$uid);
+        $doneMsg="✅$volume گیگ به حجم سرویس شما اضافه شد";
+        if(function_exists('deltaAppendTrackingText')) $doneMsg=deltaAppendTrackingText($doneMsg,$payParam,false);
+        sendMessage($doneMsg,null,null,$uid);
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;
