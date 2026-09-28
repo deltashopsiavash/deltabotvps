@@ -5160,8 +5160,11 @@ function getDiscountCodeKeys(){
             $hashId = $row['hash_id'];
             $rowId = $row['id'];
             $canUse = $row['can_use'];
+            $hashLabel = ((int)($row['user_id'] ?? 0) > 0)
+                ? ('👤 '.(int)$row['user_id'].' | '.$hashId)
+                : $hashId;
             
-            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>$hashId,'callback_data'=>'copyHash' . $hashId]];
+            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>$hashLabel,'callback_data'=>'copyHash' . $hashId]];
         }
     }else{
         $keys[] = [['text'=>"کد تخفیفی یافت نشد",'callback_data'=>"deltach"]];
