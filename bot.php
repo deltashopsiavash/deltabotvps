@@ -6072,7 +6072,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
                 ['text'=>"اخیش یکی زمان زد 😁",'callback_data'=>"deltach"]
                 ],
             ]]);
-    sendToAdmins("
+    $walletReport = "
     🔋|💰 افزایش زمان با ( کیف پول )
     
     ▫️آیدی کاربر: $from_id
@@ -6082,7 +6082,9 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     ⏰ مدت افزایش: $volume روز
     💰قیمت: $price تومان
     ⁮⁮ ⁮⁮
-    ", $keys, "html");
+    ";
+    if(function_exists('deltaAppendTrackingText')) $walletReport=deltaAppendTrackingText($walletReport,$payInfo,true);
+    sendToAdmins($walletReport, $keys, "html");
     
         exit;
     }else {
@@ -6140,7 +6142,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
                 ['text'=>"اخیش یکی حجم زد 😁",'callback_data'=>"deltach"]
                 ],
             ]]);
-    sendToAdmins("
+    $walletReport = "
     🔋|💰 افزایش حجم با ( کیف پول )
     
     ▫️آیدی کاربر: $from_id
@@ -6150,7 +6152,9 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     ⏰ مدت افزایش: $volume گیگ
     💰قیمت: $price تومان
     ⁮⁮ ⁮⁮
-    ", $keys, "html");
+    ";
+    if(function_exists('deltaAppendTrackingText')) $walletReport=deltaAppendTrackingText($walletReport,$payInfo,true);
+    sendToAdmins($walletReport, $keys, "html");
         sendMessage( "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
         
     
@@ -6200,7 +6204,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     	$stmt->execute();
     	$stmt->close();
     
-        sendToAdmins("
+        $walletReport = "
         🔋|💰 تمدید مشخصات کانفیگ با ( کیف پول )
         
         ▫️آیدی کاربر: $from_id
@@ -6211,7 +6215,9 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         حجم کانفیگ:  $days روز
         💰قیمت: $price تومان
         ⁮⁮ ⁮⁮
-        ", $keys, "html");
+        ";
+    if(function_exists('deltaAppendTrackingText')) $walletReport=deltaAppendTrackingText($walletReport,$payInfo,true);
+    sendToAdmins($walletReport, $keys, "html");
     
     }
         
@@ -14785,7 +14791,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
                 ['text'=>"اخیش یکی زمان زد 😁",'callback_data'=>"deltach"]
                 ],
             ]]);
-        sendToAdmins("
+        $walletReport = "
 🔋|💰 افزایش زمان با ( کیف پول )
 
 ▫️آیدی کاربر: $from_id
@@ -14795,7 +14801,9 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
 ⏰ مدت افزایش: $volume روز
 💰قیمت: $price تومان
 ⁮⁮ ⁮⁮
-        ", $keys, "html");
+        ";
+    if(function_exists('deltaAppendTrackingText')) $walletReport=deltaAppendTrackingText($walletReport,$payParam,true);
+    sendToAdmins($walletReport, $keys, "html");
 
         exit;
     }else {
@@ -15230,7 +15238,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
                 ['text'=>"اخیش یکی حجم زد 😁",'callback_data'=>"deltach"]
                 ],
             ]]);
-        sendToAdmins("
+        $walletReport = "
 🔋|💰 افزایش حجم با ( کیف پول )
 
 ▫️آیدی کاربر: $from_id
@@ -15240,7 +15248,9 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
 ⏰ مدت افزایش: $volume گیگ
 💰قیمت: $price تومان
 ⁮⁮ ⁮⁮
-        ", $keys, "html");
+        ";
+    if(function_exists('deltaAppendTrackingText')) $walletReport=deltaAppendTrackingText($walletReport,$payParam,true);
+    sendToAdmins($walletReport, $keys, "html");
         smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
         
 
