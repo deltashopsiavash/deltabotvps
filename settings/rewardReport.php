@@ -661,11 +661,13 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             $price = $payInfo['price'];   
             $server_id = $file_detail['server_id'];
             $configInfo = json_decode($payInfo['description'],true);
-            $remark = $configInfo['remark'];
-            $uuid = $configInfo['uuid'];
-            $isMarzban = $configInfo['marzban'];
+            if(!is_array($configInfo)) $configInfo=[];
+            $remark = function_exists('npvExtractRemarkFromPayDescription')
+                ? npvExtractRemarkFromPayDescription($payInfo['description'])
+                : (string)($configInfo['remark'] ?? $payInfo['description']);
+            $uuid = (string)($configInfo['uuid'] ?? '');
+            $isMarzban = !empty($configInfo['marzban']);
             
-            $remark = $payInfo['description'];
             $inbound_id = $payInfo['volume']; 
             
             if($isMarzban){
@@ -677,9 +679,12 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                     $response = editInboundTraffic($server_id, $uuid, $volume, $days, "renew");
             }
             
-        	if(is_null($response)){
-        		sendMessage('🔻مشکل فنی در اتصال به سرور. لطفا به مدیریت اطلاع بدید',null,null,$user_Id);
-        		exit;
+        	if(is_null($response) || (is_object($response) && isset($response->success) && !$response->success)){
+                $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`auto_approved`=0,`auto_approved_at`=0 WHERE `id`=?");
+                if($stmt){$stmt->bind_param('i',$rowId);$stmt->execute();$stmt->close();}
+        		sendMessage('🔻مشکل فنی در تمدید سرویس؛ سفارش برای بررسی دوباره مدیریت باقی ماند.',null,null,$user_id);
+                sendMessage("⚠️ تمدید خودکار RENEW_SCONFIG برای کاربر {$user_id} روی پنل خطا داد و رسید به صف بررسی برگشت.",null,null,$admin);
+        		continue;
         	}
         	$stmt = $connection->prepare("INSERT INTO `increase_order` VALUES (NULL, ?, ?, ?, ?, ?, ?);");
         	$stmt->bind_param("iiisii", $user_id, $server_id, $inbound_id, $remark, $price, $time);
