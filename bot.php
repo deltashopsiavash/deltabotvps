@@ -2,6 +2,7 @@
 include_once 'config.php';
 
 check();
+require_once __DIR__ . '/settings/commerce_bot_handlers.php';
 
 
 function pgUserRenewSuggestionEnabled($userId){
@@ -967,7 +968,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $res = sendToAdmins($msg, $keyboard, 'HTML');
     // message_id cannot be reliably collected from sendToAdmins for all admins; keep state have_sent.
     if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP() WHERE `hash_id`=? AND `state`='pending'");
     $stmt->bind_param('s', $hash);
     $stmt->execute();
     $stmt->close();
@@ -3823,6 +3824,9 @@ if(preg_match('/^changePaymentKeys(\w+)/',$data,$match) && ($from_id == $admin |
         case "tronwallet":
             $gate = "آدرس والت ترون";
             break;
+        case "usdtBep20Address":
+            $gate = "آدرس کیف پول USDT BEP20 (شبکه BSC)";
+            break;
     }
     sendMessage("🔘|لطفا $gate را وارد کنید", $cancelKey);
     setUser($data);
@@ -4577,13 +4581,13 @@ if($userInfo['step'] == "editInviteAmount" && ($from_id == $admin || $userInfo['
         
         if($checkExist->num_rows > 0){
             $stmt = $connection->prepare("UPDATE `setting` SET `value` = ? WHERE `type` = 'INVITE_BANNER_AMOUNT'");
-            $stmt->bind_param("s", $text);
+            $stmt->bind_param("si", $text, $from_id);
             $stmt->execute();
             $checkExist = $stmt->get_result();
             $stmt->close();
         }else{
             $stmt = $connection->prepare("INSERT INTO `setting` (`value`, `type`) VALUES (?, 'INVITE_BANNER_AMOUNT')");
-            $stmt->bind_param("s", $text);
+            $stmt->bind_param("si", $text, $from_id);
             $stmt->execute();
             $checkExist = $stmt->get_result();
             $stmt->close();
@@ -4897,7 +4901,7 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -5540,7 +5544,7 @@ if(preg_match('/^payWithTronWallet(.*)/',$userInfo['step'], $match) && $text != 
         exit(); 
     }else{
         $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `payid` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $checkExist = $stmt->get_result();
         $stmt->close();
@@ -6296,7 +6300,7 @@ if($userInfo['step'] == 's2a' and $text != $buttonValues['cancel'] && ($from_id 
     }
     else{
         $stmt = $connection->prepare("INSERT INTO `send_list` (`type`, `text`) VALUES ('text', ?)");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
     }
     $stmt->execute();
     $id = $stmt->insert_id;
@@ -6697,8 +6701,8 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $rowId = $match[1];
 
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (COALESCE(`user_id`,0)=0 OR `user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -6724,7 +6728,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();
             
             $canUse = $discountInfo['can_use'];
-            $userUsedCount = array_count_values($usedBy)[$from_id];
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
             if($canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
@@ -6994,8 +6998,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         $rowId = $match[3];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (COALESCE(`user_id`,0)=0 OR `user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -7023,7 +7027,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $count = $discountInfo['expire_count'];
             $canUse = $discountInfo['can_use'];
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();
-            $userUsedCount = array_count_values($usedBy)[$from_id];
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
             if($canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
@@ -7880,7 +7884,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
     }else{
@@ -8450,6 +8454,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
     else{$msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);}
 
+    if(function_exists('deltaAppendTrackingText')) $msg=deltaAppendTrackingText($msg,$payInfo,true);
     sendToAdmins($msg, $keys, "html");
 }
 if(preg_match('/payWithCartToCart(.*)/',$data,$match)) {
@@ -8571,7 +8576,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $msgId = $res->result->message_id;
         
         if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -8721,7 +8726,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     // approved acts as a lock while provisioning. If delivery fails, restore
     // have_sent so the admin can press the SAME approve button again.
     $rollbackReceiptProvision = function() use ($connection, $payProvisionHash){
-        $rb = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='approved'");
+        $rb = $connection->prepare("UPDATE `pays` SET `state`='have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP() WHERE `hash_id`=? AND `state`='approved'");
         if($rb){ $rb->bind_param('s',$payProvisionHash); $rb->execute(); $rb->close(); }
     };
 
@@ -9124,6 +9129,7 @@ if(!function_exists('pgRenewBuildAdminReport')){
         $safeTitle = htmlspecialchars((string)$renewTitle, ENT_QUOTES, 'UTF-8');
         $volText = rtrim(rtrim(number_format($volume, 2, '.', ''), '0'), '.');
         if($volText === '') $volText = '0';
+        $tracking = function_exists('deltaEnsureTrackingCode') ? deltaEnsureTrackingCode($pay['hash_id'] ?? '') : '';
         return "🔁 <b>گزارش تمدید سرویس</b>\n\n".
                "👤 آیدی عددی کاربر: <code>{$serviceOwner}</code>\n".
                "🧾 نوع تمدید: <b>{$safeTitle}</b>\n".
@@ -9131,7 +9137,8 @@ if(!function_exists('pgRenewBuildAdminReport')){
                "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
                "➕ روز افزوده: <b>{$days} روز</b>\n".
                "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
-               "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>";
+               "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>".
+               ($tracking!=='' ? "\n🔖 کد پیگیری: <code>{$tracking}</code>" : '');
     }
 }
 
@@ -9441,7 +9448,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
     $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان", $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
     exit;
 }
 if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -10180,7 +10187,7 @@ if($data=="addTicketCategory" and ($from_id == $admin || $userInfo['isAdmin'] ==
 }
 if ($userInfo['step']=="addTicketCategory" and ($from_id == $admin || $userInfo['isAdmin'] == true)){
 	$stmt = $connection->prepare("INSERT INTO `setting` (`type`, `value`) VALUES ('TICKETS_CATEGORY', ?)");	
-	$stmt->bind_param("s", $text);
+	$stmt->bind_param("si", $text, $from_id);
 	$stmt->execute();
 	$stmt->close();
     setUser();
@@ -11667,7 +11674,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         $msg = '🔰 لطفا قیمت پلن رو به تومان وارد کنید!';
         if(strlen($text)>1){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `title`=?,`step`=2 WHERE `active`=0 and `step`=1");
-            $stmt->bind_param("s", $text);
+            $stmt->bind_param("si", $text, $from_id);
             $stmt->execute();
             $stmt->close();
             sendMessage($msg,$cancelKey);
@@ -11677,7 +11684,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         $msg = '🔰لطفا یه دسته از لیست زیر برا پلن انتخاب کن ';
         if(is_numeric($text)){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `price`=?,`step`=3 WHERE `active`=0");
-            $stmt->bind_param("s", $text);
+            $stmt->bind_param("si", $text, $from_id);
             $stmt->execute();
             $stmt->close();
             sendMessage($msg,json_encode(['keyboard'=>$catkey,'resize_keyboard'=>true]));
@@ -11843,7 +11850,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         }
         
         $stmt = $connection->prepare("UPDATE `server_plans` SET `protocol`=?,`step`=61 WHERE `active`=0");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
         sendMessage("📅 | لطفا تعداد روز های اعتبار این پلن را وارد کنید:");
@@ -11923,7 +11930,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             exit();
         }
         $stmt = $connection->prepare("UPDATE `server_plans` SET `limitip`=?,`step`=4 WHERE `active`=0");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
 
@@ -11940,7 +11947,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         }
         
         $stmt = $connection->prepare("UPDATE `server_plans` SET `protocol`=?,`step`=53 WHERE `active`=0");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
 
@@ -12029,7 +12036,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             exit();
         }
         $stmt = $connection->prepare("UPDATE `server_plans` SET `type`=?,`step`=4 WHERE `active`=0");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
 
@@ -12042,7 +12049,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         
         if($userInfo['step'] == "addNewPasarguardPlan"){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `descr`=?, `active`=1,`step`=10 WHERE `step`=4");
-            $stmt->bind_param("s", $text);
+            $stmt->bind_param("si", $text, $from_id);
             $stmt->execute();
             $stmt->close();
             sendMessage('☑️ | پلن پاسارگارد با موفقیت ثبت شد',$removeKeyboard);
@@ -12075,7 +12082,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             sendMessage($mainValues['reached_main_menu'],getAdminKeys());
             setUser();
         }
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
 
@@ -12804,7 +12811,7 @@ if(($userInfo['step'] == "searchUsersConfig" && $text != $buttonValues['cancel']
     else{
         sendMessage($mainValues['please_wait_message'], $removeKeyboard); 
         $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `remark` LIKE CONCAT('%', ?, '%')");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
     }
     $stmt->execute();
     $orderInfo = $stmt->get_result();
@@ -13474,8 +13481,8 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $rowId = $match[2];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (COALESCE(`user_id`,0)=0 OR `user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -13496,7 +13503,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();            
             
             $canUse = $discountInfo['can_use'];
-            $userUsedCount = array_count_values($usedBy)[$from_id];
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
             if($canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
@@ -13685,7 +13692,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -14560,7 +14567,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -14931,7 +14938,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `receipt_submitted_at`=UNIX_TIMESTAMP(), `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -15237,7 +15244,7 @@ if(preg_match('/^addNewCategory/',$userInfo['step']) and $text!=$buttonValues['c
     if($step==2 and $text!=$buttonValues['cancel'] ){
         
         $stmt = $connection->prepare("UPDATE `server_categories` SET `title`=?,`step`=4,`active`=1 WHERE `active`=0");
-        $stmt->bind_param("s", $text);
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $stmt->close();
 
