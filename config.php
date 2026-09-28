@@ -458,6 +458,7 @@ if(isset($_GET['bid'])){
                         ensureServerConfigSchema();
                         ensureServerPlansQuotaSchema();
                         ensureUserApprovalSchema();
+                        if(function_exists('deltaEnsureCommerceSchema')) deltaEnsureCommerceSchema();
                         $GLOBALS['dbName'] = $childDb;
                         $dbName = $childDb;
                     }
