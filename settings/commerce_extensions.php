@@ -297,7 +297,7 @@ if(!function_exists('deltaPrepareUsdtQuote')){
         $stmt->bind_param('s',$hash);$stmt->execute();$pay=$stmt->get_result()->fetch_assoc();$stmt->close();
         if(!$pay){$error='فاکتور پیدا نشد';return null;}
         if($uid>0 && (int)$pay['user_id']!==(int)$uid){$error='این فاکتور متعلق به شما نیست';return null;}
-        if(in_array((string)$pay['state'],['approved','paid','paid_with_wallet','cancelled_by_user'],true)){$error='این فاکتور دیگر قابل پرداخت نیست';return null;}
+        if((string)($pay['state']??'')!=='pending'){$error='این فاکتور دیگر قابل پرداخت نیست';return null;}
         if(!deltaUsdtGatewayEnabled()){$error='درگاه USDT غیرفعال است';return null;}
         $rateSource='';$rate=deltaFetchUsdtTomanRate($rateSource);
         if($rate<=0){$error='دریافت نرخ لحظه‌ای تتر ناموفق بود؛ کمی بعد دوباره تلاش کنید';return null;}
