@@ -263,7 +263,7 @@ if(preg_match('/^usdtReceipt\|(.+)$/',(string)($userInfo['step']??''),$m) && $te
     if($tx==='' || strlen($tx)<8){sendMessage('❌ هش تراکنش (TXID) را در کپشن همان عکس وارد کنید.');exit;}
     $photos=$update->message->photo;$ph=end($photos);$receiptFile=(string)($ph->file_id??$fileid??'');
     $method='usdt_bep20';
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`payment_method`=?,`usdt_tx_hash`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`receipt_submitted_at`=UNIX_TIMESTAMP(),`payment_method`=?,`usdt_tx_hash`=? WHERE `hash_id`=? AND `state`='pending'");
     $stmt->bind_param('sss',$method,$tx,$hash);$stmt->execute();$changed=$stmt->affected_rows>0;$stmt->close();
     if(!$changed){sendMessage('این فاکتور قبلاً ارسال یا پردازش شده است.',$removeKeyboard);setUser();exit;}
     $pay=deltaCommerceFetchPayByHash($hash);$tracking=deltaEnsureTrackingCode($hash);
