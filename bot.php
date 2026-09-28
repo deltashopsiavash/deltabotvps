@@ -4581,13 +4581,13 @@ if($userInfo['step'] == "editInviteAmount" && ($from_id == $admin || $userInfo['
         
         if($checkExist->num_rows > 0){
             $stmt = $connection->prepare("UPDATE `setting` SET `value` = ? WHERE `type` = 'INVITE_BANNER_AMOUNT'");
-            $stmt->bind_param("si", $text, $from_id);
+            $stmt->bind_param("s", $text);
             $stmt->execute();
             $checkExist = $stmt->get_result();
             $stmt->close();
         }else{
             $stmt = $connection->prepare("INSERT INTO `setting` (`value`, `type`) VALUES (?, 'INVITE_BANNER_AMOUNT')");
-            $stmt->bind_param("si", $text, $from_id);
+            $stmt->bind_param("s", $text);
             $stmt->execute();
             $checkExist = $stmt->get_result();
             $stmt->close();
@@ -5544,7 +5544,7 @@ if(preg_match('/^payWithTronWallet(.*)/',$userInfo['step'], $match) && $text != 
         exit(); 
     }else{
         $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `payid` = ?");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $checkExist = $stmt->get_result();
         $stmt->close();
@@ -6300,7 +6300,7 @@ if($userInfo['step'] == 's2a' and $text != $buttonValues['cancel'] && ($from_id 
     }
     else{
         $stmt = $connection->prepare("INSERT INTO `send_list` (`type`, `text`) VALUES ('text', ?)");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
     }
     $stmt->execute();
     $id = $stmt->insert_id;
@@ -10187,7 +10187,7 @@ if($data=="addTicketCategory" and ($from_id == $admin || $userInfo['isAdmin'] ==
 }
 if ($userInfo['step']=="addTicketCategory" and ($from_id == $admin || $userInfo['isAdmin'] == true)){
 	$stmt = $connection->prepare("INSERT INTO `setting` (`type`, `value`) VALUES ('TICKETS_CATEGORY', ?)");	
-	$stmt->bind_param("si", $text, $from_id);
+	$stmt->bind_param("s", $text);
 	$stmt->execute();
 	$stmt->close();
     setUser();
@@ -11674,7 +11674,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         $msg = '🔰 لطفا قیمت پلن رو به تومان وارد کنید!';
         if(strlen($text)>1){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `title`=?,`step`=2 WHERE `active`=0 and `step`=1");
-            $stmt->bind_param("si", $text, $from_id);
+            $stmt->bind_param("s", $text);
             $stmt->execute();
             $stmt->close();
             sendMessage($msg,$cancelKey);
@@ -11684,7 +11684,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         $msg = '🔰لطفا یه دسته از لیست زیر برا پلن انتخاب کن ';
         if(is_numeric($text)){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `price`=?,`step`=3 WHERE `active`=0");
-            $stmt->bind_param("si", $text, $from_id);
+            $stmt->bind_param("s", $text);
             $stmt->execute();
             $stmt->close();
             sendMessage($msg,json_encode(['keyboard'=>$catkey,'resize_keyboard'=>true]));
@@ -11850,7 +11850,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         }
         
         $stmt = $connection->prepare("UPDATE `server_plans` SET `protocol`=?,`step`=61 WHERE `active`=0");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
         sendMessage("📅 | لطفا تعداد روز های اعتبار این پلن را وارد کنید:");
@@ -11930,7 +11930,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             exit();
         }
         $stmt = $connection->prepare("UPDATE `server_plans` SET `limitip`=?,`step`=4 WHERE `active`=0");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
 
@@ -11947,7 +11947,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         }
         
         $stmt = $connection->prepare("UPDATE `server_plans` SET `protocol`=?,`step`=53 WHERE `active`=0");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
 
@@ -12036,7 +12036,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             exit();
         }
         $stmt = $connection->prepare("UPDATE `server_plans` SET `type`=?,`step`=4 WHERE `active`=0");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
 
@@ -12049,7 +12049,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
         
         if($userInfo['step'] == "addNewPasarguardPlan"){
             $stmt = $connection->prepare("UPDATE `server_plans` SET `descr`=?, `active`=1,`step`=10 WHERE `step`=4");
-            $stmt->bind_param("si", $text, $from_id);
+            $stmt->bind_param("s", $text);
             $stmt->execute();
             $stmt->close();
             sendMessage('☑️ | پلن پاسارگارد با موفقیت ثبت شد',$removeKeyboard);
@@ -12082,7 +12082,7 @@ if(preg_match('/(addNewRahgozarPlan|addNewPlan|addNewMarzbanPlan|addNewPasarguar
             sendMessage($mainValues['reached_main_menu'],getAdminKeys());
             setUser();
         }
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
 
@@ -12811,7 +12811,7 @@ if(($userInfo['step'] == "searchUsersConfig" && $text != $buttonValues['cancel']
     else{
         sendMessage($mainValues['please_wait_message'], $removeKeyboard); 
         $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `remark` LIKE CONCAT('%', ?, '%')");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
     }
     $stmt->execute();
     $orderInfo = $stmt->get_result();
@@ -15244,7 +15244,7 @@ if(preg_match('/^addNewCategory/',$userInfo['step']) and $text!=$buttonValues['c
     if($step==2 and $text!=$buttonValues['cancel'] ){
         
         $stmt = $connection->prepare("UPDATE `server_categories` SET `title`=?,`step`=4,`active`=1 WHERE `active`=0");
-        $stmt->bind_param("si", $text, $from_id);
+        $stmt->bind_param("s", $text);
         $stmt->execute();
         $stmt->close();
 
