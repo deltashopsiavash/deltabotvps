@@ -3835,6 +3835,13 @@ if(preg_match('/^changePaymentKeys(\w+)/',$data,$match) && ($from_id == $admin |
     setUser($data);
 }
 if(preg_match('/^changePaymentKeys(\w+)/',$userInfo['step'],$match) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if($match[1] === 'usdtBep20Address'){
+        $text = trim((string)$text);
+        if(!preg_match('/^0x[a-fA-F0-9]{40}$/',$text)){
+            sendMessage("❌ آدرس معتبر BEP20/BSC وارد کنید.\n\nآدرس باید با <code>0x</code> شروع شود و ۴۰ کاراکتر هگز بعد از آن داشته باشد.",$cancelKey,'HTML');
+            exit;
+        }
+    }
 
     $stmt = $connection->prepare("SELECT * FROM `setting` WHERE `type` = 'PAYMENT_KEYS'");
     $stmt->execute();
