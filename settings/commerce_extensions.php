@@ -127,7 +127,12 @@ if(!function_exists('deltaExtractPayHashFromKeyboard')){
             if(!is_array($node)) return '';
             if(isset($node['callback_data'])){
                 $cb=(string)$node['callback_data'];
-                $prefixes=['approvePayment','decPayment','approveRenewAcc','decRenewAcc','approvePgRenew','decPgRenew','accept','declineOffer'];
+                $prefixes=[
+                    'approvePayment','decPayment','approveRenewAcc','decRenewAcc','approvePgRenew','decPgRenew','accept','declineOffer',
+                    'payWithWallet','payWithCartToCart','payCustomWithWallet','payCustomWithCartToCart',
+                    'payRenewWithWallet','payRenewWithCartToCart','increaseWalletWithCartToCart',
+                    'payWithTronWallet','payWithWeSwap','payWithUsdt','sendUsdtReceipt'
+                ];
                 foreach($prefixes as $p){
                     if(strpos($cb,$p)===0){
                         $rest=substr($cb,strlen($p));
@@ -135,6 +140,9 @@ if(!function_exists('deltaExtractPayHashFromKeyboard')){
                         if($rest!=='') return $rest;
                     }
                 }
+            }
+            if(isset($node['url']) && preg_match('/[?&]hash_id=([^&]+)/',(string)$node['url'],$m)){
+                return urldecode($m[1]);
             }
             foreach($node as $v){$r=$walk($v);if($r!=='')return $r;}
             return '';
@@ -312,15 +320,56 @@ if(!function_exists('deltaBuildUsdtInvoiceText')){
 
 if(!function_exists('deltaAppendUsdtPaymentButton')){
     function deltaAppendUsdtPaymentButton(&$keyboard,$hash){
+        global $connection;
         if(!is_array($keyboard) || !deltaUsdtGatewayEnabled()) return;
         $hash=(string)$hash;
         if($hash==='') return;
+        $stmt=$connection->prepare("SELECT `price`,`state`,`special_offer_id` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+        if(!$stmt) return;
+        $stmt->bind_param('s',$hash);$stmt->execute();$pay=$stmt->get_result()->fetch_assoc();$stmt->close();
+        if(!$pay || (int)($pay['price']??0)<=0 || (int)($pay['special_offer_id']??0)>0 || (string)($pay['state']??'')!=='pending') return;
         foreach($keyboard as $row){
             foreach((array)$row as $btn){
                 if(($btn['callback_data']??'')==='payWithUsdt'.$hash) return;
             }
         }
         $keyboard[]=[['text'=>'💵 پرداخت ارزی (USDT)','callback_data'=>'payWithUsdt'.$hash]];
+    }
+}
+
+if(!function_exists('deltaEnhanceCustomerPaymentMessage')){
+    function deltaEnhanceCustomerPaymentMessage($txt,$key,$ci,$parse='MarkDown'){
+        global $connection;
+        if($key===null || $key==='') return [$txt,$key];
+        $hash=deltaExtractPayHashFromKeyboard($key);
+        if($hash==='') return [$txt,$key];
+
+        $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
+        if(!$stmt) return [$txt,$key];
+        $stmt->bind_param('s',$hash);$stmt->execute();$pay=$stmt->get_result()->fetch_assoc();$stmt->close();
+        if(!$pay) return [$txt,$key];
+
+        // Only decorate the invoice sent to its owner. Admin receipt keyboards
+        // contain the same hash but must keep their approve/decline layout intact.
+        if((int)($pay['user_id']??0)!==(int)$ci) return [$txt,$key];
+        if(!in_array((string)($pay['state']??''),['pending','have_sent'],true)) return [$txt,$key];
+
+        $isHtml=strtolower((string)$parse)==='html';
+        $txt=deltaAppendTrackingText($txt,$pay,$isHtml);
+
+        $kbd=is_string($key)?json_decode($key,true):$key;
+        if(is_array($kbd)){
+            if(isset($kbd['inline_keyboard']) && is_array($kbd['inline_keyboard'])){
+                $rows=$kbd['inline_keyboard'];
+                deltaAppendUsdtPaymentButton($rows,$hash);
+                $kbd['inline_keyboard']=$rows;
+                $key=json_encode($kbd,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+            }elseif(array_is_list($kbd)){
+                deltaAppendUsdtPaymentButton($kbd,$hash);
+                $key=json_encode(['inline_keyboard'=>$kbd],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+            }
+        }
+        return [$txt,$key];
     }
 }
 
