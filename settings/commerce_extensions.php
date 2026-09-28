@@ -143,6 +143,9 @@ if(!function_exists('deltaExtractPayHashFromKeyboard')){
                     'approvePayment','decPayment','approveRenewAcc','decRenewAcc','approvePgRenew','decPgRenew','accept','declineOffer',
                     'payWithWallet','payWithCartToCart','payCustomWithWallet','payCustomWithCartToCart',
                     'payRenewWithWallet','payRenewWithCartToCart','increaseWalletWithCartToCart',
+                    'payIncreaseDayWithCartToCart','payIncraseDayWithWallet',
+                    'payIncreaseWithCartToCart','payIncraseWithWallet',
+                    'pgRenewPayWallet','pgRenewPayCart','pgRenewPayQuota',
                     'payWithTronWallet','payWithWeSwap','payWithUsdt','sendUsdtReceipt'
                 ];
                 foreach($prefixes as $p){
