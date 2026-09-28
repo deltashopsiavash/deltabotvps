@@ -260,7 +260,15 @@ if(preg_match('/^usdtReceipt\|(.+)$/',(string)($userInfo['step']??''),$m) && $te
     if((int)($pay['usdt_expires_at']??0)<time()){sendMessage('⏰ اعتبار ۳۰ دقیقه‌ای نرخ تمام شده؛ به فاکتور برگردید و نرخ را بروزرسانی کنید.',$removeKeyboard);setUser();exit;}
     if(!isset($update->message->photo)){sendMessage('❌ فقط عکس اسکرین‌شات رسید را ارسال کنید و TXID را در کپشن بنویسید.');exit;}
     $tx=trim((string)($caption??''));
-    if($tx==='' || strlen($tx)<8){sendMessage('❌ هش تراکنش (TXID) را در کپشن همان عکس وارد کنید.');exit;}
+    if(!preg_match('/^0x[a-fA-F0-9]{64}$/',$tx)){
+        sendMessage('❌ TXID معتبر شبکه BSC وارد کنید. هش تراکنش باید با <code>0x</code> شروع شود و ۶۴ کاراکتر هگز بعد از آن داشته باشد.',null,'HTML');
+        exit;
+    }
+    $dupStmt=$connection->prepare("SELECT `id` FROM `pays` WHERE `usdt_tx_hash`=? AND `hash_id`<>? LIMIT 1");
+    if($dupStmt){
+        $dupStmt->bind_param('ss',$tx,$hash);$dupStmt->execute();$duplicate=$dupStmt->get_result()->num_rows>0;$dupStmt->close();
+        if($duplicate){sendMessage('❌ این TXID قبلاً برای یک فاکتور دیگر ثبت شده است.');exit;}
+    }
     $photos=$update->message->photo;$ph=end($photos);$receiptFile=(string)($ph->file_id??$fileid??'');
     $method='usdt_bep20';
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`receipt_submitted_at`=UNIX_TIMESTAMP(),`payment_method`=?,`usdt_tx_hash`=? WHERE `hash_id`=? AND `state`='pending'");
