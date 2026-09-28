@@ -39,7 +39,7 @@ if($rewaredTime>0 && $rewaredChannel != null){
     if(time() > $lastTime){
         $time = time() - ($rewaredTime * 60 * 60);
         
-        $stmt = $connection->prepare("SELECT SUM(price) as total FROM `pays` WHERE `request_date` > ? AND (`state` = 'paid' OR `state` = 'approved')");
+        $stmt = $connection->prepare("SELECT SUM(price) as total FROM `pays` WHERE `request_date` > ? AND `state` IN ('paid','approved','paid_with_wallet')");
         $stmt->bind_param("i", $time);
         $stmt->execute();
         $totalRewards = number_format($stmt->get_result()->fetch_assoc()['total']);
@@ -279,7 +279,7 @@ if($globalAutoApprove || !empty($forceAutoUsers)){
                 }
                 
                 if($inbound_id == 0){    
-                    if($serverType == "marzban"){
+                    if($serverType == "marzban" || $serverType == "pasarguard"){
                         $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
                         if(!$response->success){
                             if($response->msg == "User already exists"){
@@ -338,11 +338,13 @@ if($globalAutoApprove || !empty($forceAutoUsers)){
                     exit;
                 }
                 
-                if($serverType == "marzban"){
-                    $uniqid = $token = str_replace("/sub/", "", $response->sub_link);
-                    $subLink = (xuiBotStateIsOn($botState, 'subLinkState', 'on') || xuiBotStateIsOn($botState, 'qrSubState', 'off'))?xuiResolveClientSubLink($server_id, $panelUrl, $response->sub_link ?? '', $inbound_id, $uniqid, $remark):"";
-                    $vraylink = [$subLink];
-                    $vray_link = json_encode($response->vray_links);
+                if($serverType == "marzban" || $serverType == "pasarguard"){
+                    $panelPayload = xuiPreparePanelOrderPayload($server_id, $panelUrl, $serverType, $response, $remark, $inbound_id);
+                    $subLink = $panelPayload['subLink'];
+                    $token = $panelPayload['token'];
+                    $uniqid = $panelPayload['uuid'];
+                    $vraylink = $panelPayload['links'];
+                    $vray_link = $panelPayload['json'];
                 }else{
                     $token = RandomString(30);
                     $subLink = (xuiBotStateIsOn($botState, 'subLinkState', 'on') || xuiBotStateIsOn($botState, 'qrSubState', 'off'))?xuiResolveClientSubLink($server_id, $panelUrl, $response->sub_link ?? '', $inbound_id, $uniqid, $remark):"";
@@ -388,8 +390,9 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                 
                 $stmt = $connection->prepare("INSERT INTO `orders_list` 
                     (`userid`, `token`, `transid`, `fileid`, `server_id`, `inbound_id`, `remark`, `uuid`, `protocol`, `expire_date`, `link`, `amount`, `status`, `date`, `notif`, `rahgozar`, `agent_bought`)
-                    VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
-                $stmt->bind_param("ssiiisssisiiii", $user_id, $token, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agentBought);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
+                $payHash=(string)($payInfo['hash_id']??'');
+                $stmt->bind_param("sssiiisssisiiii", $user_id, $token, $payHash, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agentBought);
                 $stmt->execute();
                 $order = $stmt->get_result(); 
                 $stmt->close();
@@ -454,7 +457,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             $stmt->close();
             $serverType = $server_info['type'];
         
-            if($serverType == "marzban"){
+            if($serverType == "marzban" || $serverType == "pasarguard"){
                 $response = editMarzbanConfig($server_id, ['remark'=>$remark, 'days'=>$days, 'volume' => $volume]);
             }else{
                 if($inbound_id > 0)
@@ -519,7 +522,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             $stmt->close();
             $serverType = $server_info['type'];
         
-            if($serverType == "marzban"){
+            if($serverType == "marzban" || $serverType == "pasarguard"){
                 $response = editMarzbanConfig($server_id, ['remark'=>$remark, 'plus_day'=>$volume]);
             }else{
                 if($inbound_id > 0)
@@ -583,7 +586,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                 $stmt->close();
                 $serverType = $server_info['type'];
             
-                if($serverType == "marzban"){
+                if($serverType == "marzban" || $serverType == "pasarguard"){
                     $response = editMarzbanConfig($server_id, ['remark'=>$remark, 'plus_volume'=>$volume]);
                 }else{
                     if($inbound_id > 0)
@@ -608,6 +611,35 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
 
                 sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id اضافه شد، میخواست حجم کانفیگشو افزایش بده",null,null,$admin);                
             }
+        }
+        elseif(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_(\d+)_(\d+)$/',$payType,$pgm)){
+            $kind=$pgm[1];$oid=(int)$pgm[2];$pid=(int)$pgm[3];
+            $days=0;$volume=0.0;$fullReset=false;$fullPlanId=0;
+            if($kind==='FULL'){
+                $fullReset=true;$fullPlanId=$pid;
+                $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1");
+                $stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();
+                $days=(int)($pl['days']??0);$volume=(float)($pl['volume']??0);
+            }elseif($kind==='VOLUME'){
+                $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
+                $stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();
+                $volume=(float)($pl['amount']??0);
+            }else{
+                $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
+                $stmt->bind_param('i',$pid);$stmt->execute();$pl=$stmt->get_result()->fetch_assoc();$stmt->close();
+                $days=(int)($pl['amount']??0);
+            }
+            $response=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
+            if(!is_object($response) || empty($response->success)){
+                // Keep the paid receipt visible for manual/admin recovery instead of
+                // pretending that the renewal was delivered.
+                $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`auto_approved`=0,`auto_approved_at`=0 WHERE `id`=?");
+                $stmt->bind_param('i',$rowId);$stmt->execute();$stmt->close();
+                sendMessage("⚠️ تأیید خودکار رسید انجام شد اما تمدید روی پنل خطا داد و سفارش برای بررسی دوباره مدیریت باقی ماند.\n".($response->msg??''),null,null,$user_id);
+                sendMessage("⚠️ خطا در تمدید خودکار پاسارگارد برای کاربر {$user_id}\n".($response->msg??''),null,null,$admin);
+                continue;
+            }
+            sendMessage("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: {$volume} گیگ\n➕ روز: {$days} روز",getMainKeys(),null,$user_id);
         }
         elseif($payType == "RENEW_SCONFIG"){
             $user_id = $user_id;
