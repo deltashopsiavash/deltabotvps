@@ -364,6 +364,20 @@ if(!function_exists('deltaEnhanceCustomerPaymentMessage')){
         global $connection;
         if($key===null || $key==='') return [$txt,$key];
         $hash=deltaExtractPayHashFromKeyboard($key);
+        if($hash===''){
+            // USDT is allowed to be the only enabled gateway. In that case the
+            // just-created invoice may initially contain only a cancel/back button,
+            // so recover the unique fresh pending payment for this recipient.
+            $freshAfter=time()-15;
+            $stmt=$connection->prepare("SELECT `hash_id` FROM `pays` WHERE `user_id`=? AND `state`='pending' AND `request_date`>=? ORDER BY `id` DESC LIMIT 2");
+            if($stmt){
+                $stmt->bind_param('ii',$ci,$freshAfter);$stmt->execute();$res=$stmt->get_result();
+                if($res && $res->num_rows===1){
+                    $row=$res->fetch_assoc();$hash=(string)($row['hash_id']??'');
+                }
+                $stmt->close();
+            }
+        }
         if($hash==='') return [$txt,$key];
 
         $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
