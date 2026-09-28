@@ -13840,8 +13840,12 @@ if(preg_match('/decRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $userI
     $markup[] = [['text' => '❌', 'callback_data' => "dontsendanymore"]];
     $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
 
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='declined' WHERE `hash_id`=? AND `state`='have_sent'");
+    if($stmt){$stmt->bind_param('s',$match[1]);$stmt->execute();$stmt->close();}
     editKeys($keys);
-    sendMessage("😖|تمدید سرویس $remark لغو شد",null,null,$uid);
+    $rejectMsg="😖|تمدید سرویس $remark لغو شد";
+    if(function_exists('deltaAppendTrackingText')) $rejectMsg=deltaAppendTrackingText($rejectMsg,$payInfo,false);
+    sendMessage($rejectMsg,null,null,$uid);
     exit;
 }
 if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
@@ -15077,11 +15081,15 @@ if(preg_match('/decIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin || 
     $volume = $res['volume'];
 
     $acctxt = '';
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='declined' WHERE `hash_id`=? AND `state`='have_sent'");
+    if($stmt){$stmt->bind_param('s',$match[1]);$stmt->execute();$stmt->close();}
     editKeys(json_encode(['inline_keyboard'=>[
 		    [['text'=>"لغو شد ❌",'callback_data'=>"deltach"]]
 		    ]]));
     
-    sendMessage("افزایش حجم $volume گیگ اشتراک $remark لغو شد",null,null,$uid);
+    $rejectMsg="افزایش حجم $volume گیگ اشتراک $remark لغو شد";
+    if(function_exists('deltaAppendTrackingText')) $rejectMsg=deltaAppendTrackingText($rejectMsg,$payParam,false);
+    sendMessage($rejectMsg,null,null,$uid);
 }
 if(preg_match('/decIncreaseDay(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -15120,11 +15128,15 @@ if(preg_match('/decIncreaseDay(.*)/',$data,$match) && ($from_id == $admin || $us
     $volume = $res['volume'];
 
     $acctxt = '';
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='declined' WHERE `hash_id`=? AND `state`='have_sent'");
+    if($stmt){$stmt->bind_param('s',$match[1]);$stmt->execute();$stmt->close();}
     editKeys(json_encode(['inline_keyboard'=>[
 		    [['text'=>"لغو شد ❌",'callback_data'=>"deltach"]]
 		    ]]));
     
-    sendMessage("افزایش زمان $volume روز اشتراک $remark لغو شد",null,null,$uid);
+    $rejectMsg="افزایش زمان $volume روز اشتراک $remark لغو شد";
+    if(function_exists('deltaAppendTrackingText')) $rejectMsg=deltaAppendTrackingText($rejectMsg,$payParam,false);
+    sendMessage($rejectMsg,null,null,$uid);
 }
 if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
