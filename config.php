@@ -10034,9 +10034,6 @@ function pasarguardFetchGroups($server_id, $token = null){
                 CURLOPT_MAXREDIRS => 3,
                 CURLOPT_HTTPHEADER => ['Accept: application/json','Authorization: Bearer ' . $token->access_token]
             ]);
-            if(defined('CURLOPT_POSTREDIR') && defined('CURL_REDIR_POST_ALL')){
-                curl_setopt($curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
-            }
             $raw = curl_exec($curl);
             $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
             curl_close($curl);
@@ -10250,6 +10247,9 @@ function addPasarguardUser($server_id, $remark, $volume, $days, $plan_id = null,
                 ],
                 CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             ]);
+            if(defined('CURLOPT_POSTREDIR') && defined('CURL_REDIR_POST_ALL')){
+                curl_setopt($curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+            }
             $raw = curl_exec($curl);
             $err = curl_error($curl);
             $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
