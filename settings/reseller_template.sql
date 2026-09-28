@@ -129,6 +129,7 @@ DROP TABLE IF EXISTS `discounts`;
 CREATE TABLE `discounts` (
   `id` int NOT NULL AUTO_INCREMENT,
   `hash_id` varchar(100) NOT NULL,
+  `user_id` bigint NOT NULL DEFAULT '0',
   `type` varchar(10) NOT NULL,
   `amount` int NOT NULL,
   `expire_date` int NOT NULL,
@@ -145,7 +146,6 @@ CREATE TABLE `discounts` (
 
 LOCK TABLES `discounts` WRITE;
 /*!40000 ALTER TABLE `discounts` DISABLE KEYS */;
-INSERT INTO `discounts` VALUES (3,'XiikqIFeY','percent',15,1774337092,29,'[5443606075]',2);
 /*!40000 ALTER TABLE `discounts` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -328,6 +328,7 @@ DROP TABLE IF EXISTS `pays`;
 CREATE TABLE `pays` (
   `id` int NOT NULL AUTO_INCREMENT,
   `hash_id` varchar(1000) NOT NULL,
+  `tracking_code` varchar(8) DEFAULT NULL,
   `description` varchar(5000) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
   `payid` varchar(500) DEFAULT NULL,
   `user_id` bigint NOT NULL,
@@ -339,6 +340,16 @@ CREATE TABLE `pays` (
   `tron_price` double(255,2) NOT NULL DEFAULT '0.00',
   `request_date` int NOT NULL,
   `state` varchar(255) NOT NULL,
+  `payment_method` varchar(32) DEFAULT NULL,
+  `usdt_rate_toman` bigint NOT NULL DEFAULT '0',
+  `usdt_amount` decimal(20,8) NOT NULL DEFAULT '0.00000000',
+  `usdt_expires_at` int NOT NULL DEFAULT '0',
+  `usdt_tx_hash` varchar(255) DEFAULT NULL,
+  `auto_approved` tinyint(1) NOT NULL DEFAULT '0',
+  `auto_approved_at` int NOT NULL DEFAULT '0',
+  `pending_resend_at` int NOT NULL DEFAULT '0',
+  `cancelled_at` int NOT NULL DEFAULT '0',
+  `receipt_submitted_at` int NOT NULL DEFAULT '0',
   `agent_bought` int NOT NULL DEFAULT '0',
   `agent_count` int NOT NULL DEFAULT '0',
   `message_id` int DEFAULT NULL,
@@ -353,7 +364,6 @@ CREATE TABLE `pays` (
 
 LOCK TABLES `pays` WRITE;
 /*!40000 ALTER TABLE `pays` DISABLE KEYS */;
-INSERT INTO `pays` VALUES (2,'BLYd441gQ',NULL,NULL,6668176130,'INCREASE_WALLET',0,0,0,62800,0.00,1771782822,'have_sent',0,0,63,'7108082722');
 /*!40000 ALTER TABLE `pays` ENABLE KEYS */;
 UNLOCK TABLES;
 
