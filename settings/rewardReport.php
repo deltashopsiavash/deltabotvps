@@ -44,6 +44,21 @@ if($rewaredTime>0 && $rewaredChannel != null){
         $stmt->execute();
         $totalRewards = number_format($stmt->get_result()->fetch_assoc()['total']);
         $stmt->close();
+
+        $todayStart = strtotime('today');
+        $autoTodayCount = 0; $autoTodayAmount = 0;
+        $stmt = $connection->prepare("SELECT COUNT(*) AS c, COALESCE(SUM(`price`),0) AS s FROM `pays` WHERE `auto_approved`=1 AND `auto_approved_at`>=?");
+        if($stmt){
+            $stmt->bind_param('i',$todayStart);$stmt->execute();$ar=$stmt->get_result()->fetch_assoc();$stmt->close();
+            $autoTodayCount=(int)($ar['c']??0);$autoTodayAmount=(int)($ar['s']??0);
+        }
+        $topToday=[];
+        $stmt=$connection->prepare("SELECT `user_id`,COUNT(*) AS orders_count,COALESCE(SUM(`price`),0) AS total FROM `pays` WHERE `request_date`>=? AND `state` IN ('paid','approved','paid_with_wallet') GROUP BY `user_id` ORDER BY total DESC LIMIT 5");
+        if($stmt){
+            $stmt->bind_param('i',$todayStart);$stmt->execute();$tr=$stmt->get_result();
+            while($row=$tr->fetch_assoc()) $topToday[]=$row;
+            $stmt->close();
+        }
         
         $botState['lastRewardMessage']=time() + ($rewaredTime * 60 * 60);
         
@@ -65,17 +80,30 @@ if($rewaredTime>0 && $rewaredChannel != null){
 
 💰مبلغ : $totalRewards تومان
 
-☑️ $channelLock
+🤖 تایید خودکار امروز: ".number_format($autoTodayCount)." رسید
+💵 مبلغ تایید خودکار امروز: ".number_format($autoTodayAmount)." تومان
 
-";
-        sendMessage($txt, null, null, $rewaredChannel);
+🏆 بیشترین خرید امروز:";
+        if($topToday){
+            $rank=1;
+            foreach($topToday as $top){
+                $txt .= "\n{$rank}) کاربر <code>".(int)$top['user_id']."</code> — <b>".number_format((int)$top['total'])." تومان</b> — ".(int)$top['orders_count']." سفارش";
+                $rank++;
+            }
+        }else{
+            $txt .= "\nامروز خرید نهایی‌شده‌ای ثبت نشده است.";
+        }
+        $txt .= "\n\n☑️ $channelLock";
+        sendMessage($txt, null, 'HTML', $rewaredChannel);
     }
 }    
 
-if($botState['cartToCartAutoAcceptState']=="on"){
+$globalAutoApprove = (($botState['cartToCartAutoAcceptState'] ?? 'off') === 'on');
+$forceAutoUsers = function_exists('deltaGetForceAutoApproveUsers') ? deltaGetForceAutoApproveUsers() : [];
+if($globalAutoApprove || !empty($forceAutoUsers)){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
-    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' AND `request_date` <= ?");
-    $stmt->bind_param('i', $date);
+    $receiptAfter = function_exists('deltaGetAutoApproveReceiptAfter') ? deltaGetAutoApproveReceiptAfter() : 0;
+    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state`='have_sent' ORDER BY `id` ASC LIMIT 500");
     $stmt->execute();
     $info = $stmt->get_result();
     $stmt->close();
@@ -94,25 +122,36 @@ if($botState['cartToCartAutoAcceptState']=="on"){
         $userinfo = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
+        $forcedAuto = function_exists('deltaIsForceAutoApproveUser') ? deltaIsForceAutoApproveUser($user_id) : false;
+        $receiptSubmittedAt = (int)($payInfo['receipt_submitted_at'] ?? 0);
+        $globalEligible = $globalAutoApprove
+            && $receiptSubmittedAt > 0
+            && $receiptSubmittedAt >= $receiptAfter
+            && $receiptSubmittedAt <= $date;
+        if(!$forcedAuto && !$globalEligible) continue;
 
-        // per-user exception: do not auto-approve for this user
+        // Legacy per-user "do not auto approve" remains effective only for
+        // normal global automation. Forced-auto explicitly overrides it.
         $type = "USER_NO_AUTOAPPROVE_" . $user_id;
         $stmt = $connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
         $stmt->bind_param("s", $type);
         $stmt->execute();
         $noAuto = $stmt->get_result()->fetch_assoc()['value']??"0";
         $stmt->close();
-        if($noAuto == "1") continue;
+        if(!$forcedAuto && $noAuto == "1") continue;
         
-        if($userinfo['is_agent'] == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
-        elseif($userinfo['is_agent'] != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
+        if(!$forcedAuto && $userinfo['is_agent'] == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
+        elseif(!$forcedAuto && $userinfo['is_agent'] != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
         
         $agentBought = $payInfo['agent_bought'];
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =?");
-        $stmt->bind_param("i", $rowId);
+        $autoApprovedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid',`auto_approved`=1,`auto_approved_at`=? WHERE `id`=? AND `state`='have_sent'");
+        $stmt->bind_param("ii", $autoApprovedAt, $rowId);
         $stmt->execute();
+        $locked=$stmt->affected_rows>0;
         $stmt->close();
+        if(!$locked) continue;
         
         
         if($payType == "INCREASE_WALLET"){
@@ -615,6 +654,13 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
         }
         
 
+        $payInfo['auto_approved']=1;
+        $payInfo['auto_approved_at']=$autoApprovedAt;
+        if(function_exists('deltaEnsureTrackingCode')){
+            $tracking=deltaEnsureTrackingCode($payInfo['hash_id']??'');
+            if($tracking!=='') @sendMessage("🔖 کد پیگیری این سفارش: <code>{$tracking}</code>",null,'HTML',$user_id);
+        }
+        if(function_exists('deltaAutoApprovalIncomeReport')) deltaAutoApprovalIncomeReport($payInfo,$userinfo);
         editKeys(json_encode(['inline_keyboard'=>[[['text'=>"خودکار تأیید شد",'callback_data'=>"deltach"]]]]), $payInfo['message_id'], $payInfo['chat_id']);
     }
 }
