@@ -5938,6 +5938,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     }
     $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'ارزی ریالی', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);
+    if(function_exists('deltaAppendTrackingText')) $msg=deltaAppendTrackingText($msg,$payInfo,true);
     
     sendToAdmins($msg, $keys, "html");
 }
@@ -8058,7 +8059,10 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     define('IMAGE_HEIGHT',540);
 
     (function_exists('npvSendManualLockRequestOrNormal') ? npvSendManualLockRequestOrNormal($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu", $file_detail ?? [], $payInfo['description'] ?? '', $serverInfo ?? []) : xuiSendOrderDeliveryPhoto($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu"));
-    sendMessage('✅ کانفیگ و براش ارسال کردم', getMainKeys());
+    $trackingCode = function_exists('deltaEnsureTrackingCode') ? deltaEnsureTrackingCode($payInfo['hash_id'] ?? '') : '';
+    $deliveryMsg = "✅ کانفیگ و براش ارسال کردم\nریمارک: {$remark}\nحجم سرویس: {$volume} گیگ\nمدت زمان سرویس: {$days} روز";
+    if($trackingCode !== '') $deliveryMsg .= "\nکد پیگیری: {$trackingCode}";
+    sendMessage($deliveryMsg, getMainKeys());
     
     $agentBought = $payInfo['agent_bought'];
 	$stmt = $connection->prepare("INSERT INTO `orders_list` 
@@ -8952,7 +8956,9 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
             $order = $stmt->get_result();
             $stmt->close();
         }
-        sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']), getMainKeys());
+        $deliveryMsg = str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']);
+        if(function_exists('deltaAppendTrackingText')) $deliveryMsg = deltaAppendTrackingText($deliveryMsg,$payInfo,false);
+        sendMessage($deliveryMsg, getMainKeys());
         if($inbound_id == 0) {
             $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
             $stmt->bind_param("ii", $accountCount, $server_id);
@@ -9475,7 +9481,9 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, (int)$pay['user_id']), null, 'HTML');
-    sendMessage("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", null, null, $pay['user_id']);
+    $pgDone="✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز";
+    if(function_exists('deltaAppendTrackingText')) $pgDone=deltaAppendTrackingText($pgDone,$pay,false);
+    sendMessage($pgDone, null, null, $pay['user_id']);
     exit;
 }
 if(preg_match('/^decPgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -13789,7 +13797,9 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
 	$stmt->execute();
 	$stmt->close();
     sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['renewed_config_to_user']), getMainKeys(),null,null);
-    sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$uid);
+    $renewDone="✅سرویس $remark با موفقیت تمدید شد";
+    if(function_exists('deltaAppendTrackingText')) $renewDone=deltaAppendTrackingText($renewDone,$payInfo,false);
+    sendMessage($renewDone,null,null,$uid);
     exit;
 }
 if(preg_match('/decRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
