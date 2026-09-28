@@ -953,7 +953,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('approvePayment' . $hash, 'decPayment' . $hash, $uid);
     }elseif(strpos($originStep, 'payCustomWithCartToCart') === 0){
-        $keyboard = getReceiptAdminKeyboard('accCustom' . $hash, 'decline' . $uid, $uid);
+        $keyboard = getReceiptAdminKeyboard('accCustom' . $hash, 'declineOffer' . $hash . '_' . $uid, $uid);
     }elseif(strpos($originStep, 'payWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('accept' . $hash, 'declineOffer' . $hash . '_' . $uid, $uid);
     }elseif(strpos($originStep, 'payRenewWithCartToCart') === 0){
@@ -7883,7 +7883,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
                             ["کارت به کارت", $from_id, $username, $first_name, $fileprice, $remark,$volume, $days], $mainValues['buy_custom_account_request']);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
-        $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "decline$uid", $uid);
+        $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "declineOffer" . $match[1] . "_" . $uid, $uid);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
