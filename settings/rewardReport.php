@@ -122,6 +122,10 @@ if($globalAutoApprove || !empty($forceAutoUsers)){
         $userinfo = $stmt->get_result()->fetch_assoc();
         $stmt->close();
 
+        // USDT screenshots are only evidence for manual review. Do not
+        // auto-approve them until an on-chain verifier exists.
+        if((string)($payInfo['payment_method'] ?? '') === 'usdt_bep20') continue;
+
         $forcedAuto = function_exists('deltaIsForceAutoApproveUser') ? deltaIsForceAutoApproveUser($user_id) : false;
         $receiptSubmittedAt = (int)($payInfo['receipt_submitted_at'] ?? 0);
         $globalEligible = $globalAutoApprove
