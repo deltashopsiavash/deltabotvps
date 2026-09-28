@@ -18,6 +18,7 @@ if(!function_exists('deltaEnsureCommerceSchema')){
             addColumnIfMissing('pays','auto_approved_at',"`auto_approved_at` INT NOT NULL DEFAULT 0 AFTER `auto_approved`");
             addColumnIfMissing('pays','pending_resend_at',"`pending_resend_at` INT NOT NULL DEFAULT 0 AFTER `auto_approved_at`");
             addColumnIfMissing('pays','cancelled_at',"`cancelled_at` INT NOT NULL DEFAULT 0 AFTER `pending_resend_at`");
+            addColumnIfMissing('pays','receipt_submitted_at',"`receipt_submitted_at` INT NOT NULL DEFAULT 0 AFTER `cancelled_at`");
             addColumnIfMissing('discounts','user_id',"`user_id` BIGINT NOT NULL DEFAULT 0 AFTER `hash_id`");
         }
 
@@ -35,6 +36,17 @@ if(!function_exists('deltaEnsureCommerceSchema')){
                 $val=(string)$maxId;
                 $ins=$connection->prepare("INSERT INTO `setting` (`type`,`value`) VALUES (?,?)");
                 if($ins){$ins->bind_param('ss',$type,$val);$ins->execute();$ins->close();}
+            }
+        }
+        $timeType='AUTO_APPROVE_RECEIPT_AFTER';
+        $stmt=$connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
+        if($stmt){
+            $stmt->bind_param('s',$timeType);$stmt->execute();
+            $exists=$stmt->get_result()->num_rows>0;$stmt->close();
+            if(!$exists){
+                $val=(string)time();
+                $ins=$connection->prepare("INSERT INTO `setting` (`type`,`value`) VALUES (?,?)");
+                if($ins){$ins->bind_param('ss',$timeType,$val);$ins->execute();$ins->close();}
             }
         }
     }
@@ -164,6 +176,7 @@ if(!function_exists('deltaResetAutoApproveBaseline')){
         $r=$connection->query("SELECT COALESCE(MAX(`id`),0) AS m FROM `pays`");
         $max=$r?(int)($r->fetch_assoc()['m']??0):0;
         deltaUpsertSetting('AUTO_APPROVE_BASELINE_PAY_ID',(string)$max);
+        deltaUpsertSetting('AUTO_APPROVE_RECEIPT_AFTER',(string)time());
         return $max;
     }
 }
@@ -171,6 +184,12 @@ if(!function_exists('deltaResetAutoApproveBaseline')){
 if(!function_exists('deltaGetAutoApproveBaseline')){
     function deltaGetAutoApproveBaseline(){
         return max(0,(int)deltaGetSetting('AUTO_APPROVE_BASELINE_PAY_ID','0'));
+    }
+}
+
+if(!function_exists('deltaGetAutoApproveReceiptAfter')){
+    function deltaGetAutoApproveReceiptAfter(){
+        return max(0,(int)deltaGetSetting('AUTO_APPROVE_RECEIPT_AFTER','0'));
     }
 }
 
@@ -394,6 +413,19 @@ if(!function_exists('deltaDisableAdminReceiptButtons')){
             'message_id'=>$mid,
             'reply_markup'=>json_encode(['inline_keyboard'=>[[['text'=>$label,'callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)
         ]);
+    }
+}
+
+if(!function_exists('deltaNotifyUserReceiptTracking')){
+    function deltaNotifyUserReceiptTracking($hash){
+        global $connection;
+        $hash=(string)$hash;if($hash===''||!function_exists('sendMessage'))return;
+        $stmt=$connection->prepare("SELECT `user_id`,`tracking_code`,`state` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+        if(!$stmt)return;
+        $stmt->bind_param('s',$hash);$stmt->execute();$p=$stmt->get_result()->fetch_assoc();$stmt->close();
+        if(!$p)return;
+        $code=deltaEnsureTrackingCode($hash);
+        @sendMessage("✅ رسید شما ثبت شد و برای بررسی ارسال شد.\n⏳ لطفاً تا ثبت سفارش صبر کنید.\n\n🔖 کد پیگیری: <code>{$code}</code>",null,'HTML',(int)$p['user_id']);
     }
 }
 
