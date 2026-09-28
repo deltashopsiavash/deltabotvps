@@ -37,6 +37,7 @@ function addColumnIfMissing($table, $col, $ddl){
     }
 }
 ensurePasarguardRenewalSchema();
+require_once __DIR__ . "/settings/commerce_extensions.php";
 
 function ensureServerConfigSchema(){
     global $connection;
@@ -1981,6 +1982,9 @@ function getReceiptAdminKeyboard($approveCallback, $declineCallback, $uid){
 }
 
 function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown"){
+    if(function_exists('deltaAppendTrackingFromKeyboard')){
+        $caption = deltaAppendTrackingFromKeyboard($caption, $keyboard, strtolower((string)$parse)==='html');
+    }
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
         $res = sendPhoto($photo, $caption, $keyboard, $parse, $aid);
@@ -3476,8 +3480,8 @@ function getGeneralSettingsKeys(){
     ];
 
     $rows[] = [
+        ['text'=>'🤖 کاربرهای استثنا شده خودکار','callback_data'=>"forceAutoUsers"],
         ['text'=>'درخواست های رد شده','callback_data'=>"rejectedAgentList"],
-        ['text'=>' ','callback_data'=>"deltach"],
     ];
 
     $rows[] = [
@@ -4503,6 +4507,7 @@ function getGateWaysKeys(){
     $nowPaymentWallet = $botState['nowPaymentWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nowPaymentOther = $botState['nowPaymentOther']=="on"?$buttonValues['on']:$buttonValues['off'];
     $tronWallet = $botState['tronWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
+    $usdtGateway = (($botState['usdtGatewayState'] ?? 'off')=="on")?$buttonValues['on']:$buttonValues['off'];
     $zarinpal = $botState['zarinpal']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nextpay = $botState['nextpay']=="on"?$buttonValues['on']:$buttonValues['off'];
     $rewaredChannel = $botState['rewardChannel']??" ";
@@ -4538,6 +4543,14 @@ function getGateWaysKeys(){
         [
             ['text'=>(!empty($paymentKeys['tronwallet'])?$paymentKeys['tronwallet']:" "),'callback_data'=>"changePaymentKeystronwallet"],
             ['text'=>"آدرس والت ترون",'callback_data'=>"deltach"]
+        ],
+        [
+            ['text'=>(!empty($paymentKeys['usdtBep20Address'])?$paymentKeys['usdtBep20Address']:" "),'callback_data'=>"changePaymentKeysusdtBep20Address"],
+            ['text'=>"آدرس USDT BEP20",'callback_data'=>"deltach"]
+        ],
+        [
+            ['text'=>$usdtGateway,'callback_data'=>"changeGateWaysusdtGatewayState"],
+            ['text'=>"درگاه تتر USDT (BEP20)",'callback_data'=>"deltach"]
         ],
         [
             ['text'=>$weSwapState,'callback_data'=>"changeGateWaysweSwapState"],
@@ -4621,6 +4634,7 @@ function getBotSettingKeys(){
     $forceJoinState = (($botState['forceJoinState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $serviceTransferState = (($botState['serviceTransferState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $pgExpiryAlertsState = (($botState['pgExpiryAlertsState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
+    $pendingOrdersState = (($botState['pendingOrdersState'] ?? 'off')=='on')?$buttonValues['on']:$buttonValues['off'];
     
     $requirePhone = $botState['requirePhone']=="on"?$buttonValues['on']:$buttonValues['off'];
     $requireIranPhone = $botState['requireIranPhone']=="on"?$buttonValues['on']:$buttonValues['off'];
@@ -4787,6 +4801,14 @@ function getBotSettingKeys(){
             ['text'=>($botState['cartToCartAutoAcceptTime']??"10") . " دقیقه",'callback_data'=>"editcartToCartAutoAcceptTime"],
             ['text'=>"زمان تأیید خودکار ",'callback_data'=>"deltach"]
         ]:[]),
+        [
+            ['text'=>'♻️ ریست رسیدهای قدیمی','callback_data'=>'autoApproveResetAsk'],
+            ['text'=>'شروع تأیید از این لحظه','callback_data'=>'deltach']
+        ],
+        [
+            ['text'=>$pendingOrdersState,'callback_data'=>'changeBotpendingOrdersState'],
+            ['text'=>'سفارش‌های در حال انتظار','callback_data'=>'deltach']
+        ],
         (empty($isChildBot)?[
             ['text'=>$myResellerBotsButton,'callback_data'=>'changeBotmyResellerBotsButtonState'],
             ['text'=>'ربات های من','callback_data'=>'deltach']
@@ -5095,6 +5117,9 @@ function getUserInfoKeys($userId, $backCallback = "managePanel"){
                 ['text'=>(($userInfos['pg_expiry_alerts'] ?? 1) ? '⚠️ گزارش پایان ۳روزه: روشن' : '🔇 گزارش پایان ۳روزه: خاموش'),'callback_data'=>"uPgExpiryToggle" . $userId]
                 ],
             [
+                ['text'=>(function_exists('deltaIsForceAutoApproveUser') && deltaIsForceAutoApproveUser($userId) ? '🤖 تایید خودکار دائمی: روشن' : '🤖 استثنا کردن تایید خودکار'),'callback_data'=>"uForceAutoAsk" . $userId]
+                ],
+            [
                 ['text'=>$buttonValues['back_button'],'callback_data'=>$backCallback]
                 ],
             ]]);
@@ -5125,7 +5150,10 @@ function getDiscountCodeKeys(){
         $keys[] = [['text'=>"کد تخفیفی یافت نشد",'callback_data'=>"deltach"]];
     }
     
-    $keys[] = [['text'=>"افزودن کد تخفیف",'callback_data'=>"addDiscountCode"]];
+    $keys[] = [
+        ['text'=>"➕ افزودن کد تخفیف",'callback_data'=>"addDiscountCode"],
+        ['text'=>"👤 ساخت کد تخفیف اختصاصی",'callback_data'=>"addPrivateDiscountCode"]
+    ];
     $keys[] = [['text'=>$buttonValues['back_button'],'callback_data'=>"managePanel"]];
     return json_encode(['inline_keyboard'=>$keys]);
 }
