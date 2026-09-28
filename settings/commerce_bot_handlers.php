@@ -286,6 +286,8 @@ if(preg_match('/^usdtReceipt\|(.+)$/',(string)($userInfo['step']??''),$m) && $te
     elseif(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_/',$ptype)) $adminkeys=getReceiptAdminKeyboard('approvePgRenew'.$hash,'decPgRenew'.$hash,$uid);
     elseif(preg_match('/^INCREASE_DAY_/',$ptype)) $adminkeys=getReceiptAdminKeyboard('approveIncreaseDay'.$hash,'decIncreaseDay'.$hash,$uid);
     elseif(preg_match('/^INCREASE_VOLUME_/',$ptype)) $adminkeys=getReceiptAdminKeyboard('approveIncreaseVolume'.$hash,'decIncreaseVolume'.$hash,$uid);
+    elseif($ptype==='BUY_SUB' && ((float)($pay['volume']??0)>0 || (int)($pay['day']??0)>0))
+        $adminkeys=getReceiptAdminKeyboard('accCustom'.$hash,'declineOffer'.$hash.'_'.$uid,$uid);
     else $adminkeys=getReceiptAdminKeyboard('accept'.$hash,'declineOffer'.$hash.'_'.$uid,$uid);
 
     $res=sendPhotoToAdmins($receiptFile,$msg,$adminkeys,'HTML');
