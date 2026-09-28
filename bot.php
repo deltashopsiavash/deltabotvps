@@ -1741,6 +1741,9 @@ if(!($from_id == $admin || ($userInfo['isAdmin'] ?? false) == true) && (empty($d
 
 function smartSendOrEdit($msgId, $txt, $keys = null, $parse_mode = null){
     global $chat_id, $update;
+    if(function_exists('deltaEnhanceCustomerPaymentMessage')){
+        [$txt,$keys]=deltaEnhanceCustomerPaymentMessage($txt,$keys,$chat_id,$parse_mode);
+    }
     if(isset($update->callback_query) && !empty($update->callback_query->id)){
         bot('answerCallbackQuery', ['callback_query_id'=>$update->callback_query->id]);
     }
