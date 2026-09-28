@@ -10034,6 +10034,9 @@ function pasarguardFetchGroups($server_id, $token = null){
                 CURLOPT_MAXREDIRS => 3,
                 CURLOPT_HTTPHEADER => ['Accept: application/json','Authorization: Bearer ' . $token->access_token]
             ]);
+            if(defined('CURLOPT_POSTREDIR') && defined('CURL_REDIR_POST_ALL')){
+                curl_setopt($curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+            }
             $raw = curl_exec($curl);
             $http = curl_getinfo($curl, CURLINFO_HTTP_CODE);
             curl_close($curl);
@@ -10210,12 +10213,12 @@ function addPasarguardUser($server_id, $remark, $volume, $days, $plan_id = null,
     // برای سازگاری با نسخه‌های مختلف PasarGuard، چند مسیر را تست می‌کنیم.
     // بعضی نسخه‌ها POST /api/user و بعضی نسخه‌ها POST /api/users دارند.
     $endpoints = [
-        '/api/users',
-        '/api/users/',
+        // Official PasarGuard create-user endpoint comes first.
         '/api/user',
         '/api/user/',
-        '/api/users/create',
-        '/api/user/create'
+        // Older compatible builds may expose the plural route.
+        '/api/users',
+        '/api/users/'
     ];
 
     $raw = '';
@@ -10230,11 +10233,16 @@ function addPasarguardUser($server_id, $remark, $volume, $days, $plan_id = null,
             curl_setopt_array($curl, [
                 CURLOPT_URL => $apiBase . $endpoint,
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_POST => true,
+                CURLOPT_CUSTOMREQUEST => 'POST',
                 CURLOPT_CONNECTTIMEOUT => 10,
                 CURLOPT_TIMEOUT => 30,
                 CURLOPT_SSL_VERIFYHOST => false,
                 CURLOPT_SSL_VERIFYPEER => false,
+                // Some installations redirect /api/user <-> /dashboard/api/user.
+                // Preserve POST on redirects; otherwise libcurl can turn it into GET
+                // and PasarGuard answers with 405 Method Not Allowed.
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 3,
                 CURLOPT_HTTPHEADER => [
                     'Accept: application/json',
                     'Content-Type: application/json',
@@ -10253,34 +10261,53 @@ function addPasarguardUser($server_id, $remark, $volume, $days, $plan_id = null,
                 continue;
             }
 
-            if($http >= 200 && $http < 300 && $response){
-                $sub = $response->subscription_url ?? ($response->sub_link ?? ($response->subscription ?? ($response->subscription_url_path ?? '')));
+            // A successful create can legitimately be 200/201/204 and some
+            // PasarGuard builds return an empty body. HTTP success itself is
+            // authoritative; fetch the created user only to recover sub details.
+            if($http >= 200 && $http < 300){
+                $createdInfo = null;
+                $sub = is_object($response)
+                    ? ($response->subscription_url ?? ($response->sub_link ?? ($response->subscription ?? ($response->subscription_url_path ?? ''))))
+                    : '';
                 if($sub === ''){
-                    $createdInfo = getPasarguardUserInfo($server_id, $remark);
-                    if(is_object($createdInfo)){
-                        $sub = $createdInfo->subscription_url ?? ($createdInfo->sub_link ?? ($createdInfo->subscription ?? ($createdInfo->subscription_url_path ?? '')));
+                    // Give the panel a moment in case the user becomes readable
+                    // just after the create request returns.
+                    for($lookupTry = 0; $lookupTry < 3 && $sub === ''; $lookupTry++){
+                        if($lookupTry > 0) usleep(150000);
+                        $createdInfo = getPasarguardUserInfo($server_id, $remark);
+                        if(is_object($createdInfo) && (($createdInfo->username ?? $remark) === $remark)){
+                            $sub = $createdInfo->subscription_url ?? ($createdInfo->sub_link ?? ($createdInfo->subscription ?? ($createdInfo->subscription_url_path ?? '')));
+                        }
                     }
                 }
                 if($sub !== ''){
                     $sub = xuiBuildPanelSubLink(pasarguardPublicSubBase($server_info), $sub, pasarguardPublicSubBase($server_info));
                 }
+                $resultObj = is_object($response) ? $response : $createdInfo;
                 return (object)[
                     'success' => true,
                     'sub_link' => $sub,
                     'vray_links' => $sub !== '' ? [$sub] : [],
-                    'obj' => $response,
-                    'pasarguard_user_id' => $response->id ?? ($response->user_id ?? null)
+                    'obj' => $resultObj,
+                    'pasarguard_user_id' => is_object($resultObj) ? ($resultObj->id ?? ($resultObj->user_id ?? null)) : null,
+                    'http' => $http
                 ];
             }
 
-            $lastMsg = $raw;
+            $lastMsg = trim((string)$raw) !== '' ? (string)$raw : ('HTTP ' . $http);
             if($response && isset($response->detail)){
                 $lastMsg = is_string($response->detail) ? $response->detail : json_encode($response->detail, JSON_UNESCAPED_UNICODE);
             }
 
+            $lowerMsg = strtolower((string)$lastMsg);
+            if($http == 409 || strpos($lowerMsg, 'already exists') !== false || strpos($lowerMsg, 'duplicate') !== false){
+                return (object)['success'=>false,'msg'=>'User already exists','payload'=>$payload,'http'=>$http];
+            }
+
             // 401/403 یعنی توکن یا دسترسی مشکل دارد؛ ادامه مسیرها فایده‌ای ندارد.
             if($http == 401 || $http == 403) break 2;
-            // 405 یعنی این مسیر وجود دارد ولی متد اشتباه است؛ مسیر بعدی را امتحان کن.
+            // 405 means this concrete path does not accept POST; try the next
+            // compatibility path without turning it into the final diagnosis.
         }
     }
 
