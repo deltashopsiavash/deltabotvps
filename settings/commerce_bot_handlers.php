@@ -296,7 +296,8 @@ if(preg_match('/^usdtReceipt\|(.+)$/',(string)($userInfo['step']??''),$m) && $te
         $stmt->bind_param('iss',$msgId,$chat,$hash);$stmt->execute();$stmt->close();
     }
     setUser();
-    sendMessage("✅ رسید ارزی شما ثبت شد و برای بررسی ارسال شد.\n\n🔖 کد پیگیری: <code>{$tracking}</code>\n⏳ لطفاً تا ثبت سفارش صبر کنید.",$removeKeyboard,'HTML');
+    // sendPhotoToAdmins() already sends the user a universal receipt confirmation
+    // with the same tracking code. Avoid a duplicate USDT-only confirmation here.
     sendMessage($mainValues['reached_main_menu']??'منوی اصلی',getMainKeys());
     exit;
 }
