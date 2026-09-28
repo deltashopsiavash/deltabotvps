@@ -8191,11 +8191,20 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
         }
     }
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved') AND `state` NOT IN ('paid_with_wallet','approved')");
-    $stmt->bind_param("s", $match[1]);
+    $payProvisionHash = (string)$match[1];
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
+
+    // paid_with_wallet is a processing lock until the service is actually
+    // delivered. On a provisioning error we roll it back so the SAME invoice
+    // can be retried instead of forcing a new purchase/refund.
+    $rollbackWalletProvision = function() use ($connection, $payProvisionHash){
+        $rb = $connection->prepare("UPDATE `pays` SET `state`='pending' WHERE `hash_id`=? AND `state`='paid_with_wallet'");
+        if($rb){ $rb->bind_param('s',$payProvisionHash); $rb->execute(); $rb->close(); }
+    };
 
     
     
@@ -8223,7 +8232,8 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 $response = editInboundTraffic($server_id, $uuid, $volume, $days, "renew");
         }
         
-    	if(is_null($response)){
+    	if(is_null($response) || (is_object($response) && isset($response->success) && !$response->success)){
+            $rollbackWalletProvision();
     		alert('🔻مشکل فنی در اتصال به سرور. لطفا به مدیریت اطلاع بدید',true);
     		exit;
     	}
@@ -8239,8 +8249,22 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
         smartSendOrEdit($message_id,"✅سرویس $remark با موفقیت تمدید شد",$keys);
     }else{
         $accountCount = xuiResolvePayAccountCount($payInfo);
+
+        // orders_list.transid ties every created account to this invoice. If a
+        // multi-account purchase failed halfway, retry only the missing accounts.
+        $provisionedCount = 0;
+        $countStmt = $connection->prepare("SELECT COUNT(*) AS c FROM `orders_list` WHERE `userid`=? AND `fileid`=? AND `transid`=?");
+        if($countStmt){
+            $countStmt->bind_param('iis',$uid,$fid,$payProvisionHash);
+            $countStmt->execute();
+            $countRow = $countStmt->get_result()->fetch_assoc();
+            $countStmt->close();
+            $provisionedCount = min($accountCount, max(0, (int)($countRow['c'] ?? 0)));
+        }
+        $remainingCount = max(0, $accountCount - $provisionedCount);
         
-        if($inbound_id != 0 && $acount < $accountCount){
+        if($inbound_id != 0 && $acount < $remainingCount){
+            $rollbackWalletProvision();
             alert($mainValues['out_of_connection_capacity']);
             exit;
         }
@@ -8251,7 +8275,8 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
             $server_info = $stmt->get_result()->fetch_assoc();
             $stmt->close();
     
-            if((int)$server_info['ucount'] < (int)$accountCount) {
+            if((int)$server_info['ucount'] < (int)$remainingCount) {
+                $rollbackWalletProvision();
                 alert($mainValues['out_of_server_capacity']);
                 exit;
             }
@@ -8283,7 +8308,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
         alert($mainValues['sending_config_to_user']);
         define('IMAGE_WIDTH',540);
         define('IMAGE_HEIGHT',540);
-        for($i = 1; $i <= $accountCount; $i++){
+        for($i = $provisionedCount + 1; $i <= $accountCount; $i++){
             $uniqid = generateRandomString(42,$protocol); 
         
             $savedinfo = file_get_contents('settings/temp.txt');
@@ -8340,14 +8365,17 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 } 
             }
             if(is_null($response)){
+                $rollbackWalletProvision();
                 sendMessage('❌ | 🥺 گلم ، اتصال به سرور برقرار نیست لطفا مدیر رو در جریان بزار ...');
                 exit;
             }
         	if($response == "inbound not Found"){
+                $rollbackWalletProvision();
                 sendMessage("❌ | 🥺 سطر (inbound) با آیدی $inbound_id تو این سرور وجود نداره ، مدیر رو در جریان بزار ...");
         		exit;
         	}
         	if(!$response->success){
+                $rollbackWalletProvision();
                 sendMessage('❌ | 😮 وای خطا داد لطفا سریع به مدیر بگو ...');
                 sendToAdmins("خطای سرور {$serverInfo['title']}:\n\n" . ($response->msg), null, null);
                 exit;
@@ -8373,8 +8401,8 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
             
         	$stmt = $connection->prepare("INSERT INTO `orders_list` 
         	    (`userid`, `token`, `transid`, `fileid`, `server_id`, `inbound_id`, `remark`, `uuid`, `protocol`, `expire_date`, `link`, `amount`, `status`, `date`, `notif`, `rahgozar`, `agent_bought`)
-        	    VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
-            $stmt->bind_param("ssiiisssisiiii", $uid, $token, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agent_bought);
+        	    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
+            $stmt->bind_param("sssiiisssisiiii", $uid, $token, $payProvisionHash, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agent_bought);
             $stmt->execute();
             $order = $stmt->get_result(); 
             $stmt->close();
@@ -8683,10 +8711,19 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     
     if($payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $payProvisionHash = (string)$match[1];
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'approved'");
+    $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
+    if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
+
+    // approved acts as a lock while provisioning. If delivery fails, restore
+    // have_sent so the admin can press the SAME approve button again.
+    $rollbackReceiptProvision = function() use ($connection, $payProvisionHash){
+        $rb = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='approved'");
+        if($rb){ $rb->bind_param('s',$payProvisionHash); $rb->execute(); $rb->close(); }
+    };
 
     $uid = $payInfo['user_id'];
     $fid = $payInfo['plan_id'];
@@ -8735,7 +8772,8 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
                 $response = editInboundTraffic($server_id, $uuid, $volume, $days, "renew");
         }
         
-    	if(is_null($response)){
+    	if(is_null($response) || (is_object($response) && isset($response->success) && !$response->success)){
+            $rollbackReceiptProvision();
     		alert('🔻مشکل فنی در اتصال به سرور. لطفا به مدیریت اطلاع بدید',true);
     		exit;
     	}
@@ -8748,8 +8786,20 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     }else{
         $accountCount = xuiResolvePayAccountCount($payInfo);
         $eachPrice = $price / $accountCount;
+
+        $provisionedCount = 0;
+        $countStmt = $connection->prepare("SELECT COUNT(*) AS c FROM `orders_list` WHERE `userid`=? AND `fileid`=? AND `transid`=?");
+        if($countStmt){
+            $countStmt->bind_param('iis',$uid,$fid,$payProvisionHash);
+            $countStmt->execute();
+            $countRow = $countStmt->get_result()->fetch_assoc();
+            $countStmt->close();
+            $provisionedCount = min($accountCount, max(0, (int)($countRow['c'] ?? 0)));
+        }
+        $remainingCount = max(0, $accountCount - $provisionedCount);
         
-        if($acount == 0 and $inbound_id != 0){
+        if($acount == 0 and $inbound_id != 0 && $remainingCount > 0){
+            $rollbackReceiptProvision();
             alert($mainValues['out_of_connection_capacity']);
             exit;
         }
@@ -8760,7 +8810,8 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
             $server_info = $stmt->get_result()->fetch_assoc();
             $stmt->close();
     
-            if($server_info['ucount'] < $accountCount){
+            if($server_info['ucount'] < $remainingCount){
+                $rollbackReceiptProvision();
                 alert($mainValues['out_of_server_capacity']);
                 exit;
             }
@@ -8787,7 +8838,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
         include 'phpqrcode/qrlib.php';
         define('IMAGE_WIDTH',540);
         define('IMAGE_HEIGHT',540);
-        for($i = 1; $i <= $accountCount; $i++){
+        for($i = $provisionedCount + 1; $i <= $accountCount; $i++){
             $uniqid = generateRandomString(42,$protocol); 
         
             $savedinfo = file_get_contents('settings/temp.txt');
@@ -8844,14 +8895,17 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
                 } 
             }
             if(is_null($response)){
+                $rollbackReceiptProvision();
                 sendMessage('❌ | 🥺 گلم ، اتصال به سرور برقرار نیست لطفا مدیر رو در جریان بزار ...');
                 exit;
             }
         	if($response == "inbound not Found"){
+                $rollbackReceiptProvision();
                 sendMessage("❌ | 🥺 سطر (inbound) با آیدی $inbound_id تو این سرور وجود نداره ، مدیر رو در جریان بزار ...");
         		exit;
         	}
         	if(!$response->success){
+                $rollbackReceiptProvision();
                 sendMessage('❌ | 😮 وای خطا داد لطفا سریع به مدیر بگو ...');
                 sendToAdmins("خطای سرور {$serverInfo['title']}:\n\n" . ($response->msg), null, null);
                 exit;
@@ -8877,8 +8931,8 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     
         	$stmt = $connection->prepare("INSERT INTO `orders_list` 
         	    (`userid`, `token`, `transid`, `fileid`, `server_id`, `inbound_id`, `remark`, `uuid`, `protocol`, `expire_date`, `link`, `amount`, `status`, `date`, `notif`, `rahgozar`, `agent_bought`)
-        	    VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
-            $stmt->bind_param("ssiiisssisiiii", $uid, $token, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agent_bought);
+        	    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
+            $stmt->bind_param("sssiiisssisiiii", $uid, $token, $payProvisionHash, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agent_bought);
             $stmt->execute();
             $order = $stmt->get_result();
             $stmt->close();
