@@ -972,6 +972,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $stmt->bind_param('s', $hash);
     $stmt->execute();
     $stmt->close();
+    if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
     sendMessage(deltaAppendTracking($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.',$hash), $removeKeyboard, 'HTML');
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
     setUser();
@@ -4904,6 +4905,7 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -7889,6 +7891,8 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
+        $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -8582,6 +8586,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -9449,6 +9454,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان", $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
+    if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
     exit;
 }
 if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
