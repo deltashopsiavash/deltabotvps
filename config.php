@@ -3271,6 +3271,10 @@ if(count($menuOrder) > 0){
         $mainKeys = $oneCol;
     }
 
+    if((($botState['pendingOrdersState'] ?? 'off') === 'on')){
+        $mainKeys[] = [['text'=>'⏳ سفارش‌های در حال انتظار','callback_data'=>'deltaPendingOrders']];
+    }
+
     if($from_id == $admin || $userInfo['isAdmin'] == true){
         $mainKeys[] = [['text'=>"مدیریت ربات ⚙️",'callback_data'=>"managePanel"]];
     }
@@ -3477,7 +3481,7 @@ function getGeneralSettingsKeys(){
 
     $rows[] = [
         ['text'=>'درخواست های رد شده','callback_data'=>"rejectedAgentList"],
-        ['text'=>' ','callback_data'=>"deltach"],
+        ['text'=>'👥 کاربرهای استثنا شده خودکار','callback_data'=>'deltaForceAutoUsers'],
     ];
 
     $rows[] = [
@@ -4503,6 +4507,7 @@ function getGateWaysKeys(){
     $nowPaymentWallet = $botState['nowPaymentWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nowPaymentOther = $botState['nowPaymentOther']=="on"?$buttonValues['on']:$buttonValues['off'];
     $tronWallet = $botState['tronWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
+    $usdtState = (($botState['usdtState'] ?? 'off')=="on")?$buttonValues['on']:$buttonValues['off'];
     $zarinpal = $botState['zarinpal']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nextpay = $botState['nextpay']=="on"?$buttonValues['on']:$buttonValues['off'];
     $rewaredChannel = $botState['rewardChannel']??" ";
@@ -4540,6 +4545,10 @@ function getGateWaysKeys(){
             ['text'=>"آدرس والت ترون",'callback_data'=>"deltach"]
         ],
         [
+            ['text'=>(!empty($paymentKeys['usdtwallet'])?$paymentKeys['usdtwallet']:" "),'callback_data'=>"changePaymentKeysusdtwallet"],
+            ['text'=>"آدرس USDT BEP20",'callback_data'=>"deltach"]
+        ],
+        [
             ['text'=>$weSwapState,'callback_data'=>"changeGateWaysweSwapState"],
             ['text'=>"درگاه وی سواپ",'callback_data'=>"deltach"]
         ],
@@ -4566,6 +4575,10 @@ function getGateWaysKeys(){
         [
             ['text'=>$tronWallet,'callback_data'=>"changeGateWaystronWallet"],
             ['text'=>"درگاه ترون",'callback_data'=>"deltach"]
+        ],
+        [
+            ['text'=>$usdtState,'callback_data'=>"changeGateWaysusdtState"],
+            ['text'=>"درگاه تتر USDT (BEP20)",'callback_data'=>"deltach"]
         ],
         [
             ['text'=>$walletState,'callback_data'=>"changeGateWayswalletState"],
@@ -4787,6 +4800,14 @@ function getBotSettingKeys(){
             ['text'=>($botState['cartToCartAutoAcceptTime']??"10") . " دقیقه",'callback_data'=>"editcartToCartAutoAcceptTime"],
             ['text'=>"زمان تأیید خودکار ",'callback_data'=>"deltach"]
         ]:[]),
+        [
+            ['text'=>'🔄 ریست مبدأ رسیدها','callback_data'=>'deltaAutoApproveReset'],
+            ['text'=>'فقط رسیدهای جدید خودکار شوند','callback_data'=>'deltach']
+        ],
+        [
+            ['text'=>(($botState['pendingOrdersState'] ?? 'off')==='on'?$buttonValues['on']:$buttonValues['off']),'callback_data'=>'changeBotpendingOrdersState'],
+            ['text'=>'سفارش‌های در حال انتظار','callback_data'=>'deltach']
+        ],
         (empty($isChildBot)?[
             ['text'=>$myResellerBotsButton,'callback_data'=>'changeBotmyResellerBotsButtonState'],
             ['text'=>'ربات های من','callback_data'=>'deltach']
@@ -5095,6 +5116,9 @@ function getUserInfoKeys($userId, $backCallback = "managePanel"){
                 ['text'=>(($userInfos['pg_expiry_alerts'] ?? 1) ? '⚠️ گزارش پایان ۳روزه: روشن' : '🔇 گزارش پایان ۳روزه: خاموش'),'callback_data'=>"uPgExpiryToggle" . $userId]
                 ],
             [
+                ['text'=>(function_exists('deltaForceAutoApprove') && deltaForceAutoApprove($userId) ? '✅ استثنای تأیید خودکار: فعال' : '⚙️ استثنا کردن تأیید خودکار'),'callback_data'=>"deltaForceAutoAsk_" . $userId]
+                ],
+            [
                 ['text'=>$buttonValues['back_button'],'callback_data'=>$backCallback]
                 ],
             ]]);
@@ -5125,7 +5149,10 @@ function getDiscountCodeKeys(){
         $keys[] = [['text'=>"کد تخفیفی یافت نشد",'callback_data'=>"deltach"]];
     }
     
-    $keys[] = [['text'=>"افزودن کد تخفیف",'callback_data'=>"addDiscountCode"]];
+    $keys[] = [
+        ['text'=>"افزودن کد تخفیف",'callback_data'=>"addDiscountCode"],
+        ['text'=>"ساخت کد تخفیف اختصاصی",'callback_data'=>"addPrivateDiscountCode"]
+    ];
     $keys[] = [['text'=>$buttonValues['back_button'],'callback_data'=>"managePanel"]];
     return json_encode(['inline_keyboard'=>$keys]);
 }
@@ -12349,3 +12376,7 @@ function npvSendManualLockRequestOrNormal($chatId, $protocol, $remark, $volume, 
     sendToAdmins($adminText, null, 'HTML');
     return true;
 }
+
+
+// Extended payment/order features
+require_once __DIR__ . '/delta_order_features.php';
