@@ -6210,6 +6210,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     }
     $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'ارزی ریالی', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);
+    $msg .= deltaTrackingLineByHash((string)($payInfo['hash_id']??''));
     
     sendToAdmins($msg, $keys, "html");
 }
@@ -6276,6 +6277,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         ]]);
     
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+        $msg .= deltaTrackingLineByHash((string)($payInfo['hash_id']??''));
     
     sendToAdmins($msg, $keys, "html");
     }
@@ -7915,6 +7917,7 @@ if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
         ]]);
     $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 ['کیف پول', $from_id, $username, $first_name, $price, $baseRemark,$volume, $days], $mainValues['buy_custom_account_request']);
+    $msg .= deltaTrackingLineByHash($match[1]);
     sendToAdmins($msg, $keys, "html");
     notifyUserQuotaIfLow($uid);
 }
@@ -8340,7 +8343,8 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     define('IMAGE_HEIGHT',540);
 
     (function_exists('npvSendManualLockRequestOrNormal') ? npvSendManualLockRequestOrNormal($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu", $file_detail ?? [], $payInfo['description'] ?? '', $serverInfo ?? []) : xuiSendOrderDeliveryPhoto($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu"));
-    sendMessage('✅ کانفیگ و براش ارسال کردم', getMainKeys());
+    $trackingCode=deltaEnsurePayTrackingCode((string)$payInfo['hash_id']);
+    sendMessage("✅ کانفیگ و براش ارسال کردم\nریمارک: <code>".htmlspecialchars((string)$remark,ENT_QUOTES,'UTF-8')."</code>\nحجم سرویس: <b>{$volume} گیگ</b>\nمدت زمان سرویس: <b>{$days} روز</b>\nکد پیگیری: <code>{$trackingCode}</code>", getMainKeys(), "HTML");
     
     $agentBought = $payInfo['agent_bought'];
 	$stmt = $connection->prepare("INSERT INTO `orders_list` 
@@ -8488,7 +8492,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
     }
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -8745,6 +8749,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 ['کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['renew_account_request_message']);}
     else{$msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);}
+    $msg .= deltaTrackingLineByHash($match[1]);
 
     sendToAdmins($msg, $keys, "html");
 }
@@ -9011,8 +9016,9 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     if($payInfo['state'] == "approved") exit();
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'approved'");
-    $stmt->bind_param("s", $payProvisionHash);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ? AND `state` != 'approved'");
+    $stmt->bind_param("is", $approvedAt, $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
@@ -9294,9 +9300,21 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
         $msg = str_replace(['USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'FILENAME'],
                     [$uid, $user_name, $uname, $price, $remark,$filename], $mainValues['invite_buy_new_account']);
             
+            $msg .= deltaTrackingLineByHash($payProvisionHash);
             sendToAdmins($msg);
         }
     }
+
+    $trackingCode=deltaEnsurePayTrackingCode($payProvisionHash);
+    $doneTitle=($payInfo['type']==='RENEW_SCONFIG')?'✅ تمدید سرویس انجام شد':'✅ کانفیگ و برای کاربر ارسال شد';
+    $finalReport=$doneTitle
+        ."\n\n👤 آیدی کاربر: <code>{$uid}</code>"
+        ."\n✏️ ریمارک: <code>".htmlspecialchars((string)($remark??''),ENT_QUOTES,'UTF-8')."</code>"
+        ."\n🔋 حجم سرویس: <b>".($volume??0)." گیگ</b>"
+        ."\n⏰ مدت زمان سرویس: <b>".($days??0)." روز</b>"
+        ."\n💰 مبلغ: <b>".number_format((int)($price??0))." تومان</b>"
+        ."\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
+    sendToAdmins($finalReport,null,'HTML');
 }
 if(preg_match('/^declineOffer(.+)_(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser('declineOfferReason|'.$match[1].'|'.$match[2].'|'.$message_id);
@@ -9421,6 +9439,7 @@ if(!function_exists('pgRenewBuildAdminReport')){
         }
         $safeService = htmlspecialchars((string)$serviceName, ENT_QUOTES, 'UTF-8');
         $safeTitle = htmlspecialchars((string)$renewTitle, ENT_QUOTES, 'UTF-8');
+        $tracking = deltaEnsurePayTrackingCode((string)($pay['hash_id'] ?? ''));
         $volText = rtrim(rtrim(number_format($volume, 2, '.', ''), '0'), '.');
         if($volText === '') $volText = '0';
         return "🔁 <b>گزارش تمدید سرویس</b>\n\n".
@@ -9430,6 +9449,7 @@ if(!function_exists('pgRenewBuildAdminReport')){
                "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
                "➕ روز افزوده: <b>{$days} روز</b>\n".
                "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
+               "🔖 کد پیگیری: <code>{$tracking}</code>\n".
                "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>";
     }
 }
@@ -9670,7 +9690,7 @@ if(preg_match('/^pgRenewPayQuota(.+)$/', $data, $m)){
             throw new Exception('خطا در تمدید پاسارگارد: '.($res->msg??'خطای نامشخص'));
         }
 
-        $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_quota' WHERE `hash_id`=? AND `user_id`=? AND `state`='processing_quota'");
+        $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_quota',`payment_method`='quota' WHERE `hash_id`=? AND `user_id`=? AND `state`='processing_quota'");
         $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $stmt->close();
 
         $remainingAfter=getUserRemainingBuyVolume($from_id);
@@ -9720,7 +9740,7 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
     $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید پاسارگارد: '.($res->msg??'خطای نامشخص'), true); exit; }
     $stmt=$connection->prepare("UPDATE `users` SET `wallet`=`wallet`-? WHERE `userid`=?"); $price=(int)$pay['price']; $stmt->bind_param('ii',$price,$from_id); $stmt->execute(); $stmt->close();
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, $from_id), null, 'HTML');
     smartSendOrEdit($message_id, "✅ تمدید با موفقیت انجام شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", getMainKeys());
     exit;
@@ -14146,7 +14166,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
     
     if($payInfo['state'] == "paid_with_wallet" || $payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -14233,6 +14253,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
             ],
         ]]);
     $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+    $msg .= deltaTrackingLineByHash($match[1]);
 
     sendToAdmins($msg, $keys, "html");
     exit;
@@ -14986,7 +15007,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -15437,7 +15458,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
