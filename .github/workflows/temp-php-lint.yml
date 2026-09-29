@@ -1,0 +1,18 @@
+name: Temporary PHP lint
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint modified PHP files
+        run: |
+          php -l bot.php
+          php -l config.php
+          php -l createDB.php
+          php -l settings/rewardReport.php
+          php -l settings/tronChecker.php
+          php -l pay/back.php
