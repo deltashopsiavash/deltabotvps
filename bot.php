@@ -997,19 +997,6 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     exit;
 }
 
-// Legacy lines below are intentionally bypassed by the exit above.
-if(false){
-    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
-    $stmt->bind_param('s', $hash);
-    $stmt->execute();
-    $stmt->close();
-    sendMessage($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.', $removeKeyboard);
-    sendMessage($mainValues['reached_main_menu'], getMainKeys());
-    setUser();
-    exit;
-}
-}
-
 // ---------------- Manual USDT BEP20 payment ----------------
 if(preg_match('/^payWithUsdt(.+)$/',(string)($data??''),$m)){
     $hash=(string)$m[1];
