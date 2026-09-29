@@ -947,7 +947,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $price = number_format((int)$payInfo['price']);
     $payType = (string)$payInfo['type'];
     $receiptText = trim((string)$text);
-    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n" . deltaTrackingLine($hash);
     if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_\d+_\d+$/',$payType)){
         $keyboard = getReceiptAdminKeyboard('approvePgRenew' . $hash, 'decPgRenew' . $hash, $uid);
     }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
@@ -972,7 +972,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $stmt->bind_param('s', $hash);
     $stmt->execute();
     $stmt->close();
-    sendMessage($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.', $removeKeyboard);
+    sendMessage(deltaAppendTracking($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.',$hash), $removeKeyboard, 'HTML');
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
     setUser();
     exit;
@@ -4853,7 +4853,7 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
 
     
 	$keys = json_encode(['inline_keyboard'=>$keyboard]);
-    sendMessage("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n\nلطفا روش پرداخت را انتخاب کنید",$keys);
+    sendMessage(deltaAppendTracking("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n\nلطفا روش پرداخت را انتخاب کنید",$hash_id),$keys,"HTML");
     setUser();
 }
 if(preg_match('/increaseWalletWithCartToCart(?<hashId>.*)/',$data, $match)) {
@@ -6885,7 +6885,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
     $keyboard[] = [['text' => '🔁 تغییر پلن', 'callback_data' => "selectCategory{$call_id}_{$sid}_{$match['buyType']}"]];
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     $price = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
-    sendMessage(str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']),json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    sendMessage(deltaAppendTracking(str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']),$hash_id),json_encode(['inline_keyboard'=>$keyboard]), "HTML");
     setUser();
 }
 if(preg_match('/^haveDiscount(.+?)_(.*)/',$data,$match)){
@@ -7403,7 +7403,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $mainValues['buy_subscription_detail']
         );
     }
-    sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    sendMessage(deltaAppendTracking($msg,$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
     setUser();
@@ -7874,11 +7874,12 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $fileprice = $payInfo['price'];
         $remark = function_exists('npvExtractRemarkFromPayDescription') ? npvExtractRemarkFromPayDescription($payInfo['description']) : $payInfo['description'];
         
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['order_buy_sent'],$match[1]),$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                             ["کارت به کارت", $from_id, $username, $first_name, $fileprice, $remark,$volume, $days], $mainValues['buy_custom_account_request']);
+        $msg = deltaAppendTracking($msg,$match[1]);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
         $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "decline$uid", $uid);
@@ -8556,11 +8557,12 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         }
         $fileprice = $payInfo['price'];
     
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['order_buy_sent'],$match[1]),$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         if($payInfo['agent_count'] != 0) $msg = str_replace(['ACCOUNT-COUNT', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK"],[$payInfo['agent_count'], 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename], $mainValues['buy_new_much_account_request']);
         else $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],[$serverTitle, 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename, $volume, $days], $mainValues['buy_new_account_request']);
+        $msg = deltaAppendTracking($msg,$match[1]);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== ''){
             $safeDeviceId = htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -11537,7 +11539,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
         [$name, number_format($basePrice).' تومان', number_format($price).' تومان', $desc, number_format($currentWallet), number_format($walletAfter), ($respd['volume']??0), ($respd['days']??0), number_format($discountAmount), $discountPercent],
         $mainValues['buy_subscription_detail']
     );
-    sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    sendMessage(deltaAppendTracking($msg,$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/sConfigUpdate(\d+)/', $data,$match)){
     alert($mainValues['please_wait_message']);
@@ -13611,9 +13613,9 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
 
 
 
-    sendMessage("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :",json_encode([
+    sendMessage(deltaAppendTracking("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :",$hash_id),json_encode([
             'inline_keyboard' => $keyboard
-        ]));
+        ]),"HTML");
 }
 if(preg_match('/payRenewWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -14499,7 +14501,7 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, deltaAppendTracking("لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",$hash_id),json_encode(['inline_keyboard' => $keyboard]),"HTML");
 }
 if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -14871,7 +14873,7 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, deltaAppendTracking("لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",$hash_id),json_encode(['inline_keyboard' => $keyboard]),"HTML");
 } 
 if(preg_match('/payIncreaseWithCartToCart(.*)/',$data, $match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
