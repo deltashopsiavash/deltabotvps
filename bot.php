@@ -4907,7 +4907,6 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->execute();
         $stmt->close();
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
-        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -5932,7 +5931,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     }
     $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'ارزی ریالی', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);
-    
+    $msg = deltaAppendTracking($msg,$payInfo['hash_id'] ?? '');
     sendToAdmins($msg, $keys, "html");
 }
     elseif($payType == "RENEW_ACCOUNT"){
@@ -5998,7 +5997,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         ]]);
     
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
-    
+        $msg = deltaAppendTracking($msg,$payInfo['hash_id'] ?? '');
     sendToAdmins($msg, $keys, "html");
     }
     elseif(preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo)){
@@ -7632,6 +7631,7 @@ if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
         ]]);
     $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 ['کیف پول', $from_id, $username, $first_name, $price, $baseRemark,$volume, $days], $mainValues['buy_custom_account_request']);
+    $msg = deltaAppendTracking($msg,$payInfo['hash_id'] ?? $hash_id ?? '');
     sendToAdmins($msg, $keys, "html");
     notifyUserQuotaIfLow($uid);
 }
@@ -7895,7 +7895,6 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
-        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
@@ -8592,7 +8591,6 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
-        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
@@ -13714,6 +13712,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -13948,7 +13947,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
             ],
         ]]);
     $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
-
+    $msg = deltaAppendTracking($msg,$match[1] ?? $hash_id ?? '');
     sendToAdmins($msg, $keys, "html");
     exit;
 }
@@ -14592,6 +14591,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{ 
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -14788,6 +14788,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume روز
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>" . deltaTrackingCode($match[1]) . "</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
 
@@ -14966,6 +14967,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -15226,6 +15228,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume گیگ
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>" . deltaTrackingCode($match[1]) . "</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
         smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
