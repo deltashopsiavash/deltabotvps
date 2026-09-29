@@ -118,13 +118,20 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
 
 
         $forcedAuto = function_exists('deltaForceAutoApprove') && deltaForceAutoApprove($user_id);
-        if(!$forcedAuto){
+        $receiptAt = function_exists('deltaReceiptSubmittedAt')
+            ? deltaReceiptSubmittedAt($payInfo['hash_id'] ?? '', (int)$payInfo['request_date'])
+            : (int)$payInfo['request_date'];
+        if($forcedAuto){
+            // Enabling the per-user exception must never sweep in that user's older receipts.
+            $forceFrom = function_exists('deltaForceAutoApproveFrom') ? deltaForceAutoApproveFrom($user_id) : 0;
+            if($forceFrom > 0 && $receiptAt < $forceFrom) continue;
+        }else{
             // If the global switch is off, only explicitly forced users may pass.
             if(($botState['cartToCartAutoAcceptState']??'off')!=="on") continue;
-            // Never pull historical receipts into auto approval. Both the configured delay
-            // and the reset/enable baseline must be satisfied.
-            if((int)$payInfo['request_date'] > $date) continue;
-            if($autoFrom > 0 && (int)$payInfo['request_date'] < $autoFrom) continue;
+            // Delay and reset baseline are based on the actual receipt submission time,
+            // not on when the invoice itself was originally created.
+            if($receiptAt > $date) continue;
+            if($autoFrom > 0 && $receiptAt < $autoFrom) continue;
         }
 
         // legacy per-user exception: do not auto-approve for this user (forced mode overrides it)
