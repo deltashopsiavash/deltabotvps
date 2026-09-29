@@ -1290,6 +1290,7 @@ function specialOfferBuildInvoiceMessage($invoice, $wallet){
         ."💰 موجودی فعلی: ".number_format($wallet)." تومان\n"
         ."💳 موجودی بعد از خرید: ".number_format($walletAfter)." تومان";
     if($safeDesc!=='') $msg.="\n📝 توضیحات: {$safeDesc}";
+    if(function_exists('deltaTrackingLine') && !empty($invoice['hash_id'])) $msg.="\n\n".deltaTrackingLine($invoice['hash_id']);
     return $msg;
 }
 
