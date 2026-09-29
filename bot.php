@@ -4920,9 +4920,10 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     $price = $payInfo['price'];
     $userId = $payInfo['user_id'];
     
+    if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -7899,7 +7900,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         sendMessage($mainValues['please_send_only_image']);
     }
 }
-if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cancel']){
+if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser();
 
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -7908,9 +7909,10 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     $payInfo = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     
+    if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved" || $payInfo['state'] == "paid_with_wallet") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet','cancelled_by_user')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -8725,10 +8727,11 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     $payInfo = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     
+    if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved") exit();
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'approved'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','cancelled_by_user')");
     $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -13721,9 +13724,10 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
     $hash_id = $payInfo['hash_id'];
     $stmt->close();
     
+    if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -14599,9 +14603,10 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
     
+    if(($payParam['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payParam['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -14971,9 +14976,10 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
+    if(($payParam['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payParam['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
