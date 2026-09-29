@@ -3527,7 +3527,13 @@ if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($f
         if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
         else $newValue = $botState[$match[1]]=="on"?"off":"on";
         setSettings($match[1], $newValue);
-        if($match[1] === 'cartToCartAutoAcceptState' && $newValue === 'on' && function_exists('deltaResetAutoApproveFrom')) deltaResetAutoApproveFrom();
+        if($match[1] === 'cartToCartAutoAcceptType') upsertSettingValue('AUTOAPPROVE_TYPE_SELECTED','1');
+        if($match[1] === 'cartToCartAutoAcceptState' && $newValue === 'on'){
+            // The legacy default was representative-only, even when no scope
+            // was chosen. First activation includes all users.
+            if(getSettingValue('AUTOAPPROVE_TYPE_SELECTED','0')==='0') setSettings('cartToCartAutoAcceptType','2');
+            if(function_exists('deltaResetAutoApproveFrom')) deltaResetAutoApproveFrom();
+        }
     }
     smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
 }
@@ -4923,10 +4929,12 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    $claimed=$stmt->affected_rows===1;
     $stmt->close();
+    if(!$claimed){ alert('این رسید قبلاً بررسی شده یا لغو شده است.',true); exit(); }
     
 
     $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
@@ -6731,8 +6739,8 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();
             
             $canUse = $discountInfo['can_use'];
-            $userUsedCount = array_count_values($usedBy)[$from_id];
-            if($canUse > $userUsedCount){
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
+            if($canUse == -1 || $canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
                 
@@ -7031,8 +7039,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $count = $discountInfo['expire_count'];
             $canUse = $discountInfo['can_use'];
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();
-            $userUsedCount = array_count_values($usedBy)[$from_id];
-            if($canUse > $userUsedCount){
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
+            if($canUse == -1 || $canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
                 
@@ -7912,7 +7920,7 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved" || $payInfo['state'] == "paid_with_wallet") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet','cancelled_by_user')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -8730,7 +8738,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     if($payInfo['state'] == "approved") exit();
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','cancelled_by_user')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -9471,14 +9479,20 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1"); $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
     if(($pay['state'] ?? '')==='cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit; }
-    if(!in_array((string)($pay['state']??''),['pending','have_sent','send'],true)){alert('این رسید قبلاً پردازش شده است.',true);exit;}
+    $stmt=$connection->prepare("UPDATE pays SET state='processing_receipt' WHERE hash_id=? AND state IN ('have_sent','need_admin')");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $claimed=$stmt->affected_rows===1; $stmt->close();
+    if(!$claimed){alert('این رسید قبلاً پردازش شده یا لغو شده است.',true);exit;}
     $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $fullReset=true; $fullPlanId=$pid; $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0); }
     elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $volume=(float)($pl['amount']??0); }
     elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['amount']??0); }
     $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
-    if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید: '.($res->msg??'خطا'), true); exit; }
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    if(!is_object($res) || empty($res->success)){
+        $stmt=$connection->prepare("UPDATE pays SET state='have_sent' WHERE hash_id=? AND state='processing_receipt'");
+        $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+        alert('خطا در تمدید: '.($res->msg??'خطا'), true); exit;
+    }
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=? AND state='processing_receipt'"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, (int)$pay['user_id']), null, 'HTML');
     sendMessage(deltaAppendTracking("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز",$hash), null, "HTML", $pay['user_id']);
@@ -13520,8 +13534,8 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
             $usedBy = !is_null($discountInfo['used_by'])?json_decode($discountInfo['used_by'],true):array();            
             
             $canUse = $discountInfo['can_use'];
-            $userUsedCount = array_count_values($usedBy)[$from_id];
-            if($canUse > $userUsedCount){
+            $userUsedCount = array_count_values($usedBy)[$from_id] ?? 0;
+            if($canUse == -1 || $canUse > $userUsedCount){
                 $usedBy[] = $from_id;
                 $encodeUsedBy = json_encode($usedBy);
                 
@@ -13731,10 +13745,12 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
     if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    $claimed=$stmt->affected_rows===1;
     $stmt->close();
+    if(!$claimed){ alert('این رسید قبلاً بررسی شده یا لغو شده است.',true); exit(); }
 
     
     $uid = $payInfo['user_id'];
@@ -14614,10 +14630,12 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
     if(($payParam['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payParam['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    $claimed=$stmt->affected_rows===1;
     $stmt->close();
+    if(!$claimed){ alert('این رسید قبلاً بررسی شده یا لغو شده است.',true); exit(); }
     
 
 
@@ -14990,10 +15008,12 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
     if(($payParam['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
     if($payParam['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'cancelled_by_user'");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    $claimed=$stmt->affected_rows===1;
     $stmt->close();
+    if(!$claimed){ alert('این رسید قبلاً بررسی شده یا لغو شده است.',true); exit(); }
 
 
     preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType, $increaseInfo);
@@ -16100,7 +16120,7 @@ if(preg_match('/^privateDiscountUser\|(.+)$/',$userInfo['step'] ?? '',$m) && $te
 }
 if(preg_match('/^privateDiscountAmount\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $d=json_decode(base64_decode($m[1]),true); $raw=trim(str_replace('%','',(string)$text));
-    if(!is_numeric($raw)){ sendMessage("فقط عدد یا درصد معتبر بفرستید."); }
+    if(!ctype_digit($raw) || (int)$raw<=0 || (strpos((string)$text,'%')!==false && (int)$raw>100)){ sendMessage("مقدار باید مثبت باشد؛ درصد بین ۱ تا ۱۰۰ مجاز است."); }
     else{
         $d['type']=strpos((string)$text,'%')!==false?'percent':'amount'; $d['amount']=(int)$raw;
         setUser("privateDiscountDate|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
@@ -16108,7 +16128,7 @@ if(preg_match('/^privateDiscountAmount\|(.+)$/',$userInfo['step'] ?? '',$m) && $
     }
 }
 if(preg_match('/^privateDiscountDate\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
-    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    if(!ctype_digit(trim((string)$text))){ sendMessage("فقط تعداد روز صفر یا بیشتر بفرستید."); }
     else{
         $d=json_decode(base64_decode($m[1]),true); $d['date']=(int)$text===0?0:time()+((int)$text*86400);
         setUser("privateDiscountCount|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
@@ -16116,7 +16136,7 @@ if(preg_match('/^privateDiscountDate\|(.+)$/',$userInfo['step'] ?? '',$m) && $te
     }
 }
 if(preg_match('/^privateDiscountCount\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
-    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    if(!ctype_digit(trim((string)$text))){ sendMessage("فقط عدد صفر یا بیشتر بفرستید."); }
     else{
         $d=json_decode(base64_decode($m[1]),true); $d['count']=(int)$text>0?(int)$text:-1;
         setUser("privateDiscountCanUse|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
@@ -16124,7 +16144,7 @@ if(preg_match('/^privateDiscountCount\|(.+)$/',$userInfo['step'] ?? '',$m) && $t
     }
 }
 if(preg_match('/^privateDiscountCanUse\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
-    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    if(!ctype_digit(trim((string)$text))){ sendMessage("فقط عدد صفر یا بیشتر بفرستید."); }
     else{
         $d=json_decode(base64_decode($m[1]),true); $can=(int)$text>0?(int)$text:-1;
         $stmt=$connection->prepare("INSERT INTO discounts (hash_id,type,amount,expire_date,expire_count,can_use) VALUES (?,?,?,?,?,?)");
@@ -16188,16 +16208,28 @@ if(preg_match('/^addDiscountCanUse(.*)/',$userInfo['step'],$match) && $text != $
     }else sendMessage("🔘|لطفا فقط عدد بفرستید");
 }
 if(preg_match('/^delDiscount(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $lookup=$connection->prepare("SELECT hash_id FROM discounts WHERE id=? LIMIT 1");
+    $lookup->bind_param('i',$match[1]); $lookup->execute();
+    $oldCode=$lookup->get_result()->fetch_assoc()['hash_id']??null; $lookup->close();
     $stmt = $connection->prepare("DELETE FROM `discounts` WHERE `id` = ?");
     $stmt->bind_param("i", $match[1]);
     $stmt->execute();
     $stmt->close();
+    if($oldCode!==null) upsertSettingValue('DISCOUNT_OWNER_'.strtoupper(trim((string)$oldCode)),'0');
     
     alert("کد تخفیف مورد نظر با موفقیت حذف شد");
     smartSendOrEdit($message_id,"مدیریت کد های تخفیف",getDiscountCodeKeys());
 }
 if(preg_match('/^copyHash(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     sendMessage("<code>" . $match[1] . "</code>",null,"HTML");
+}
+if(preg_match('/^copyDiscountId(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $stmt=$connection->prepare('SELECT hash_id FROM discounts WHERE id=? LIMIT 1');
+    $stmt->bind_param('i',$match[1]); $stmt->execute(); $row=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$row){ alert('کد پیدا نشد.',true); exit; }
+    $code=(string)$row['hash_id']; $owner=deltaDiscountOwner($code);
+    sendMessage('🔖 کد: <code>'.htmlspecialchars($code,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8').'</code>'.($owner>0?"\n👤 مخصوص کاربر: <code>{$owner}</code>":''),null,'HTML');
+    exit;
 }
 
 // ---------------- Inactive users management (main + reseller bots)

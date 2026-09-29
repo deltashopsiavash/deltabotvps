@@ -43,6 +43,9 @@ do
 			echo -e "\n\e[92mWait a few seconds ...\033[0m\n"
 			sleep 3
 			git clone https://github.com/deltashopsiavash/deltabotvps.git /var/www/html/deltabotvps
+			# Restore the one-minute income report and receipt approval worker on
+			# existing installations; old HTTP entries could be missing or overlap.
+			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
 			sudo chown -R www-data:www-data /var/www/html/deltabotvps/
 			sudo chmod -R 755 /var/www/html/deltabotvps/
 			sleep 3
