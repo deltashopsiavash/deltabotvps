@@ -12076,7 +12076,7 @@ function pgRenewQuotaInfoByPayType($payType){
     return $info;
 }
 function pgRenewPaymentKeyboard($hash, $price){
-    global $botState,$buttonValues,$botUrl,$connection;
+    global $botState,$buttonValues,$botUrl,$connection,$paymentKeys;
     $priceTxt = number_format((int)$price) . ' تومان';
     $keyboard=[];
 
@@ -12100,6 +12100,7 @@ function pgRenewPaymentKeyboard($hash, $price){
     if(($botState['cartToCartState']??'off')=='on') $keyboard[]=[['text'=>'کارت به کارت '.$priceTxt,'callback_data'=>'pgRenewPayCart'.$hash]];
     if(($botState['zarinpal']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['zarinpal_gateway'],'url'=>$botUrl.'pay/?zarinpal&hash_id='.$hash]];
     if(($botState['nextpay']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['nextpay_gateway'],'url'=>$botUrl.'pay/?nextpay&hash_id='.$hash]];
+    if(($botState['usdtState']??'off')=='on' && !empty($paymentKeys['usdtwallet'])) $keyboard[]=[['text'=>'💵 پرداخت ارزی (USDT)','callback_data'=>'payWithUsdt'.$hash]];
     $keyboard[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'mainMenu']];
     return json_encode(['inline_keyboard'=>$keyboard], JSON_UNESCAPED_UNICODE);
 }
