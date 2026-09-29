@@ -8963,7 +8963,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
             $order = $stmt->get_result();
             $stmt->close();
         }
-        sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']), getMainKeys());
+            sendMessage(deltaAppendTracking(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']),$payProvisionHash), getMainKeys(), 'HTML');
         if($inbound_id == 0) {
             $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
             $stmt->bind_param("ii", $accountCount, $server_id);
@@ -9466,7 +9466,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $photos = $update->message->photo;
     $lastPhoto = is_array($photos) ? end($photos) : end($photos);
     $fileid = $lastPhoto->file_id ?? '';
-    sendMessage($mainValues['renew_order_sent'] ?? 'رسید ارسال شد', $removeKeyboard); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
+    sendMessage(deltaAppendTracking($mainValues['renew_order_sent'] ?? 'رسید ارسال شد',$hash), $removeKeyboard, 'HTML'); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
     $res=sendPhotoToAdmins($fileid, deltaAppendTracking("🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان",$hash), $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
@@ -13712,7 +13712,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $volume = $respd['volume'];
         $days = $respd['days'];
         
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['renew_order_sent'],$hash_id),$removeKeyboard,'HTML');
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         // notify admin
         
@@ -14594,7 +14594,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $price = $payParam['price'];
         $volume = $res['volume'];
     
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['renew_order_sent'],$match[1]),$removeKeyboard,'HTML');
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin   
@@ -14972,7 +14972,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $price = $payParam['price'];
         $volume = $res['volume'];
         $state = str_replace('payIncreaseWithCartToCart','',$userInfo['step']);
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['renew_order_sent'],$match[1]),$removeKeyboard,'HTML');
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin
