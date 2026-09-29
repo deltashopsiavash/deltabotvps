@@ -6406,6 +6406,9 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         $stmt->bind_param("s", $uuid);
         $stmt->execute();
         $stmt->close();
+        $approvedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet',`approved_at`=? WHERE `hash_id`=? AND `state`='pending'");
+        $stmt->bind_param("is",$approvedAt,$match[1]); $stmt->execute(); $stmt->close();
         $keys = json_encode(['inline_keyboard'=>[
             [
                 ['text'=>"اخیش یکی حجم زد 😁",'callback_data'=>"deltach"]
@@ -15007,11 +15010,6 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
-    $stmt->bind_param("s", $match[1]);
-    $stmt->execute();
-    $stmt->close();
-
     preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo);
     $orderId = $increaseInfo[1];
     
@@ -15051,9 +15049,8 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
         alert("💡موجودی کیف پول (".number_format($userwallet)." تومان) کافی نیست لطفا به مقدار ".number_format($needamount)." تومان شارژ کنید ",true);
         exit;
     }
+    $trackingCode=deltaEnsurePayTrackingCode($match[1]);
 
-    
-    
     if($serverType == "marzban" || $serverType == "pasarguard"){
         $response = editMarzbanConfig($server_id, ['remark'=>$remark, 'plus_day'=>$volume]);
     }else{
@@ -15080,7 +15077,10 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
         $stmt->bind_param("ii", $price, $from_id);
         $stmt->execute();
         $stmt->close();
-        smartSendOrEdit($message_id, "✅$volume روز به مدت زمان سرویس شما اضافه شد",getMainKeys());
+        $approvedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet',`approved_at`=? WHERE `hash_id`=? AND `state`='pending'");
+        $stmt->bind_param("is",$approvedAt,$match[1]); $stmt->execute(); $stmt->close();
+        smartSendOrEdit($message_id, "✅$volume روز به مدت زمان سرویس شما اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",getMainKeys(),"HTML");
         
         $keys = json_encode(['inline_keyboard'=>[
             [
@@ -15096,6 +15096,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume روز
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>{$trackingCode}</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
 
@@ -15458,12 +15459,6 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
-    $stmt->bind_param("s", $match[1]);
-    $stmt->execute();
-    $stmt->close();
-
-
     preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType, $increaseInfo);
     $orderId = $increaseInfo[1];
     
@@ -15496,6 +15491,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
         alert("💡موجودی کیف پول (".number_format($userwallet)." تومان) کافی نیست لطفا به مقدار ".number_format($needamount)." تومان شارژ کنید ",true);
         exit;
     }
+    $trackingCode=deltaEnsurePayTrackingCode($match[1]);
     
     $stmt = $connection->prepare("SELECT * FROM server_config WHERE id=?");
     $stmt->bind_param("i", $server_id);
@@ -15536,9 +15532,10 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume گیگ
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>{$trackingCode}</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
-        smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
+        smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",getMainKeys(),"HTML");exit;
         
 
     }else {
