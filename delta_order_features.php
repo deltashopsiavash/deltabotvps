@@ -213,6 +213,22 @@ if(!function_exists('deltaFeatureHandleRequest')){
             sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\n\n".deltaTrackingLine($hash),$removeKeyboard,'HTML'); setUser(); exit;
         }
 
+        if($isAdmin && preg_match('/^deltaRejectPay_([^_]+)_(\d+)$/',$data,$m)){
+            setUser('deltaRejectPayReason|'.$m[1].'|'.$m[2].'|'.$message_id);
+            sendMessage('دلیل رد سفارش را ارسال کنید.',$cancelKey);
+            exit;
+        }
+        if($isAdmin && preg_match('/^deltaRejectPayReason\|([^|]+)\|(\d+)\|(\d+)$/',(string)($userInfo['step']??''),$m) && $text!=($buttonValues['cancel']??'')){
+            $hash=$m[1]; $uid=(int)$m[2]; $receiptMessageId=(int)$m[3];
+            $stmt=$connection->prepare("UPDATE pays SET state='declined' WHERE hash_id=? AND state IN ('have_sent','need_admin','pending')");
+            $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+            @editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شد ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),$receiptMessageId);
+            sendMessage(deltaAppendTracking((string)$text,$hash),null,'HTML',$uid);
+            sendMessage('رسید رد شد و از سفارش‌های در انتظار حذف شد.',$removeKeyboard);
+            setUser();
+            exit;
+        }
+
         if($data==='deltaPendingOrders'){ smartSendOrEdit($message_id,'⏳ سفارش‌های در حال انتظار شما',deltaPendingOrdersKeyboard($from_id)); exit; }
         if(preg_match('/^deltaPendingView_(.+)$/',(string)$data,$m)){
             $hash=$m[1];
