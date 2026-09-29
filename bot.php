@@ -953,7 +953,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('approvePayment' . $hash, 'decPayment' . $hash, $uid);
     }elseif(strpos($originStep, 'payCustomWithCartToCart') === 0){
-        $keyboard = getReceiptAdminKeyboard('accCustom' . $hash, 'decline' . $uid, $uid);
+        $keyboard = getReceiptAdminKeyboard('accCustom' . $hash, 'deltaRejectPay_' . $hash . '_' . $uid, $uid);
     }elseif(strpos($originStep, 'payWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('accept' . $hash, 'declineOffer' . $hash . '_' . $uid, $uid);
     }elseif(strpos($originStep, 'payRenewWithCartToCart') === 0){
@@ -963,7 +963,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     }elseif(strpos($originStep, 'payIncreaseWithCartToCart') === 0){
         $keyboard = getReceiptAdminKeyboard('approveIncreaseVolume' . $hash, 'decIncreaseVolume' . $hash, $uid);
     }else{
-        $keyboard = getReceiptAdminKeyboard('accept' . $hash, 'decline' . $uid, $uid);
+        $keyboard = getReceiptAdminKeyboard('accept' . $hash, 'deltaRejectPay_' . $hash . '_' . $uid, $uid);
     }
     $res = sendToAdmins($msg, $keyboard, 'HTML');
     // message_id cannot be reliably collected from sendToAdmins for all admins; keep state have_sent.
@@ -4934,7 +4934,7 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     $stmt->execute();
     $stmt->close();
 
-    sendMessage("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",null,null,$userId);
+    sendMessage(deltaAppendTracking("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",$match[1]),null,"HTML",$userId);
     
     unset($markup[count($markup)-1]);
     $markup[] = [['text' => '✅', 'callback_data' => "dontsendanymore"]];
@@ -4965,7 +4965,7 @@ if(preg_match('/^decPayment(\d+)_(.*)/',$userInfo['step'],$match) && ($from_id =
     $stmt->execute();
     $stmt->close();
     
-    sendMessage("💔 افزایش موجودی شما به مبلغ "  . number_format($price) . " به دلیل زیر رد شد\n\n$text",null,null,$userId);
+    sendMessage(deltaAppendTracking("💔 افزایش موجودی شما به مبلغ "  . number_format($price) . " به دلیل زیر رد شد\n\n$text",$match[2]),null,"HTML",$userId);
 
 
     editKeys(file_get_contents("temp" . $from_id . ".txt"), $match[1]);
@@ -5989,7 +5989,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         $stmt->execute();
         $stmt->close();
     
-    sendMessage("✅سرویس $remark با موفقیت تمدید شد",getMainKeys());
+    sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$payInfo['hash_id'] ?? ''),getMainKeys(),"HTML");
     $keys = json_encode(['inline_keyboard'=>[
         [
             ['text'=>"به به تمدید 😍",'callback_data'=>"deltach"]
@@ -6055,7 +6055,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         $stmt->execute();
         $stmt->close();
         
-        sendMessage("✅$volume روز به مدت زمان سرویس شما اضافه شد",getMainKeys());
+        sendMessage(deltaAppendTracking("✅$volume روز به مدت زمان سرویس شما اضافه شد",$payInfo['hash_id'] ?? ''),getMainKeys(),"HTML");
         
         $keys = json_encode(['inline_keyboard'=>[
             [
@@ -6141,7 +6141,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     💰قیمت: $price تومان
     ⁮⁮ ⁮⁮
     ", $keys, "html");
-        sendMessage( "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
+        sendMessage(deltaAppendTracking("✅$volume گیگ به حجم سرویس شما اضافه شد",$payInfo['hash_id'] ?? ''),getMainKeys(),"HTML");exit;
         
     
     }else {
@@ -7887,7 +7887,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $msg = deltaAppendTracking($msg,$match[1]);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
-        $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "decline$uid", $uid);
+        $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "deltaRejectPay_" . $match[1] . "_" . $uid, $uid);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
@@ -8058,7 +8058,7 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     define('IMAGE_HEIGHT',540);
 
     (function_exists('npvSendManualLockRequestOrNormal') ? npvSendManualLockRequestOrNormal($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu", $file_detail ?? [], $payInfo['description'] ?? '', $serverInfo ?? []) : xuiSendOrderDeliveryPhoto($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu"));
-    sendMessage('✅ کانفیگ و براش ارسال کردم', getMainKeys());
+    sendMessage(deltaAppendTracking('✅ کانفیگ و براش ارسال کردم',$match[1]), getMainKeys(),"HTML");
     
     $agentBought = $payInfo['agent_bought'];
 	$stmt = $connection->prepare("INSERT INTO `orders_list` 
@@ -8260,7 +8260,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 ['text'=>$buttonValues['back_to_main'],'callback_data'=>"mainMenu"]
             ],
             ]]);
-        smartSendOrEdit($message_id,"✅سرویس $remark با موفقیت تمدید شد",$keys);
+        smartSendOrEdit($message_id,deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),$keys,"HTML");
     }else{
         $accountCount = xuiResolvePayAccountCount($payInfo);
 
@@ -8800,7 +8800,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     	$stmt->execute();
     	$stmt->close();
         sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['renewed_config_to_user']), getMainKeys(),null,null);
-        sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$uid);
+        sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),null,"HTML",$uid);
     }else{
         $accountCount = xuiResolvePayAccountCount($payInfo);
         $eachPrice = $price / $accountCount;
@@ -9319,7 +9319,8 @@ if(preg_match('/^pgRenewBuyFull_(\d+)_(\d+)$/', $data, $m)){
     $vlabel=((float)$plan['volume']>0)?rtrim(rtrim(number_format((float)$plan['volume'],2,'.',''),'0'),'.').' گیگ':'نامحدود';
     $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
-    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
+    $msg = deltaAppendTracking($msg,$hash);
+    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price']),"HTML"); exit;
 }
 if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     $oid=(int)$m[1]; $pid=(int)$m[2]; pgRenewEnsureTables();
@@ -9333,7 +9334,8 @@ if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     $unit=$kind=='volume'?'گیگ':'روز';
     $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
-    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
+    $msg = deltaAppendTracking($msg,$hash);
+    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price']),"HTML"); exit;
 }
 
 // Pay a PasarGuard full/volume renewal from the user's GB quota.
@@ -9478,7 +9480,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, (int)$pay['user_id']), null, 'HTML');
-    sendMessage("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", null, null, $pay['user_id']);
+    sendMessage(deltaAppendTracking("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز",$hash), null, "HTML", $pay['user_id']);
     exit;
 }
 if(preg_match('/^decPgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -13797,7 +13799,7 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
 	$stmt->execute();
 	$stmt->close();
     sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['renewed_config_to_user']), getMainKeys(),null,null);
-    sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$uid);
+    sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),null,"HTML",$uid);
     exit;
 }
 if(preg_match('/decRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -13940,7 +13942,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
 	$stmt->bind_param("ii", $price, $from_id);
 	$stmt->execute();
 	$stmt->close();
-    smartSendOrEdit($message_id, "✅سرویس $remark با موفقیت تمدید شد",getMainKeys());
+    smartSendOrEdit($message_id, deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),getMainKeys(),"HTML");
     $keys = json_encode(['inline_keyboard'=>[
         [
             ['text'=>"به به تمدید 😍",'callback_data'=>"deltach"]
@@ -14677,7 +14679,7 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
         $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
     
         editKeys($keys);
-        sendMessage("✅$volume روز به مدت زمان سرویس شما اضافه شد",null,null,$uid);
+        sendMessage(deltaAppendTracking("✅$volume روز به مدت زمان سرویس شما اضافه شد",$match[1]),null,"HTML",$uid);
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;
@@ -14772,7 +14774,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
         $stmt->bind_param("ii", $price, $from_id);
         $stmt->execute();
         $stmt->close();
-        smartSendOrEdit($message_id, "✅$volume روز به مدت زمان سرویس شما اضافه شد",getMainKeys());
+        smartSendOrEdit($message_id, deltaAppendTracking("✅$volume روز به مدت زمان سرویس شما اضافه شد",$match[1]),getMainKeys(),"HTML");
         
         $keys = json_encode(['inline_keyboard'=>[
             [
@@ -15041,7 +15043,7 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
         $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
     
         editKeys($keys);
-        sendMessage("✅$volume گیگ به حجم سرویس شما اضافه شد",null,null,$uid);
+        sendMessage(deltaAppendTracking("✅$volume گیگ به حجم سرویس شما اضافه شد",$match[1]),null,"HTML",$uid);
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;
@@ -15231,7 +15233,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
 🔖 کد پیگیری: <code>" . deltaTrackingCode($match[1]) . "</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
-        smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
+        smartSendOrEdit($message_id, deltaAppendTracking("✅$volume گیگ به حجم سرویس شما اضافه شد",$match[1]),getMainKeys(),"HTML");exit;
         
 
     }else {
