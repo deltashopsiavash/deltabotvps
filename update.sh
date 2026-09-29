@@ -45,7 +45,7 @@ do
 			git clone https://github.com/deltashopsiavash/deltabotvps.git /var/www/html/deltabotvps
 			# Restore the one-minute income report and receipt approval worker on
 			# existing installations; old HTTP entries could be missing or overlap.
-			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
+			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
 			sudo chown -R www-data:www-data /var/www/html/deltabotvps/
 			sudo chmod -R 755 /var/www/html/deltabotvps/
 			sleep 3
