@@ -5169,19 +5169,22 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $payInfo = $stmt->get_result()->fetch_assoc();
         $stmt->close();
         $price = number_format($payInfo['price']);
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
 
     
 
-        sendMessage($mainValues['order_increase_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_increase_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         $msg = str_replace(['PRICE', 'USERNAME', 'NAME', 'USER-ID'],[$price, $username, $name, $from_id], $mainValues['increase_wallet_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
         
         $keyboard = getPaymentAdminKeyboard($match[1], $from_id);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -8158,20 +8161,23 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $filename = $catname." ".$res['title']; 
         $fileprice = $payInfo['price'];
         $remark = function_exists('npvExtractRemarkFromPayDescription') ? npvExtractRemarkFromPayDescription($payInfo['description']) : $payInfo['description'];
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
         
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_buy_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                             ["کارت به کارت", $from_id, $username, $first_name, $fileprice, $remark,$volume, $days], $mainValues['buy_custom_account_request']);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
         $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "decline$uid", $uid);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
     }else{
         sendMessage($mainValues['please_send_only_image']);
@@ -8840,8 +8846,9 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
             $filename = $catname." ".$res['title']; 
         }
         $fileprice = $payInfo['price'];
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
     
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_buy_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         if($payInfo['agent_count'] != 0) $msg = str_replace(['ACCOUNT-COUNT', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK"],[$payInfo['agent_count'], 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename], $mainValues['buy_new_much_account_request']);
@@ -8854,6 +8861,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
 🔐 Device ID ثبت‌شده:
 <code>{$safeDeviceId}</code>";
         }
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
 
         $keyboard = getReceiptAdminKeyboard("accept" . $match[1], "declineOffer" . $match[1] . "_" . $uid, $uid);
         setUser('', 'temp');
@@ -8861,8 +8869,9 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $msgId = $res->result->message_id;
         
         if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -9729,11 +9738,13 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $photos = $update->message->photo;
     $lastPhoto = is_array($photos) ? end($photos) : end($photos);
     $fileid = $lastPhoto->file_id ?? '';
-    sendMessage($mainValues['renew_order_sent'] ?? 'رسید ارسال شد', $removeKeyboard); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    sendMessage(($mainValues['renew_order_sent'] ?? 'رسید ارسال شد')."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $removeKeyboard, 'HTML'); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
-    $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان", $keys, 'HTML');
+    $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
+    $receiptNow=time(); $adminChat=(int)$admin;
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id`=?, `chat_id`=? WHERE `hash_id`=?"); $stmt->bind_param('iiis',$receiptNow,$msgId,$adminChat,$hash); $stmt->execute(); $stmt->close();
     exit;
 }
 if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -13969,12 +13980,14 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $price = $payInfo['price'];
         $volume = $respd['volume'];
         $days = $respd['days'];
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
         
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         // notify admin
         
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کارت به کارت', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     
         $keyboard = getReceiptAdminKeyboard("approveRenewAcc$hash_id", "decRenewAcc$hash_id", $uid);
     
@@ -13982,8 +13995,9 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -14845,12 +14859,14 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->close();
         $price = $payParam['price'];
         $volume = $res['volume'];
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
     
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin   
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'زمان', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     
         $keyboard = getReceiptAdminKeyboard("approveIncreaseDay{$match[1]}", "decIncreaseDay{$match[1]}", $from_id);
 
@@ -14859,8 +14875,9 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{ 
@@ -15219,12 +15236,14 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $price = $payParam['price'];
         $volume = $res['volume'];
         $state = str_replace('payIncreaseWithCartToCart','',$userInfo['step']);
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin
 
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'حجم', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
 
          $keyboard = getReceiptAdminKeyboard("approveIncreaseVolume{$match[1]}", "decIncreaseVolume{$match[1]}", $from_id);
 
@@ -15232,8 +15251,9 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
