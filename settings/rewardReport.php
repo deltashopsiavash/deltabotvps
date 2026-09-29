@@ -61,20 +61,61 @@ if($rewaredTime>0 && $rewaredChannel != null){
         $stmt->close();
 
         $txt = "⁮⁮ ⁮⁮ ⁮⁮ ⁮⁮
-🔰درآمد من در $rewaredTime ساعت گذشته
+🔰 <b>گزارش درآمد {$rewaredTime} ساعت گذشته</b>
 
-💰مبلغ : $totalRewards تومان
+💰 مبلغ: <b>{$totalRewards} تومان</b>
 
-☑️ $channelLock
-
+☑️ {$channelLock}
 ";
-        sendMessage($txt, null, null, $rewaredChannel);
+
+        // Users with the highest paid volume today.
+        $todayStart = strtotime('today');
+        $stmt = $connection->prepare("SELECT p.`user_id`,COUNT(*) AS buy_count,SUM(p.`price`) AS total,u.`name`,u.`username`
+            FROM `pays` p LEFT JOIN `users` u ON u.`userid`=p.`user_id`
+            WHERE p.`request_date`>=? AND p.`state` IN ('paid','approved','paid_with_wallet')
+            GROUP BY p.`user_id`,u.`name`,u.`username` ORDER BY total DESC LIMIT 10");
+        if($stmt){
+            $stmt->bind_param('i',$todayStart); $stmt->execute(); $top=$stmt->get_result(); $stmt->close();
+            if($top && $top->num_rows>0){
+                $txt .= "\n\n🏆 <b>بیشترین خرید امروز</b>";
+                $rank=1;
+                while($r=$top->fetch_assoc()){
+                    $uid=(int)$r['user_id'];
+                    $nm=trim((string)($r['name']??''));
+                    $un=trim((string)($r['username']??''));
+                    $who=$un!==''?'@'.htmlspecialchars(ltrim($un,'@'),ENT_QUOTES,'UTF-8'):($nm!==''?htmlspecialchars($nm,ENT_QUOTES,'UTF-8'):'بدون نام');
+                    $txt .= "\n{$rank}) <code>{$uid}</code> | {$who} | <b>".number_format((int)$r['total'])." تومان</b> | ".(int)$r['buy_count']." خرید";
+                    $rank++;
+                }
+            }
+        }
+
+        // Auto-approved receipts that were finalized during this report window.
+        $stmt=$connection->prepare("SELECT `hash_id`,`tracking_code`,`user_id`,`price`,`type`,`approved_at` FROM `pays` WHERE `auto_approved`=1 AND `approved_at`>? ORDER BY `approved_at` DESC LIMIT 20");
+        if($stmt){
+            $stmt->bind_param('i',$time); $stmt->execute(); $auto=$stmt->get_result(); $stmt->close();
+            if($auto && $auto->num_rows>0){
+                $txt .= "\n\n🤖 <b>تأییدهای خودکار این بازه</b>";
+                while($ar=$auto->fetch_assoc()){
+                    $tracking=trim((string)($ar['tracking_code']??'')) ?: deltaEnsurePayTrackingCode((string)$ar['hash_id']);
+                    $txt .= "\n• <code>{$tracking}</code> | کاربر <code>".(int)$ar['user_id']."</code> | <b>".number_format((int)$ar['price'])." تومان</b> | ".htmlspecialchars((string)$ar['type'],ENT_QUOTES,'UTF-8');
+                }
+            }
+        }
+        sendMessage($txt, null, "HTML", $rewaredChannel);
     }
 }    
 
-if($botState['cartToCartAutoAcceptState']=="on"){
+// Run whenever global auto-approval is on OR at least one user has a force-auto exception.
+$hasForcedAuto=false;
+$forcedCheck=$connection->query("SELECT 1 FROM `setting` WHERE `type` LIKE 'USER_FORCE_AUTOAPPROVE_%' AND CAST(`value` AS UNSIGNED)>0 LIMIT 1");
+if($forcedCheck && $forcedCheck->num_rows>0) $hasForcedAuto=true;
+
+if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $hasForcedAuto){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
-    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' AND `request_date` <= ?");
+    // receipt_submitted_at is the important timestamp. Falling back to request_date
+    // keeps legacy rows readable, while activation cutoffs below prevent old sweeps.
+    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' AND COALESCE(NULLIF(`receipt_submitted_at`,0),`request_date`) <= ?");
     $stmt->bind_param('i', $date);
     $stmt->execute();
     $info = $stmt->get_result();
@@ -82,37 +123,60 @@ if($botState['cartToCartAutoAcceptState']=="on"){
 
     while($payInfo = $info->fetch_assoc()){
         $time = time();
-        $rowId = $payInfo['id'];
-        $price = $payInfo['price'];
-        $user_id = $payInfo['user_id'];
-        $payType = $payInfo['type'];
-        $deviceId = $payInfo['device_id'];
-        
+        $rowId = (int)$payInfo['id'];
+        $price = (int)$payInfo['price'];
+        $user_id = (int)$payInfo['user_id'];
+        $payType = (string)$payInfo['type'];
+        $deviceId = $payInfo['device_id'] ?? '';
+        $receiptAt=(int)($payInfo['receipt_submitted_at']??0);
+        if($receiptAt<=0) $receiptAt=(int)($payInfo['request_date']??0);
+
+        // USDT receipts require hash/network review by the manager and are never
+        // swept by the card-to-card auto-approval worker.
+        if(($payInfo['payment_method']??'')==='usdt_bep20') continue;
+
         $stmt = $connection->prepare("SELECT * FROM `users` WHERE `userid` = ?");
         $stmt->bind_param("i", $user_id);
         $stmt->execute();
         $userinfo = $stmt->get_result()->fetch_assoc();
         $stmt->close();
+        if(!$userinfo) continue;
 
+        $globalEnabled=(($botState['cartToCartAutoAcceptState']??'off')==='on');
+        $globalSince=(int)($botState['cartToCartAutoAcceptSince']??0);
+        $globalEligible=$globalEnabled && ($globalSince<=0 || $receiptAt >= $globalSince);
 
-        // per-user exception: do not auto-approve for this user
-        $type = "USER_NO_AUTOAPPROVE_" . $user_id;
-        $stmt = $connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
-        $stmt->bind_param("s", $type);
-        $stmt->execute();
-        $noAuto = $stmt->get_result()->fetch_assoc()['value']??"0";
-        $stmt->close();
-        if($noAuto == "1") continue;
-        
-        if($userinfo['is_agent'] == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
-        elseif($userinfo['is_agent'] != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
-        
+        $forceType="USER_FORCE_AUTOAPPROVE_".$user_id;
+        $stmt=$connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
+        $stmt->bind_param('s',$forceType); $stmt->execute(); $forceRow=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        $forceSince=(int)($forceRow['value']??0);
+        $forceEligible=$forceSince>0 && $receiptAt >= $forceSince;
+
+        if(!$globalEligible && !$forceEligible) continue;
+
+        // Keep the old NO_AUTOAPPROVE flag only as a backwards-compatible global
+        // exclusion. A new explicit FORCE_AUTO exception intentionally overrides it.
+        if(!$forceEligible){
+            $type = "USER_NO_AUTOAPPROVE_" . $user_id;
+            $stmt = $connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
+            $stmt->bind_param("s", $type);
+            $stmt->execute();
+            $noAuto = $stmt->get_result()->fetch_assoc()['value']??"0";
+            $stmt->close();
+            if($noAuto == "1") continue;
+
+            if(($userinfo['is_agent']??0) == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
+            elseif(($userinfo['is_agent']??0) != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
+        }
+
         $agentBought = $payInfo['agent_bought'];
-        
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =?");
-        $stmt->bind_param("i", $rowId);
+        $approvedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid',`auto_approved`=1,`approved_at`=?,`payment_method`=IF(`payment_method`='', 'card_to_card', `payment_method`) WHERE `id`=? AND `state`='have_sent'");
+        $stmt->bind_param("ii", $approvedAt, $rowId);
         $stmt->execute();
+        $locked=$stmt->affected_rows>0;
         $stmt->close();
+        if(!$locked) continue;
         
         
         if($payType == "INCREASE_WALLET"){
@@ -614,7 +678,39 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$user_id);
         }
         
+        $tracking=deltaEnsurePayTrackingCode((string)$payInfo['hash_id']);
+        if(!empty($rewaredChannel)){
+            $safeName=htmlspecialchars((string)($userinfo['name']??''),ENT_QUOTES,'UTF-8');
+            $safeUsername=htmlspecialchars((string)($userinfo['username']??''),ENT_QUOTES,'UTF-8');
+            $safeType=htmlspecialchars((string)$payType,ENT_QUOTES,'UTF-8');
+            $method=htmlspecialchars(deltaPaymentMethodLabel((string)($payInfo['payment_method']??'card_to_card')),ENT_QUOTES,'UTF-8');
+            $source=$forceEligible?'استثنای دائمی کاربر':'تأیید خودکار عمومی';
+            $desc=trim((string)($payInfo['description']??''));
+            if(mb_strlen($desc,'UTF-8')>300) $desc=mb_substr($desc,0,300,'UTF-8').'…';
+            $desc=htmlspecialchars($desc,ENT_QUOTES,'UTF-8');
+            $created=(int)($payInfo['request_date']??0);
+            $submitted=(int)($payInfo['receipt_submitted_at']??0);
+            $report="🤖 <b>گزارش کامل تأیید خودکار رسید</b>\n\n"
+                ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
+                ."👤 آیدی عددی: <code>{$user_id}</code>\n"
+                ."👨‍💼 نام: {$safeName}\n"
+                ."⚡ نام کاربری: ".($safeUsername!==''?'@'.$safeUsername:'ندارد')."\n"
+                ."🧾 نوع سفارش: <code>{$safeType}</code>\n"
+                ."💰 مبلغ: <b>".number_format($price)." تومان</b>\n"
+                ."💳 روش پرداخت: <b>{$method}</b>\n"
+                ."⚙️ منبع تأیید: <b>{$source}</b>\n"
+                ."📦 Plan ID: <code>".(int)($payInfo['plan_id']??0)."</code>\n"
+                ."🔋 حجم ثبت‌شده: <b>".(float)($payInfo['volume']??0)."</b>\n"
+                ."⏰ روز ثبت‌شده: <b>".(float)($payInfo['day']??0)."</b>\n"
+                ."🕒 ساخت فاکتور: <code>".($created>0?date('Y-m-d H:i:s',$created):'-')."</code>\n"
+                ."📨 ثبت رسید: <code>".($submitted>0?date('Y-m-d H:i:s',$submitted):'-')."</code>\n"
+                ."✅ زمان تأیید: <code>".date('Y-m-d H:i:s',$approvedAt)."</code>";
+            if($desc!=='') $report.="\n📝 توضیحات: <code>{$desc}</code>";
+            sendMessage($report,null,'HTML',$rewaredChannel);
+        }
 
-        editKeys(json_encode(['inline_keyboard'=>[[['text'=>"خودکار تأیید شد",'callback_data'=>"deltach"]]]]), $payInfo['message_id'], $payInfo['chat_id']);
+        if(!empty($payInfo['message_id']) && !empty($payInfo['chat_id'])){
+            editKeys(json_encode(['inline_keyboard'=>[[['text'=>"خودکار تأیید شد",'callback_data'=>"deltach"]]]]), $payInfo['message_id'], $payInfo['chat_id']);
+        }
     }
 }
