@@ -12271,6 +12271,7 @@ function pgRenewPaymentKeyboard($hash, $price){
 
     if(($botState['walletState']??'off')=='on') $keyboard[]=[['text'=>'پرداخت از موجودی '.$priceTxt,'callback_data'=>'pgRenewPayWallet'.$hash]];
     if(($botState['cartToCartState']??'off')=='on') $keyboard[]=[['text'=>'کارت به کارت '.$priceTxt,'callback_data'=>'pgRenewPayCart'.$hash]];
+    if(($botState['usdtBep20State']??'off')=='on') $keyboard[]=[['text'=>'🪙 پرداخت ارزی (USDT)','callback_data'=>'payWithUsdt'.$hash]];
     if(($botState['zarinpal']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['zarinpal_gateway'],'url'=>$botUrl.'pay/?zarinpal&hash_id='.$hash]];
     if(($botState['nextpay']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['nextpay_gateway'],'url'=>$botUrl.'pay/?nextpay&hash_id='.$hash]];
     $keyboard[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'mainMenu']];
@@ -12283,6 +12284,7 @@ function pgRenewCreatePay($userId,$payType,$price){
     $stmt=$connection->prepare("INSERT INTO `pays` (`hash_id`,`user_id`,`type`,`plan_id`,`volume`,`day`,`price`,`request_date`,`state`) VALUES (?, ?, ?, 0, 0, 0, ?, ?, 'pending')");
     $stmt->bind_param('sisii',$hash,$userId,$payType,$price,$time);
     $stmt->execute(); $stmt->close();
+    deltaEnsurePayTrackingCode($hash);
     return $hash;
 }
 function pgRenewApply($orderId,$days,$volume,$fullReset=false,$fullPlanId=0){
