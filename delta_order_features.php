@@ -20,9 +20,25 @@ if(!function_exists('deltaDiscountOwner')){
 }
 if(!function_exists('deltaForceAutoApprove')){
     function deltaForceAutoApprove($uid){ return getSettingValue('USER_FORCE_AUTOAPPROVE_'.(int)$uid,'0')==='1'; }
-    function deltaSetForceAutoApprove($uid,$state){ return upsertSettingValue('USER_FORCE_AUTOAPPROVE_'.(int)$uid,$state?'1':'0'); }
+    function deltaSetForceAutoApprove($uid,$state){
+        $uid=(int)$uid;
+        upsertSettingValue('USER_FORCE_AUTOAPPROVE_'.$uid,$state?'1':'0');
+        if($state) upsertSettingValue('USER_FORCE_AUTOAPPROVE_FROM_'.$uid,(string)time());
+        return true;
+    }
+    function deltaForceAutoApproveFrom($uid){ return (int)getSettingValue('USER_FORCE_AUTOAPPROVE_FROM_'.(int)$uid,'0'); }
     function deltaAutoApproveFrom(){ return (int)getSettingValue('AUTOAPPROVE_FROM_TS','0'); }
     function deltaResetAutoApproveFrom(){ $now=time(); upsertSettingValue('AUTOAPPROVE_FROM_TS',(string)$now); return $now; }
+    function deltaReceiptMarkerKey($hash){ return 'RECEIPT_AT_'.sha1((string)$hash); }
+    function deltaMarkReceiptSubmitted($hash,$at=null){
+        $hash=trim((string)$hash);
+        if($hash==='') return false;
+        $at=$at===null?time():(int)$at;
+        return upsertSettingValue(deltaReceiptMarkerKey($hash),(string)$at);
+    }
+    function deltaReceiptSubmittedAt($hash,$fallback=0){
+        return (int)getSettingValue(deltaReceiptMarkerKey($hash),(string)(int)$fallback);
+    }
 }
 if(!function_exists('deltaUsdtRateToman')){
     function deltaUsdtRateToman(){
@@ -99,6 +115,8 @@ if(!function_exists('deltaReceiptCallbacks')){
 if(!function_exists('deltaFeatureHandleRequest')){
     function deltaFeatureHandleRequest(){
         global $connection,$data,$text,$from_id,$admin,$userInfo,$message_id,$buttonValues,$cancelKey,$removeKeyboard,$update,$fileid,$paymentKeys,$botState;
+        $data=isset($data)?(string)$data:'';
+        $text=isset($text)?$text:'';
         $isAdmin=((int)$from_id===(int)$admin)||!empty($userInfo['isAdmin']);
 
         if($isAdmin && $data==='deltaAutoApproveReset'){
@@ -171,6 +189,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             [$ok,$no]=deltaReceiptCallbacks($pay); $kb=getReceiptAdminKeyboard($ok,$no,$from_id);
             $res=sendPhotoToAdmins($fileid,$msg,$kb,'HTML'); $mid=(int)($res->result->message_id??0);
             $stmt=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE hash_id=?"); $stmt->bind_param('iis',$mid,$admin,$hash); $stmt->execute(); $stmt->close();
+            deltaMarkReceiptSubmitted($hash);
             sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\n\n".deltaTrackingLine($hash),$removeKeyboard,'HTML'); setUser(); exit;
         }
 
