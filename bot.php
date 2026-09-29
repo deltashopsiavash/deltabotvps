@@ -5202,8 +5202,9 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     
     if($payInfo['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
     
@@ -8200,8 +8201,9 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     
     if($payInfo['state'] == "approved" || $payInfo['state'] == "paid_with_wallet") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet')");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet')");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
@@ -9781,7 +9783,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['amount']??0); }
     $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید: '.($res->msg??'خطا'), true); exit; }
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    $approvedAt=time(); $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved',`approved_at`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$approvedAt,$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, (int)$pay['user_id']), null, 'HTML');
     sendMessage("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", null, null, $pay['user_id']);
@@ -14037,8 +14039,9 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
     
     if($payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
 
@@ -14920,8 +14923,9 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
     
     if($payParam['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
     
@@ -15294,8 +15298,9 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
 
     if($payParam['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
 
