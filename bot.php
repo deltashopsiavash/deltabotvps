@@ -1035,7 +1035,7 @@ if(preg_match('/^payWithUsdt(.+)$/',(string)($data??''),$m)){
         ."⚠️ توجه:\n"
         ."💳 پرداخت فقط با USDT روی شبکه BSC (BEP20) انجام شود.\n"
         ."📌 مبلغ باید دقیقاً مطابق فاکتور واریز شود.\n"
-        ."❌ در صورت واریز مبلغ اشتباه یا ارسال از شبکه دیگر، پرداخت خودکار تأیید نمی‌شود و بررسی آن با مدیریت خواهد بود.\n\n"
+        ."❌ در صورت واریز مبلغ اشتباه یا ارسال از شبکه دیگر، پرداخت تأیید نمی‌شود و بازگشت وجهی انجام نخواهد شد.\n\n"
         ."⏰ این نرخ و فاکتور ارزی فقط تا 30 دقیقه معتبر است.";
     $keys=json_encode(['inline_keyboard'=>[
         [['text'=>'📋 کپی مبلغ USDT','copy_text'=>['text'=>$amountText]],['text'=>'📋 کپی آدرس','copy_text'=>['text'=>$wallet]]],
@@ -1052,7 +1052,16 @@ if(preg_match('/^payWithUsdt(.+)$/',(string)($userInfo['step']??''),$m) && $text
         sendMessage("❌ هش تراکنش BEP20 در کپشن پیدا نشد.\n\nعکس را دوباره بفرستید و هش تراکنش مثل <code>0x...</code> را در کپشن قرار دهید.",null,'HTML');
         exit;
     }
-    $txHash=$txm[0];
+    $txHash=strtolower($txm[0]);
+    // A blockchain transaction hash may only be attached to one invoice.
+    $stmt=$connection->prepare("SELECT `tracking_code` FROM `pays` WHERE LOWER(`usdt_tx_hash`)=? AND `hash_id`<>? LIMIT 1");
+    if($stmt){
+        $stmt->bind_param('ss',$txHash,$hash); $stmt->execute(); $duplicateTx=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        if($duplicateTx){
+            sendMessage("❌ این هش تراکنش قبلاً برای یک فاکتور دیگر ثبت شده است.\nاگر فکر می‌کنید اشتباهی رخ داده، کد پیگیری خود را برای مدیریت ارسال کنید.",null,'HTML');
+            exit;
+        }
+    }
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
     $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay || (int)($pay['user_id']??0)!=(int)$from_id){ sendMessage("❌ فاکتور پیدا نشد",$removeKeyboard); setUser(); exit; }
@@ -1061,8 +1070,10 @@ if(preg_match('/^payWithUsdt(.+)$/',(string)($userInfo['step']??''),$m) && $text
     $uid=(int)$pay['user_id']; $rate=(int)($pay['usdt_rate']??0); $amount=(float)($pay['usdt_amount']??0);
     $amountText=number_format($amount,4,'.','');
     $expired=((int)($pay['usdt_expires_at']??0)>0 && time()>(int)$pay['usdt_expires_at']);
-    $photos=$update->message->photo; $lastPhoto=is_array($photos)?end($photos):end($photos);
-    $photoId=$lastPhoto->file_id??$fileid??'';
+    $photos=$update->message->photo;
+    $lastPhoto=is_array($photos) ? end($photos) : null;
+    $photoId=(is_object($lastPhoto) && isset($lastPhoto->file_id)) ? (string)$lastPhoto->file_id : (string)($fileid??'');
+    if($photoId===''){ sendMessage("❌ دریافت عکس رسید ناموفق بود؛ لطفاً تصویر را دوباره ارسال کنید."); exit; }
     $msg="🪙 <b>رسید پرداخت ارزی USDT BEP20</b>\n\n"
         .deltaUserShortInfo($uid)."\n\n"
         ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
