@@ -29,6 +29,11 @@ if(!function_exists('deltaTrackingCode')){
     function deltaTrackingLine($hash){
         return "🔖 کد پیگیری: <code>".deltaTrackingCode($hash)."</code>";
     }
+    function deltaTrackingIdFromCode($code){
+        if(!preg_match('/^[1-9][0-9]{7}$/',(string)$code)) return 0;
+        $mixed=((int)$code-10000000-27182818+90000000)%90000000;
+        return ($mixed*58880707)%90000000;
+    }
     function deltaAppendTracking($text,$hash){
         return trim((string)$hash)==='' ? $text : rtrim((string)$text)."\n\n".deltaTrackingLine($hash);
     }
@@ -39,12 +44,26 @@ if(!function_exists('deltaDiscountOwner')){
     function deltaSetDiscountOwner($code,$uid){ return upsertSettingValue('DISCOUNT_OWNER_'.strtoupper(trim((string)$code)),(string)(int)$uid); }
 }
 if(!function_exists('deltaForceAutoApprove')){
-    function deltaForceAutoApprove($uid){ return getSettingValue('USER_FORCE_AUTOAPPROVE_'.(int)$uid,'0')==='1'; }
-    function deltaSetForceAutoApprove($uid,$state){
+    function deltaAutoApprovePolicy($uid){
         $uid=(int)$uid;
-        upsertSettingValue('USER_FORCE_AUTOAPPROVE_'.$uid,$state?'1':'0');
-        if($state) upsertSettingValue('USER_FORCE_AUTOAPPROVE_FROM_'.$uid,(string)time());
+        $policy=getSettingValue('USER_AUTOAPPROVE_POLICY_'.$uid,'');
+        if(in_array($policy,['always','never','normal'],true)) return $policy;
+        if(getSettingValue('USER_FORCE_AUTOAPPROVE_'.$uid,'0')==='1') return 'always';
+        if(getSettingValue('USER_NO_AUTOAPPROVE_'.$uid,'0')==='1') return 'never';
+        return 'normal';
+    }
+    function deltaSetAutoApprovePolicy($uid,$policy){
+        if(!in_array($policy,['always','never','normal'],true)) return false;
+        $uid=(int)$uid;
+        upsertSettingValue('USER_AUTOAPPROVE_POLICY_'.$uid,$policy);
+        upsertSettingValue('USER_FORCE_AUTOAPPROVE_'.$uid,$policy==='always'?'1':'0');
+        upsertSettingValue('USER_NO_AUTOAPPROVE_'.$uid,$policy==='never'?'1':'0');
+        if($policy==='always') upsertSettingValue('USER_FORCE_AUTOAPPROVE_FROM_'.$uid,(string)time());
         return true;
+    }
+    function deltaForceAutoApprove($uid){ return deltaAutoApprovePolicy($uid)==='always'; }
+    function deltaSetForceAutoApprove($uid,$state){
+        return deltaSetAutoApprovePolicy($uid,$state?'always':'normal');
     }
     function deltaForceAutoApproveFrom($uid){ return (int)getSettingValue('USER_FORCE_AUTOAPPROVE_FROM_'.(int)$uid,'0'); }
     function deltaAutoApproveFrom(){ return (int)getSettingValue('AUTOAPPROVE_FROM_TS','0'); }
@@ -64,27 +83,50 @@ if(!function_exists('deltaForceAutoApprove')){
     }
 }
 if(!function_exists('deltaUsdtRateToman')){
+    function deltaParseUsdtRate($j,$source){
+        if(!is_array($j)) return 0;
+        if($source==='nobitex-stats'){
+            if(($j['status']??'')!=='ok') return 0;
+            $stats=$j['stats']['usdt-rls']??$j['stats']['USDT-RLS']??[];
+            $rate=$stats['bestSell']??$stats['latest']??0;
+            return is_numeric($rate) && (float)$rate>10000 ? (int)ceil((float)$rate/10) : 0;
+        }
+        if($source==='nobitex-book'){
+            if(($j['status']??'')!=='ok') return 0;
+            $updated=(int)($j['lastUpdate']??0);
+            if($updated>0 && time()-(int)($updated/1000)>180) return 0;
+            $rate=$j['asks'][0][0]??$j['lastTradePrice']??0;
+            return is_numeric($rate) && (float)$rate>10000 ? (int)ceil((float)$rate/10) : 0;
+        }
+        if($source==='wallex'){
+            if(empty($j['success'])) return 0;
+            $rate=$j['result']['symbols']['USDTTMN']['stats']['askPrice']??0;
+            return is_numeric($rate) && (float)$rate>1000 ? (int)ceil((float)$rate) : 0;
+        }
+        return 0;
+    }
     function deltaUsdtRateToman(){
         static $cached=null,$at=0;
         if($cached!==null && time()-$at<15) return $cached;
         $at=time();
-        $ch=curl_init('https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls');
-        curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_CONNECTTIMEOUT=>4,CURLOPT_TIMEOUT=>7,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_USERAGENT=>'DeltaBot/1.0']);
-        $raw=curl_exec($ch); curl_close($ch);
-        if($raw){
-            $j=json_decode($raw,true);
-            if(is_array($j) && isset($j['stats']['usdt-rls'])){
-                $s=$j['stats']['usdt-rls'];
-                foreach(['latest','bestSell','bestBuy','mark'] as $k){
-                    if(isset($s[$k]) && is_numeric($s[$k]) && (float)$s[$k]>1000){
-                        $cached=(int)round(((float)$s[$k])/10);
-                        if($cached>0) return $cached;
-                    }
-                }
-            }
+        $sources=[
+            ['https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls','nobitex-stats'],
+            ['https://api.nobitex.ir/v3/orderbook/USDTIRT','nobitex-book'],
+            ['https://api.wallex.ir/v1/markets','wallex']
+        ];
+        foreach($sources as [$url,$source]){
+            $ch=curl_init($url);
+            if(!$ch) continue;
+            curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_CONNECTTIMEOUT=>3,CURLOPT_TIMEOUT=>6,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_USERAGENT=>'Mozilla/5.0 DeltaBot/1.0',CURLOPT_HTTPHEADER=>['Accept: application/json']]);
+            $raw=curl_exec($ch);
+            $status=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);
+            $error=curl_error($ch);
+            curl_close($ch);
+            $rate=$status===200 && is_string($raw) ? deltaParseUsdtRate(json_decode($raw,true),$source) : 0;
+            if($rate>0){ $cached=$rate; return $rate; }
+            error_log('USDT quote '.$source.' failed: HTTP '.$status.' '.substr($error,0,120));
         }
-        $manual=(int)getSettingValue('USDT_FALLBACK_RATE_TOMAN','0');
-        return $manual>0?$manual:0;
+        return 0;
     }
 }
 if(!function_exists('deltaUsdtPayText')){
@@ -135,11 +177,72 @@ if(!function_exists('deltaReceiptCallbacks')){
     function deltaReceiptCallbacks($pay){
         $hash=(string)$pay['hash_id']; $uid=(int)$pay['user_id']; $type=(string)$pay['type'];
         if($type==='INCREASE_WALLET') return ['approvePayment'.$hash,'decPayment'.$hash];
+        if($type==='RENEW_ACCOUNT') return ['approveRenewAcc'.$hash,'decRenewAcc'.$hash];
         if($type==='RENEW_SCONFIG') return ['accept'.$hash,'declineOffer'.$hash.'_'.$uid];
         if(strpos($type,'INCREASE_DAY_')===0) return ['approveIncreaseDay'.$hash,'decIncreaseDay'.$hash];
         if(strpos($type,'INCREASE_VOLUME_')===0) return ['approveIncreaseVolume'.$hash,'decIncreaseVolume'.$hash];
         if(strpos($type,'PG_RENEW_')===0) return ['approvePgRenew'.$hash,'decPgRenew'.$hash];
         return ['accept'.$hash,'declineOffer'.$hash.'_'.$uid];
+    }
+}
+if(!function_exists('deltaOrderDetails')){
+    function deltaOrderDetails($pay){
+        global $connection;
+        $type=(string)($pay['type']??'');
+        $lines=[];
+        $label='سفارش';
+        if($type==='INCREASE_WALLET') $label='شارژ حساب';
+        elseif($type==='BUY_SUB') $label='خرید سرویس';
+        elseif($type==='RENEW_SCONFIG' || $type==='RENEW_ACCOUNT' || strpos($type,'PG_RENEW_')===0) $label='تمدید سرویس';
+        elseif(strpos($type,'INCREASE_VOLUME_')===0) $label='افزایش حجم سرویس';
+        elseif(strpos($type,'INCREASE_DAY_')===0) $label='افزایش مدت سرویس';
+        $lines[]='🧾 نوع سفارش: '.$label;
+        $lines[]='💰 مبلغ: '.number_format((int)($pay['price']??0)).' تومان';
+        $planId=(int)($pay['plan_id']??0);
+        if(in_array($type,['BUY_SUB','RENEW_SCONFIG'],true) && $planId>0){
+            $stmt=$connection->prepare('SELECT title,volume,days,server_id FROM server_plans WHERE id=? LIMIT 1');
+            $stmt->bind_param('i',$planId); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            if($plan){
+                $lines[]='📦 پلن: '.htmlspecialchars((string)$plan['title'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+                $lines[]='🔋 حجم: '.((int)($pay['volume']??0)>0?(int)$pay['volume']:(int)$plan['volume']).' گیگ';
+                $lines[]='⏰ مدت: '.((int)($pay['day']??0)>0?(int)$pay['day']:(int)$plan['days']).' روز';
+                $lines[]='🚦 شناسه سرور: '.(int)$plan['server_id'];
+            }
+            if($type==='BUY_SUB' && (int)($pay['agent_count']??0)>1) $lines[]='👥 تعداد اکانت: '.(int)$pay['agent_count'];
+        }
+        $orderId=0;
+        if($type==='RENEW_ACCOUNT') $orderId=$planId;
+        elseif(preg_match('/^(?:INCREASE_(?:DAY|VOLUME)|PG_RENEW_(?:FULL|VOLUME|DAY))_(\d+)_/',$type,$m)) $orderId=(int)$m[1];
+        if($orderId>0){
+            $stmt=$connection->prepare('SELECT remark,server_id,fileid FROM orders_list WHERE id=? LIMIT 1');
+            $stmt->bind_param('i',$orderId); $stmt->execute(); $order=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            if($order){
+                $lines[]='🔮 سرویس: '.htmlspecialchars((string)$order['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+                $lines[]='🚦 شناسه سرور: '.(int)$order['server_id'];
+                if($type==='RENEW_ACCOUNT'){
+                    $renewPlanId=(int)$order['fileid'];
+                    $stmt=$connection->prepare('SELECT title,volume,days FROM server_plans WHERE id=? LIMIT 1');
+                    $stmt->bind_param('i',$renewPlanId); $stmt->execute(); $renewPlan=$stmt->get_result()->fetch_assoc(); $stmt->close();
+                    if($renewPlan){
+                        $lines[]='📦 پلن تمدید: '.htmlspecialchars((string)$renewPlan['title'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+                        $lines[]='🔋 حجم تمدید: '.(int)$renewPlan['volume'].' گیگ';
+                        $lines[]='⏰ مدت تمدید: '.(int)$renewPlan['days'].' روز';
+                    }
+                }
+            }
+        }
+        if($type==='RENEW_SCONFIG'){
+            $conf=json_decode((string)($pay['description']??''),true);
+            if(is_array($conf) && isset($conf['remark'])) $lines[]='🔮 سرویس: '.htmlspecialchars((string)$conf['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        }
+        if(preg_match('/^INCREASE_VOLUME_\d+_(\d+)$/',$type,$m)) $lines[]='➕ حجم افزوده: '.(int)$m[1].' گیگ';
+        if(preg_match('/^INCREASE_DAY_\d+_(\d+)$/',$type,$m)) $lines[]='➕ روز افزوده: '.(int)$m[1].' روز';
+        $lines[]='🔖 کد پیگیری: <code>'.deltaTrackingCode($pay['hash_id']).'</code>';
+        return implode("\n",$lines);
+    }
+    function deltaOrderStateLabel($state){
+        $labels=['pending'=>'فاکتور ساخته شده؛ منتظر پرداخت','have_sent'=>'رسید ارسال شده؛ منتظر تأیید','need_admin'=>'در انتظار بررسی مدیر','approved'=>'تأیید و سرویس تحویل شده','paid'=>'تأیید خودکار شده','paid_with_wallet'=>'پرداخت با موجودی و تحویل شده','declined'=>'رد شده','rejected'=>'رد شده','cancelled_by_user'=>'لغو شده توسط کاربر','processing_receipt'=>'در حال پردازش رسید','processing_quota'=>'در حال پردازش تمدید','paid_with_quota'=>'تمدید با سهمیه انجام شده','0'=>'در انتظار درگاه','1'=>'پرداخت درگاه تأیید شده'];
+        return $labels[(string)$state]??htmlspecialchars((string)$state,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
     }
 }
 if(!function_exists('deltaFeatureHandleRequest')){
@@ -156,27 +259,74 @@ if(!function_exists('deltaFeatureHandleRequest')){
             exit;
         }
         if($isAdmin && preg_match('/^deltaForceAutoAsk_(\d+)$/',(string)$data,$m)){
-            $uid=(int)$m[1]; $state=deltaForceAutoApprove($uid);
+            $uid=(int)$m[1]; $state=deltaAutoApprovePolicy($uid);
             $kb=json_encode(['inline_keyboard'=>[
-                [['text'=>'✅ آره؛ همیشه خودکار تأیید شود','callback_data'=>'deltaForceAutoSet_'.$uid.'_1']],
-                [['text'=>'❌ نه؛ حالت عادی','callback_data'=>'deltaForceAutoSet_'.$uid.'_0']],
+                [['text'=>'✅ آره؛ همیشه تأیید خودکار','callback_data'=>'deltaForceAutoSet_'.$uid.'_always']],
+                [['text'=>'❌ خیر؛ هیچ‌وقت تأیید خودکار','callback_data'=>'deltaForceAutoSet_'.$uid.'_never']],
+                [['text'=>'⚙️ عادی؛ تابع تنظیمات عمومی','callback_data'=>'deltaForceAutoSet_'.$uid.'_normal']],
                 [['text'=>'بازگشت','callback_data'=>'uRefresh'.$uid]]
             ]],JSON_UNESCAPED_UNICODE);
-            smartSendOrEdit($message_id,"آیا می‌خواهید این کاربر همیشه خودکار رسیدش تأیید شود؟\n\nوضعیت فعلی: ".($state?'فعال ✅':'غیرفعال ❌'),$kb);
+            $labels=['always'=>'آره ✅','never'=>'خیر ❌','normal'=>'عادی ⚙️'];
+            smartSendOrEdit($message_id,"تأیید خودکار رسید این کاربر:\nآره: حتی با خاموش بودن تأیید عمومی، رسیدهای جدید تأیید شوند.\nخیر: حتی با روشن بودن تأیید عمومی، رسیدها تأیید نشوند.\nعادی: از تنظیمات عمومی پیروی کند.\n\nوضعیت فعلی: ".$labels[$state],$kb);
             exit;
         }
-        if($isAdmin && preg_match('/^deltaForceAutoSet_(\d+)_(0|1)$/',(string)$data,$m)){
-            deltaSetForceAutoApprove((int)$m[1],$m[2]==='1');
-            alert($m[2]==='1'?'استثنای تأیید خودکار فعال شد':'استثنا لغو شد');
+        if($isAdmin && preg_match('/^deltaForceAutoSet_(\d+)_(always|never|normal|0|1)$/',(string)$data,$m)){
+            $policy=['1'=>'always','0'=>'normal'][$m[2]]??$m[2];
+            deltaSetAutoApprovePolicy((int)$m[1],$policy);
+            alert('وضعیت تأیید خودکار کاربر ذخیره شد.');
             smartSendOrEdit($message_id,renderUserInfoTitle((int)$m[1]),getUserInfoKeys((int)$m[1]),'HTML');
             exit;
         }
         if($isAdmin && $data==='deltaForceAutoUsers'){
-            $res=$connection->query("SELECT type,value FROM setting WHERE type LIKE 'USER_FORCE_AUTOAPPROVE_%' AND value='1' ORDER BY id DESC");
-            $rows=[]; if($res) while($r=$res->fetch_assoc()){ $uid=(int)str_replace('USER_FORCE_AUTOAPPROVE_','',$r['type']); $rows[]=[['text'=>'❌ لغو '.$uid,'callback_data'=>'deltaForceAutoSet_'.$uid.'_0'],['text'=>(string)$uid,'callback_data'=>'uRefresh'.$uid]]; }
+            $res=$connection->query("SELECT type,value FROM setting WHERE type REGEXP '^USER_(AUTOAPPROVE_POLICY|FORCE_AUTOAPPROVE|NO_AUTOAPPROVE)_[0-9]+$' ORDER BY id DESC");
+            $rows=[]; $seen=[]; if($res) while($r=$res->fetch_assoc()){
+                if(!preg_match('/_(\d+)$/',$r['type'],$idMatch)) continue;
+                $uid=(int)$idMatch[1]; if(isset($seen[$uid])) continue; $seen[$uid]=true;
+                $policy=deltaAutoApprovePolicy($uid); if($policy==='normal') continue;
+                $rows[]=[['text'=>($policy==='always'?'✅ همیشه ':'❌ هرگز ').$uid,'callback_data'=>'deltaForceAutoAsk_'.$uid],['text'=>'⚙️ عادی','callback_data'=>'deltaForceAutoSet_'.$uid.'_normal']];
+            }
             if(!$rows) $rows[]=[['text'=>'کاربری استثنا نشده','callback_data'=>'deltach']];
             $rows[]=[['text'=>'بازگشت','callback_data'=>'generalSettings']];
             smartSendOrEdit($message_id,'👥 کاربرهای استثنا شده تأیید خودکار',json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+            exit;
+        }
+        if($isAdmin && $data==='deltaTrackSearch'){
+            setUser('deltaTrackSearchInput');
+            sendMessage('کد پیگیری ۸ رقمی سفارش را ارسال کنید.',$cancelKey);
+            exit;
+        }
+        if($isAdmin && ($userInfo['step']??'')==='deltaTrackSearchInput' && $text!=($buttonValues['cancel']??'')){
+            $code=trim((string)$text);
+            if(!preg_match('/^[1-9][0-9]{7}$/',$code)){ sendMessage('لطفاً کد پیگیری ۸ رقمی معتبر ارسال کنید.'); exit; }
+            $id=deltaTrackingIdFromCode($code);
+            $stmt=$connection->prepare('SELECT * FROM pays WHERE id=? LIMIT 1');
+            $stmt->bind_param('i',$id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            if(!$pay || deltaTrackingCode($pay['hash_id'])!==$code){ sendMessage('سفارشی با این کد پیگیری پیدا نشد. کد دیگری ارسال کنید.'); exit; }
+            setUser();
+            $uid=(int)$pay['user_id'];
+            $stmt=$connection->prepare('SELECT name,username FROM users WHERE userid=? LIMIT 1');
+            $stmt->bind_param('i',$uid); $stmt->execute(); $customer=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            $name=htmlspecialchars((string)($customer['name']??'-'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+            $username=htmlspecialchars((string)($customer['username']??'-'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+            $details="🔎 نتیجه جستجوی سفارش\n\n👤 کاربر: <code>{$uid}</code>\n👨‍💼 نام: {$name}\n⚡️ نام کاربری: {$username}\n".deltaOrderDetails($pay)."\n📌 وضعیت: ".deltaOrderStateLabel($pay['state'])."\n🕒 تاریخ فاکتور: ".date('Y-m-d H:i:s',(int)$pay['request_date']);
+            $receiptAt=deltaReceiptSubmittedAt($pay['hash_id']);
+            if($receiptAt>0) $details.="\n📸 زمان ثبت رسید: ".date('Y-m-d H:i:s',$receiptAt);
+            $meta=json_decode((string)getSettingValue('USDT_INVOICE_'.$pay['hash_id'],'{}'),true);
+            if(is_array($meta) && isset($meta['amount'],$meta['rate'])) $details.="\n💵 روش پرداخت: USDT BEP20\n💲 مبلغ تتر: ".htmlspecialchars((string)$meta['amount'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')." USDT\n📊 نرخ: ".number_format((int)$meta['rate'])." تومان";
+            if($pay['type']==='BUY_SUB'){
+                $stmt=$connection->prepare('SELECT remark FROM orders_list WHERE userid=? AND transid=? ORDER BY id ASC LIMIT 10');
+                $hash=(string)$pay['hash_id']; $stmt->bind_param('is',$uid,$hash); $stmt->execute(); $orders=$stmt->get_result();
+                while($order=$orders->fetch_assoc()) $details.="\n✅ سرویس تحویل شده: ".htmlspecialchars((string)$order['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+                $stmt->close();
+            }
+            $rows=[];
+            if(in_array($pay['state'],['have_sent','need_admin'],true)){
+                [$ok,$no]=deltaReceiptCallbacks($pay);
+                $rows[]=[['text'=>'✅ تأیید','callback_data'=>$ok],['text'=>'❌ رد','callback_data'=>$no]];
+            }
+            $rows[]=[['text'=>'👤 حساب کاربر','callback_data'=>'uRefresh'.$uid]];
+            $rows[]=[['text'=>'🔎 جستجوی مجدد','callback_data'=>'deltaTrackSearch']];
+            sendMessage($details,json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE),'HTML');
             exit;
         }
 
@@ -283,7 +433,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             if(!$pay){ alert('این سفارش دیگر در انتظار نیست.',true); exit; }
             upsertSettingValue($key,(string)time());
             [$approve,$decline]=deltaReceiptCallbacks($pay);
-            sendToAdmins("🔔 سفارش <code>".deltaTrackingCode($hash)."</code> در حال انتظار است؛ جهت تأیید آن اقدام نمایید.\n👤 کاربر: <code>{$from_id}</code>",getReceiptAdminKeyboard($approve,$decline,$from_id),'HTML');
+            sendToAdmins("🔔 سفارش در حال انتظار؛ جهت تأیید اقدام نمایید.\n👤 کاربر: <code>{$from_id}</code>\n".deltaOrderDetails($pay),getReceiptAdminKeyboard($approve,$decline,$from_id),'HTML');
             alert('یادآوری برای مدیریت ارسال شد.'); exit;
         }
     }

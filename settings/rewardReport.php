@@ -127,7 +127,9 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         $stmt->close();
 
 
-        $forcedAuto = function_exists('deltaForceAutoApprove') && deltaForceAutoApprove($user_id);
+        $policy=function_exists('deltaAutoApprovePolicy') ? deltaAutoApprovePolicy($user_id) : 'normal';
+        if($policy==='never') continue;
+        $forcedAuto = $policy==='always';
         $receiptAt = function_exists('deltaReceiptSubmittedAt')
             ? deltaReceiptSubmittedAt($payInfo['hash_id'] ?? '', (int)$payInfo['request_date'])
             : (int)$payInfo['request_date'];
@@ -144,15 +146,6 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             if($autoFrom > 0 && $receiptAt < $autoFrom) continue;
         }
 
-        // legacy per-user exception: do not auto-approve for this user (forced mode overrides it)
-        $type = "USER_NO_AUTOAPPROVE_" . $user_id;
-        $stmt = $connection->prepare("SELECT `value` FROM `setting` WHERE `type`=? LIMIT 1");
-        $stmt->bind_param("s", $type);
-        $stmt->execute();
-        $noAuto = $stmt->get_result()->fetch_assoc()['value']??"0";
-        $stmt->close();
-        if(!$forcedAuto && $noAuto == "1") continue;
-        
         if(!$forcedAuto){
             if($userinfo['is_agent'] == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
             elseif($userinfo['is_agent'] != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
@@ -216,6 +209,15 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             sendMessage(deltaAppendTracking("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",$payInfo['hash_id']), null, 'HTML', $user_id);
         }
         elseif($payType == "BUY_SUB"){
+            // A failed panel request needs human review, not a wallet refund.
+            // Keep the receipt and its approval buttons available for retry.
+            $awaitManualProvision = function($reason) use ($connection,$rowId,$payInfo,$user_id,$admin){
+                $stmt=$connection->prepare("UPDATE pays SET state='need_admin' WHERE id=? AND state='paid'");
+                $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
+                $track=deltaTrackingCode($payInfo['hash_id']);
+                sendMessage("⏳ پرداخت شما تأیید شد، اما تحویل سرویس نیاز به بررسی مدیر دارد.\n🔖 کد پیگیری: <code>{$track}</code>",null,'HTML',$user_id);
+                sendToAdmins("⚠️ تحویل خودکار سفارش <code>{$track}</code> انجام نشد: ".htmlspecialchars($reason,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n👤 کاربر: <code>{$user_id}</code>\n".deltaOrderDetails($payInfo),getReceiptAdminKeyboard('accept'.$payInfo['hash_id'],'declineOffer'.$payInfo['hash_id'].'_'.$user_id,$user_id),'HTML');
+            };
             $fid = $payInfo['plan_id']; 
             $volume = $payInfo['volume'];
             $days = $payInfo['day'];
@@ -254,16 +256,14 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             
             $accountCount = function_exists('xuiResolvePayAccountCount') ? xuiResolvePayAccountCount($payInfo) : (($payInfo['agent_count'] ?? 0) != 0 ? (int)$payInfo['agent_count'] : 1);
             $eachPrice = $price / $accountCount;
-            if($acount == 0 and $inbound_id != 0){
-                sendMessage('پرداخت شما انجام شد ولی ظرفیت این کانکشن پر شده است، مبلغ ' . number_format($price) . " تومان به کیف پول شما اضافه شد", null,null, $user_id);
-                $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                $stmt->bind_param("ii", $price, $user_id);
-                $stmt->execute();
-                $stmt->close();
-                
-                sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد میخواست کانفیگ بخره، ظرفیت پر بود",null,null,$admin);                
-
-                exit;
+            $countStmt=$connection->prepare('SELECT COUNT(*) AS c FROM orders_list WHERE userid=? AND fileid=? AND transid=?');
+            $hash=(string)$payInfo['hash_id'];
+            $countStmt->bind_param('iis',$user_id,$fid,$hash); $countStmt->execute();
+            $existing=min($accountCount,(int)($countStmt->get_result()->fetch_assoc()['c']??0)); $countStmt->close();
+            $remainingCount=$accountCount-$existing;
+            if($inbound_id != 0 && $acount < $remainingCount){
+                $awaitManualProvision('ظرفیت کانکشن کافی نیست');
+                continue;
             }
             if($inbound_id == 0) {
                 $stmt = $connection->prepare("SELECT * FROM `server_info` WHERE `id`=?");
@@ -272,16 +272,9 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                 $server_info = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
             
-                if($server_info['ucount'] <= 0) {
-                    sendMessage('پرداخت شما انجام شد ولی ظرفیت این سرور پر شده است، مبلغ ' . number_format($price) . " تومان به کیف پول شما اضافه شد", null,null, $user_id);
-                    
-                    $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                    $stmt->bind_param("ii", $price, $user_id);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد میخواست کانفیگ بخره، ظرفیت پر بود",null,null,$admin);                
-                    exit;
+                if((int)($server_info['ucount']??0) < $remainingCount) {
+                    $awaitManualProvision('ظرفیت سرور کافی نیست');
+                    continue;
                 }
             }
         
@@ -301,11 +294,11 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             $portType = $serverConfig['port_type'];
             $panelUrl = $serverConfig['panel_url'];
             $stmt->close();
-            include '../phpqrcode/qrlib.php';
+            include_once '../phpqrcode/qrlib.php';
         
             define('IMAGE_WIDTH',540);
             define('IMAGE_HEIGHT',540);
-            for($i = 1; $i <= $accountCount; $i++){
+            for($i = $existing+1; $i <= $accountCount; $i++){
                 $uniqid = generateRandomString(42,$protocol);
                 
                 $savedinfo = file_get_contents('temp.txt');
@@ -332,70 +325,49 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                 }
                 
                 if($inbound_id == 0){    
-                    if($serverType == "marzban"){
+                    if($serverType == "marzban" || $serverType == "pasarguard"){
                         $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
-                        if(!$response->success){
-                            if($response->msg == "User already exists"){
+                        if(is_object($response) && empty($response->success)){
+                            if(($response->msg??'') == "User already exists"){
                                 $remark .= rand(1111,99999);
                                 $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
                             }
                         }
                     }else{
                         $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid); 
-                        if(!$response->success){
-                            if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
-                            elseif(strstr($response->msg, "Port already exists")) $port = rand(1111,65000);
+                        if(is_object($response) && empty($response->success)){
+                            if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
+                            elseif(strstr($response->msg??'', "Port already exists")) $port = rand(1111,65000);
                             
                             $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid);
                         } 
                     }
                 }else {
                     $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid); 
-                    if(!$response->success){
-                        if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
+                    if(is_object($response) && empty($response->success)){
+                        if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
         
                         $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid);
                     } 
                 }
                 
                 if(is_null($response)){
-                    sendMessage('پرداخت شما با موفقیت انجام شد ولی گلم ، اتصال به سرور برقرار نیست لطفا مدیر رو در جریان بزار ...مبلغ ' . number_format($price) ." به کیف پولت اضافه شد",null,null, $user_id);
-                    
-                    $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                    $stmt->bind_param("ii", $price, $user_id);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد میخواست کانفیگ بخره، اتصال به سرور برقرار نبود",null,null,$admin);                
-                    exit;
+                    $awaitManualProvision('اتصال به سرور برقرار نشد');
+                    continue 2;
                 }
                 if($response == "inbound not Found"){
-                    sendMessage("پرداخت شما با موفقیت انجام شد ولی ❌ | 🥺 سطر (inbound) با آیدی $inbound_id تو این سرور وجود نداره ، مدیر رو در جریان بزار ...مبلغ " . number_format($price) . " به کیف پول شما اضافه شد",null,null,$user_id);
-            
-                    $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                    $stmt->bind_param("ii", $price, $user_id);
-                    $stmt->execute();
-                    $stmt->close();
-                    
-                    sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد میخواست کانفیگ بخره، ولی انباند پیدا نشد",null,null,$admin);                
-                	exit;
+                    $awaitManualProvision('انباند با شناسه '.$inbound_id.' پیدا نشد');
+                    continue 2;
                 }
-                if(!$response->success){
-                    sendMessage('پرداخت شما با موفقیت انجام شد ولی خطا داد لطفا سریع به مدیر بگو ... مبلغ '. number_format($price) . " تومان به کیف پولت اضافه شد",null,null,$user_id);
-                    sendMessage("خطای سرور {$server_info['title']}:\n\n" . $response->msg, null, null, $admin);
-                    $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                    $stmt->bind_param("ii", $price, $user_id);
-                    $stmt->execute();
-                    $stmt->close();
-                    sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد میخواست کانفیگ بخره، ولی خطا داد",null,null,$admin);                
-                    exit;
+                if(!is_object($response) || empty($response->success)){
+                    $awaitManualProvision('خطای پنل: '.(string)($response->msg??'پاسخ نامعتبر'));
+                    continue 2;
                 }
                 
-                if($serverType == "marzban"){
-                    $uniqid = $token = str_replace("/sub/", "", $response->sub_link);
-                    $subLink = (xuiBotStateIsOn($botState, 'subLinkState', 'on') || xuiBotStateIsOn($botState, 'qrSubState', 'off'))?xuiResolveClientSubLink($server_id, $panelUrl, $response->sub_link ?? '', $inbound_id, $uniqid, $remark):"";
-                    $vraylink = [$subLink];
-                    $vray_link = json_encode($response->vray_links);
+                if($serverType == "marzban" || $serverType == "pasarguard"){
+                    $payload=xuiPreparePanelOrderPayload($server_id,$panelUrl,$serverType,$response,$remark,$inbound_id);
+                    $subLink=$payload['subLink']; $token=$payload['token']; $uniqid=$payload['uuid'];
+                    $vraylink=$payload['links']; $vray_link=$payload['json'];
                 }else{
                     $token = RandomString(30);
                     $subLink = (xuiBotStateIsOn($botState, 'subLinkState', 'on') || xuiBotStateIsOn($botState, 'qrSubState', 'off'))?xuiResolveClientSubLink($server_id, $panelUrl, $response->sub_link ?? '', $inbound_id, $uniqid, $remark):"";
@@ -403,47 +375,18 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                     $vraylink = getConnectionLink($server_id, $uniqid, $protocol, $remark, $port, $netType, $inbound_id, $rahgozar, $customPath, $customPort, $customSni);
                     $vray_link = json_encode($vraylink);
                 }
-                foreach($vraylink as $link){
-                $acc_text = "
-                
-        😍 سفارش جدید شما
-        📡 پروتکل: $protocol
-        🔮 نام سرویس: $remark
-        🔋حجم سرویس: $volume گیگ
-        ⏰ مدت سرویس: $days روز⁮⁮ ⁮⁮
-        " . ($botState['configLinkState'] != "off" && $serverType != "marzban"?"
-        💝 config : <code>$link</code>":"");
-        
-$acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
-$acc_text = deltaAppendTracking($acc_text,$payInfo['hash_id']);
-                      
-                    $file = RandomString() .".png";
-                    $ecc = 'L';
-                    $pixel_Size = 11;
-                    $frame_Size = 0;
-                    
-                    QRcode::png(xuiChooseOrderQrPayload($botState, $link, $subLink), $file, $ecc, $pixel_Size, $frame_Size);
-                	addBorderImage($file);
-                	
-                	$backgroundImage = imagecreatefromjpeg("QRCode.jpg");
-                    $qrImage = imagecreatefrompng($file);
-                    
-                    $qrSize = array('width' => imagesx($qrImage), 'height' => imagesy($qrImage));
-                    imagecopy($backgroundImage, $qrImage, 300, 300 , 0, 0, $qrSize['width'], $qrSize['height']);
-                    imagepng($backgroundImage, $file);
-                    imagedestroy($backgroundImage);
-                    imagedestroy($qrImage);
-        
-                	$res = sendPhoto($botUrl . "/settings/" . $file, $acc_text,json_encode(['inline_keyboard'=>[[['text'=>$buttonValues['back_to_main'],'callback_data'=>"mainMenu"]]]]),"HTML", $user_id);
-                    unlink($file);
-                }
-                
+                // Use the same delivery path as wallet and manual card purchases.
+                (function_exists('npvSendManualLockRequestOrNormal')
+                    ? npvSendManualLockRequestOrNormal($user_id,$protocol,$remark,$volume,$days,$botState,$serverType,$vraylink,$botUrl,$uniqid,$subLink,'mainMenu',$file_detail,$payInfo['description']??'',$serverInfo)
+                    : xuiSendOrderDeliveryPhoto($user_id,$protocol,$remark,$volume,$days,$botState,$serverType,$vraylink,$botUrl,$uniqid,$subLink,'mainMenu'));
+                sendMessage(deltaTrackingLine($hash),null,'HTML',$user_id);
+
                 $agentBought = $payInfo['agent_bought'];
                 
                 $stmt = $connection->prepare("INSERT INTO `orders_list` 
                     (`userid`, `token`, `transid`, `fileid`, `server_id`, `inbound_id`, `remark`, `uuid`, `protocol`, `expire_date`, `link`, `amount`, `status`, `date`, `notif`, `rahgozar`, `agent_bought`)
-                    VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
-                $stmt->bind_param("ssiiisssisiiii", $user_id, $token, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agentBought);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1, ?, 0, ?, ?);");
+                $stmt->bind_param("sssiiisssisiiii", $user_id, $token, $hash, $fid, $server_id, $inbound_id, $remark, $uniqid, $protocol, $expire_date, $vray_link, $eachPrice, $date, $rahgozar, $agentBought);
                 $stmt->execute();
                 $order = $stmt->get_result(); 
                 $stmt->close();
@@ -466,12 +409,12 @@ $acc_text = deltaAppendTracking($acc_text,$payInfo['hash_id']);
                 
             if($inbound_id == 0) {
                 $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
-                $stmt->bind_param("ii", $accountCount, $server_id);
+                $stmt->bind_param("ii", $remainingCount, $server_id);
                 $stmt->execute();
                 $stmt->close();
             }else{
                 $stmt = $connection->prepare("UPDATE `server_plans` SET `acount` = `acount` - ? WHERE id=?");
-                $stmt->bind_param("ii", $accountCount, $fid);
+                $stmt->bind_param("ii", $remainingCount, $fid);
                 $stmt->execute();
                 $stmt->close();
             }
