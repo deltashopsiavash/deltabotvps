@@ -36,6 +36,45 @@ function addColumnIfMissing($table, $col, $ddl){
         $connection->query("ALTER TABLE `{$tableEsc}` ADD COLUMN {$ddl}");
     }
 }
+
+function ensureAdvancedCommerceSchema(){
+    global $connection;
+    static $checked = [];
+    if(!$connection || $connection->connect_error) return false;
+    $dbRes = $connection->query("SELECT DATABASE() AS db");
+    $db = $dbRes ? (string)($dbRes->fetch_assoc()['db'] ?? '') : '';
+    if($db !== '' && isset($checked[$db])) return true;
+
+    $tableExists = function($table) use ($connection){
+        $safe = str_replace(["'","`"], '', (string)$table);
+        $q = $connection->query("SELECT COUNT(*) AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='{$safe}'");
+        return $q && (int)($q->fetch_assoc()['c'] ?? 0) > 0;
+    };
+
+    if($tableExists('pays')){
+        addColumnIfMissing('pays', 'tracking_code', "`tracking_code` VARCHAR(8) NULL DEFAULT NULL AFTER `hash_id`");
+        addColumnIfMissing('pays', 'payment_method', "`payment_method` VARCHAR(32) NOT NULL DEFAULT '' AFTER `state`");
+        addColumnIfMissing('pays', 'receipt_submitted_at', "`receipt_submitted_at` INT NOT NULL DEFAULT 0 AFTER `request_date`");
+        addColumnIfMissing('pays', 'pending_remind_at', "`pending_remind_at` INT NOT NULL DEFAULT 0 AFTER `receipt_submitted_at`");
+        addColumnIfMissing('pays', 'auto_approved', "`auto_approved` TINYINT(1) NOT NULL DEFAULT 0 AFTER `pending_remind_at`");
+        addColumnIfMissing('pays', 'approved_at', "`approved_at` INT NOT NULL DEFAULT 0 AFTER `auto_approved`");
+        addColumnIfMissing('pays', 'usdt_rate', "`usdt_rate` INT NOT NULL DEFAULT 0 AFTER `approved_at`");
+        addColumnIfMissing('pays', 'usdt_amount', "`usdt_amount` DECIMAL(20,8) NOT NULL DEFAULT 0 AFTER `usdt_rate`");
+        addColumnIfMissing('pays', 'usdt_expires_at', "`usdt_expires_at` INT NOT NULL DEFAULT 0 AFTER `usdt_amount`");
+        addColumnIfMissing('pays', 'usdt_tx_hash', "`usdt_tx_hash` VARCHAR(190) NULL DEFAULT NULL AFTER `usdt_expires_at`");
+
+        $idx = $connection->query("SELECT COUNT(*) AS c FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pays' AND INDEX_NAME='uniq_tracking_code'");
+        if(!$idx || (int)($idx->fetch_assoc()['c'] ?? 0) === 0){
+            @$connection->query("ALTER TABLE `pays` ADD UNIQUE KEY `uniq_tracking_code` (`tracking_code`)");
+        }
+    }
+    if($tableExists('discounts')){
+        addColumnIfMissing('discounts', 'target_user_id', "`target_user_id` BIGINT NOT NULL DEFAULT 0 AFTER `can_use`");
+    }
+    if($db !== '') $checked[$db] = true;
+    return true;
+}
+ensureAdvancedCommerceSchema();
 ensurePasarguardRenewalSchema();
 
 function ensureServerConfigSchema(){
@@ -457,6 +496,7 @@ if(isset($_GET['bid'])){
                         ensureServerConfigSchema();
                         ensureServerPlansQuotaSchema();
                         ensureUserApprovalSchema();
+                        ensureAdvancedCommerceSchema();
                         $GLOBALS['dbName'] = $childDb;
                         $dbName = $childDb;
                     }
@@ -611,6 +651,135 @@ function upsertSettingValue($type, $value){
     $stmt->execute();
     $stmt->close();
     return true;
+}
+
+
+// ---------------- Universal invoice tracking / pending-order / USDT helpers ----------------
+function deltaGenerateTrackingCode(){
+    global $connection;
+    for($i=0;$i<40;$i++){
+        try{ $code=(string)random_int(10000000,99999999); }
+        catch(Throwable $e){ $code=(string)mt_rand(10000000,99999999); }
+        $stmt=$connection->prepare("SELECT `id` FROM `pays` WHERE `tracking_code`=? LIMIT 1");
+        if(!$stmt) return $code;
+        $stmt->bind_param('s',$code); $stmt->execute();
+        $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+        if(!$exists) return $code;
+    }
+    return (string)(time()%90000000+10000000);
+}
+function deltaEnsurePayTrackingCode($hashId){
+    global $connection;
+    ensureAdvancedCommerceSchema();
+    $hashId=trim((string)$hashId);
+    if($hashId==='') return '';
+    $stmt=$connection->prepare("SELECT `tracking_code` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    if(!$stmt) return '';
+    $stmt->bind_param('s',$hashId); $stmt->execute();
+    $row=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$row) return '';
+    $current=trim((string)($row['tracking_code']??''));
+    if(preg_match('/^\d{8}$/',$current)) return $current;
+    for($i=0;$i<20;$i++){
+        $code=deltaGenerateTrackingCode();
+        $stmt=$connection->prepare("UPDATE `pays` SET `tracking_code`=? WHERE `hash_id`=? AND (`tracking_code` IS NULL OR `tracking_code`='' OR CHAR_LENGTH(`tracking_code`)<>8)");
+        if(!$stmt) break;
+        $stmt->bind_param('ss',$code,$hashId);
+        try{ $stmt->execute(); }catch(Throwable $e){ $stmt->close(); continue; }
+        $stmt->close();
+        $stmt=$connection->prepare("SELECT `tracking_code` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+        $stmt->bind_param('s',$hashId); $stmt->execute();
+        $saved=trim((string)($stmt->get_result()->fetch_assoc()['tracking_code']??'')); $stmt->close();
+        if(preg_match('/^\d{8}$/',$saved)) return $saved;
+    }
+    return '';
+}
+function deltaTrackingLineByHash($hashId){
+    $code=deltaEnsurePayTrackingCode($hashId);
+    return $code!=='' ? "\n🔖 کد پیگیری: <code>{$code}</code>" : '';
+}
+function deltaPaymentMethodLabel($method){
+    $map=[
+        'card_to_card'=>'کارت به کارت',
+        'usdt_bep20'=>'USDT BEP20',
+        'wallet'=>'کیف پول',
+        'gateway'=>'درگاه آنلاین',
+        'quota'=>'سهمیه خرید',
+        'tron'=>'TRON'
+    ];
+    $method=(string)$method;
+    return $map[$method]??($method!==''?$method:'نامشخص');
+}
+function deltaReceiptAdminKeyboardForPay($payInfo,$uid){
+    if(!is_array($payInfo)) return null;
+    $hash=(string)($payInfo['hash_id']??'');
+    $type=(string)($payInfo['type']??'');
+    if($hash==='') return null;
+    if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_\d+_\d+$/',$type)){
+        return getReceiptAdminKeyboard('approvePgRenew'.$hash,'decPgRenew'.$hash,$uid);
+    }
+    if($type==='INCREASE_WALLET') return getReceiptAdminKeyboard('approvePayment'.$hash,'decPayment'.$hash,$uid);
+    if($type==='RENEW_ACCOUNT') return getReceiptAdminKeyboard('approveRenewAcc'.$hash,'decRenewAcc'.$hash,$uid);
+    if(strpos($type,'INCREASE_DAY_')===0) return getReceiptAdminKeyboard('approveIncreaseDay'.$hash,'decIncreaseDay'.$hash,$uid);
+    if(strpos($type,'INCREASE_VOLUME_')===0) return getReceiptAdminKeyboard('approveIncreaseVolume'.$hash,'decIncreaseVolume'.$hash,$uid);
+    if($type==='BUY_SUB' || $type==='RENEW_SCONFIG'){
+        $decline=((int)($payInfo['special_offer_id']??0)>0) ? ('declineOffer'.$hash.'_'.(int)$uid) : ('decline'.(int)$uid);
+        return getReceiptAdminKeyboard('accept'.$hash,$decline,$uid);
+    }
+    return getReceiptAdminKeyboard('accept'.$hash,'decline'.(int)$uid,$uid);
+}
+function deltaHttpJson($url,$timeout=8){
+    if(!function_exists('curl_init')) return null;
+    $ch=curl_init();
+    curl_setopt_array($ch,[
+        CURLOPT_URL=>$url,
+        CURLOPT_RETURNTRANSFER=>true,
+        CURLOPT_FOLLOWLOCATION=>true,
+        CURLOPT_CONNECTTIMEOUT=>4,
+        CURLOPT_TIMEOUT=>max(5,(int)$timeout),
+        CURLOPT_USERAGENT=>'DeltaBot/USDT-Rate'
+    ]);
+    $raw=curl_exec($ch);
+    $status=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if($raw===false || $status<200 || $status>=300) return null;
+    $json=json_decode($raw,true);
+    return is_array($json)?$json:null;
+}
+function deltaFetchUsdtTomanRate(){
+    // Nobitex USDTIRT prices are returned in IRR; convert rials to tomans.
+    $j=deltaHttpJson('https://api.nobitex.ir/v2/orderbook/USDTIRT');
+    if(is_array($j)){
+        $p=(float)($j['lastTradePrice']??0);
+        if($p>100000) {
+            $t=(int)round($p/10);
+            if($t>10000) return $t;
+        }
+    }
+    // Wallex fallback: USDTTMN is already in toman.
+    $j=deltaHttpJson('https://api.wallex.ir/v1/markets');
+    if(is_array($j)){
+        $symbols=$j['result']['symbols']??[];
+        $candidate=null;
+        if(isset($symbols['USDTTMN'])) $candidate=$symbols['USDTTMN'];
+        elseif(is_array($symbols)){
+            foreach($symbols as $sym){
+                $name=strtoupper((string)($sym['symbol']??$sym['name']??''));
+                if($name==='USDTTMN'){ $candidate=$sym; break; }
+            }
+        }
+        if(is_array($candidate)){
+            $p=(float)($candidate['stats']['lastPrice']??$candidate['stats']['last_price']??$candidate['lastPrice']??0);
+            if($p>10000) return (int)round($p);
+        }
+    }
+    $fallback=(int)getSettingValue('USDT_FALLBACK_RATE','0');
+    return $fallback>10000 ? $fallback : 0;
+}
+function deltaUsdtAmountForToman($toman,$rate){
+    $toman=max(0,(int)$toman); $rate=max(1,(int)$rate);
+    // Round UP to four decimals so the net received amount never falls below the invoice.
+    return ceil(($toman/$rate)*10000)/10000;
 }
 
 // ---------------- Time-limited / quantity-limited special offers ----------------
@@ -3077,6 +3246,10 @@ function getMainKeys(){
             [['text'=>$buttonValues['increase_wallet'],'callback_data'=>"increaseMyWallet"]]
             :[]
         ),
+        ((($botState['pendingOrdersState'] ?? 'off') == 'on') ?
+            [['text'=>'⏳ سفارش‌های در حال انتظار','callback_data'=>'pendingOrders']]
+            :[]
+        ),
         ((($botState['serviceStatusButtonState'] ?? 'on') == 'on' && $botState['sharedExistence'] == "on" && $botState['individualExistence'] == "on")?
         [['text'=>$buttonValues['shared_existence'],'callback_data'=>"availableServers"],['text'=>$buttonValues['individual_existence'],'callback_data'=>"availableServers2"]]:[]),
         ((($botState['serviceStatusButtonState'] ?? 'on') == 'on' && $botState['sharedExistence'] == "on" && $botState['individualExistence'] != "on")?
@@ -4502,7 +4675,8 @@ function getGateWaysKeys(){
     $robotState = $botState['botState']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nowPaymentWallet = $botState['nowPaymentWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nowPaymentOther = $botState['nowPaymentOther']=="on"?$buttonValues['on']:$buttonValues['off'];
-    $tronWallet = $botState['tronWallet']=="on"?$buttonValues['on']:$buttonValues['off'];
+    $tronWallet = ($botState['tronWallet']??'off')=="on"?$buttonValues['on']:$buttonValues['off'];
+    $usdtBep20State = (($botState['usdtBep20State']??'off')=="on")?$buttonValues['on']:$buttonValues['off'];
     $zarinpal = $botState['zarinpal']=="on"?$buttonValues['on']:$buttonValues['off'];
     $nextpay = $botState['nextpay']=="on"?$buttonValues['on']:$buttonValues['off'];
     $rewaredChannel = $botState['rewardChannel']??" ";
@@ -4540,6 +4714,10 @@ function getGateWaysKeys(){
             ['text'=>"آدرس والت ترون",'callback_data'=>"deltach"]
         ],
         [
+            ['text'=>(!empty($paymentKeys['usdtBep20Wallet'])?$paymentKeys['usdtBep20Wallet']:" "),'callback_data'=>"changePaymentKeysusdtBep20Wallet"],
+            ['text'=>"آدرس USDT BEP20",'callback_data'=>"deltach"]
+        ],
+        [
             ['text'=>$weSwapState,'callback_data'=>"changeGateWaysweSwapState"],
             ['text'=>"درگاه وی سواپ",'callback_data'=>"deltach"]
         ],
@@ -4566,6 +4744,10 @@ function getGateWaysKeys(){
         [
             ['text'=>$tronWallet,'callback_data'=>"changeGateWaystronWallet"],
             ['text'=>"درگاه ترون",'callback_data'=>"deltach"]
+        ],
+        [
+            ['text'=>$usdtBep20State,'callback_data'=>"changeGateWaysusdtBep20State"],
+            ['text'=>"درگاه تتر (USDT BEP20)",'callback_data'=>"deltach"]
         ],
         [
             ['text'=>$walletState,'callback_data'=>"changeGateWayswalletState"],
@@ -4621,6 +4803,7 @@ function getBotSettingKeys(){
     $forceJoinState = (($botState['forceJoinState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $serviceTransferState = (($botState['serviceTransferState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $pgExpiryAlertsState = (($botState['pgExpiryAlertsState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
+    $pendingOrdersState = (($botState['pendingOrdersState'] ?? 'off')=='on')?$buttonValues['on']:$buttonValues['off'];
     
     $requirePhone = $botState['requirePhone']=="on"?$buttonValues['on']:$buttonValues['off'];
     $requireIranPhone = $botState['requireIranPhone']=="on"?$buttonValues['on']:$buttonValues['off'];
@@ -4787,6 +4970,16 @@ function getBotSettingKeys(){
             ['text'=>($botState['cartToCartAutoAcceptTime']??"10") . " دقیقه",'callback_data'=>"editcartToCartAutoAcceptTime"],
             ['text'=>"زمان تأیید خودکار ",'callback_data'=>"deltach"]
         ]:[]),
+        [
+            ['text'=>'♻️ شروع تأیید خودکار از این لحظه','callback_data'=>'resetAutoApproveQueueAsk']
+        ],
+        [
+            ['text'=>'👥 کاربرهای استثنا شده خودکار','callback_data'=>'autoApproveExceptions']
+        ],
+        [
+            ['text'=>$pendingOrdersState,'callback_data'=>'changeBotpendingOrdersState'],
+            ['text'=>'سفارش‌های در حال انتظار','callback_data'=>'deltach']
+        ],
         (empty($isChildBot)?[
             ['text'=>$myResellerBotsButton,'callback_data'=>'changeBotmyResellerBotsButtonState'],
             ['text'=>'ربات های من','callback_data'=>'deltach']
@@ -5095,6 +5288,9 @@ function getUserInfoKeys($userId, $backCallback = "managePanel"){
                 ['text'=>(($userInfos['pg_expiry_alerts'] ?? 1) ? '⚠️ گزارش پایان ۳روزه: روشن' : '🔇 گزارش پایان ۳روزه: خاموش'),'callback_data'=>"uPgExpiryToggle" . $userId]
                 ],
             [
+                ['text'=>((int)getSettingValue('USER_FORCE_AUTOAPPROVE_'.$userId,'0')>0 ? '⚡ تایید خودکار دائمی: روشن' : '⚡ تایید خودکار دائمی: خاموش'),'callback_data'=>"uForceAutoAsk" . $userId]
+                ],
+            [
                 ['text'=>$buttonValues['back_button'],'callback_data'=>$backCallback]
                 ],
             ]]);
@@ -5118,14 +5314,19 @@ function getDiscountCodeKeys(){
             $hashId = $row['hash_id'];
             $rowId = $row['id'];
             $canUse = $row['can_use'];
+            $targetUserId = (int)($row['target_user_id'] ?? 0);
+            $codeLabel = $targetUserId>0 ? ($hashId . " 👤" . $targetUserId) : $hashId;
             
-            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>$hashId,'callback_data'=>'copyHash' . $hashId]];
+            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>$codeLabel,'callback_data'=>'copyHash' . $hashId]];
         }
     }else{
         $keys[] = [['text'=>"کد تخفیفی یافت نشد",'callback_data'=>"deltach"]];
     }
     
-    $keys[] = [['text'=>"افزودن کد تخفیف",'callback_data'=>"addDiscountCode"]];
+    $keys[] = [
+        ['text'=>"افزودن کد تخفیف",'callback_data'=>"addDiscountCode"],
+        ['text'=>"ساخت کد تخفیف اختصاصی",'callback_data'=>"addPrivateDiscountCode"]
+    ];
     $keys[] = [['text'=>$buttonValues['back_button'],'callback_data'=>"managePanel"]];
     return json_encode(['inline_keyboard'=>$keys]);
 }
@@ -12070,6 +12271,7 @@ function pgRenewPaymentKeyboard($hash, $price){
 
     if(($botState['walletState']??'off')=='on') $keyboard[]=[['text'=>'پرداخت از موجودی '.$priceTxt,'callback_data'=>'pgRenewPayWallet'.$hash]];
     if(($botState['cartToCartState']??'off')=='on') $keyboard[]=[['text'=>'کارت به کارت '.$priceTxt,'callback_data'=>'pgRenewPayCart'.$hash]];
+    if(($botState['usdtBep20State']??'off')=='on') $keyboard[]=[['text'=>'🪙 پرداخت ارزی (USDT)','callback_data'=>'payWithUsdt'.$hash]];
     if(($botState['zarinpal']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['zarinpal_gateway'],'url'=>$botUrl.'pay/?zarinpal&hash_id='.$hash]];
     if(($botState['nextpay']??'off')=='on') $keyboard[]=[['text'=>$buttonValues['nextpay_gateway'],'url'=>$botUrl.'pay/?nextpay&hash_id='.$hash]];
     $keyboard[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'mainMenu']];
@@ -12082,6 +12284,7 @@ function pgRenewCreatePay($userId,$payType,$price){
     $stmt=$connection->prepare("INSERT INTO `pays` (`hash_id`,`user_id`,`type`,`plan_id`,`volume`,`day`,`price`,`request_date`,`state`) VALUES (?, ?, ?, 0, 0, 0, ?, ?, 'pending')");
     $stmt->bind_param('sisii',$hash,$userId,$payType,$price,$time);
     $stmt->execute(); $stmt->close();
+    deltaEnsurePayTrackingCode($hash);
     return $hash;
 }
 function pgRenewApply($orderId,$days,$volume,$fullReset=false,$fullPlanId=0){

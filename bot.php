@@ -845,7 +845,7 @@ GOTOSTART:
 $specialReservationHash='';
 $reservationData=(string)($data ?? '');
 $reservationStep=(string)($userInfo['step'] ?? '');
-if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithWeSwap|havePaiedWeSwap|payPhotoReceipt|payTextReceipt)(.+)$/',$reservationData,$reservationMatch)){
+if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithUsdt|payWithWeSwap|havePaiedWeSwap|payPhotoReceipt|payTextReceipt)(.+)$/',$reservationData,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
 }elseif(preg_match('/^(?:payWithCartToCart|payWithTronWallet)(.+)$/',$reservationStep,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
@@ -872,6 +872,24 @@ if($specialReservationHash!==''){
             $reservationMessage="⌛️ ۵ دقیقه شما تمام شد و خرید شما لغو شد.\n\nاز صفحه پیشنهاد امروز دوباره فاکتور بسازید.";
             if(isset($update->callback_query)) alert($reservationMessage,true); else sendMessage($reservationMessage,$removeKeyboard);
             exit();
+        }
+    }
+}
+
+// A cancelled pending order must never be provisioned from an old admin button.
+// Multiple admins may still have old copies of the receipt message, so enforce this
+// at the payment state level before any approval handler runs.
+if(preg_match('/^(?:accept|approvePayment|accCustom|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew)(.+)$/',(string)($data??''),$cancelGuardMatch)
+   && ($from_id == $admin || ($userInfo['isAdmin']??false) == true)){
+    $cancelGuardHash=(string)$cancelGuardMatch[1];
+    $stmt=$connection->prepare("SELECT `state`,`tracking_code` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    if($stmt){
+        $stmt->bind_param('s',$cancelGuardHash); $stmt->execute(); $cancelGuardPay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        if($cancelGuardPay && (string)($cancelGuardPay['state']??'')==='cancelled_by_user'){
+            $tracking=trim((string)($cancelGuardPay['tracking_code']??'')) ?: deltaEnsurePayTrackingCode($cancelGuardHash);
+            editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شده توسط کاربر ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE));
+            alert("این سفارش توسط کاربر لغو شده است".($tracking!==''?" | کد: ".$tracking:''),true);
+            exit;
         }
     }
 }
@@ -946,7 +964,8 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $price = number_format((int)$payInfo['price']);
     $payType = (string)$payInfo['type'];
     $receiptText = trim((string)$text);
-    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n🔖 کد پیگیری: <code>" . htmlspecialchars($trackingCode,ENT_QUOTES,'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
     if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_\d+_\d+$/',$payType)){
         $keyboard = getReceiptAdminKeyboard('approvePgRenew' . $hash, 'decPgRenew' . $hash, $uid);
     }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
@@ -967,13 +986,191 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $res = sendToAdmins($msg, $keyboard, 'HTML');
     // message_id cannot be reliably collected from sendToAdmins for all admins; keep state have_sent.
     if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
-    $stmt->bind_param('s', $hash);
+    $receiptNow=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('is', $receiptNow, $hash);
     $stmt->execute();
     $stmt->close();
-    sendMessage($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.', $removeKeyboard);
+    sendMessage(($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.') . "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $removeKeyboard, 'HTML');
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
     setUser();
+    exit;
+}
+
+// ---------------- Manual USDT BEP20 payment ----------------
+if(preg_match('/^payWithUsdt(.+)$/',(string)($data??''),$m)){
+    $hash=(string)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (int)($pay['user_id']??0)!=(int)$from_id){ alert('فاکتور پیدا نشد',true); exit; }
+    if((int)($pay['special_offer_id']??0)>0){ alert('پیشنهاد امروز فقط با موجودی کیف پول قابل پرداخت است',true); exit; }
+    if((string)($pay['state']??'')!=='pending'){ alert('این فاکتور دیگر قابل پرداخت نیست',true); exit; }
+    if(($botState['usdtBep20State']??'off')!=='on'){ alert('درگاه پرداخت ارزی خاموش است',true); exit; }
+    $wallet=trim((string)($paymentKeys['usdtBep20Wallet']??''));
+    if($wallet===''){ alert('آدرس کیف پول تتر هنوز توسط مدیریت تنظیم نشده است',true); exit; }
+    $rate=deltaFetchUsdtTomanRate();
+    if($rate<=0){
+        alert('دریافت نرخ لحظه‌ای تتر ممکن نشد؛ چند لحظه بعد دوباره تلاش کنید.',true);
+        exit;
+    }
+    $toman=(int)($pay['price']??0);
+    $amount=deltaUsdtAmountForToman($toman,$rate);
+    $amountText=number_format($amount,4,'.','');
+    $expires=time()+1800;
+    $tracking=deltaEnsurePayTrackingCode($hash);
+    $stmt=$connection->prepare("UPDATE `pays` SET `payment_method`='usdt_bep20',`usdt_rate`=?,`usdt_amount`=?,`usdt_expires_at`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('idis',$rate,$amount,$expires,$hash); $stmt->execute(); $stmt->close();
+    setUser('payWithUsdt'.$hash);
+    $safeWallet=htmlspecialchars($wallet,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    $msg="✅ پرداخت ارزی شما آماده‌ست♡\n\n"
+        ."💰 مبلغ: <b>".number_format($toman)." تومان</b>\n"
+        ."🪙 ارز پرداخت: <b>USDT BEP20</b>\n"
+        ."💲 مبلغ قابل پرداخت: <b>{$amountText} USDT</b>\n\n"
+        ."⚠️ کارمزد صرافی بر عهده شماست؛ واریزی خالص شما باید عدد بالا باشد. لطفاً مبلغ فاکتور را دقیقاً و به‌صورت کامل به آدرس کیف پول واریز کنید.\n\n"
+        ."📋 آدرس پرداخت:\n<code>{$safeWallet}</code>\n\n"
+        ."⚠️ بعد از واریز تا ثبت و نشستن ارز صبر کنید.\n\n"
+        ."📸 بعد از نشستن ارز، از صفحه تأیید اسکرین‌شات بگیرید و <b>هش تراکنش را در کپشن عکس</b> ارسال نمایید.\n\n"
+        ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
+        ."📊 نرخ تبدیل: <b>".number_format($rate)." تومان</b> (نرخ لحظه‌ای تتر)\n\n"
+        ."⚠️ توجه:\n"
+        ."💳 پرداخت فقط با USDT روی شبکه BSC (BEP20) انجام شود.\n"
+        ."📌 مبلغ باید دقیقاً مطابق فاکتور واریز شود.\n"
+        ."❌ در صورت واریز مبلغ اشتباه یا ارسال از شبکه دیگر، پرداخت تأیید نمی‌شود و بازگشت وجهی انجام نخواهد شد.\n\n"
+        ."⏰ این نرخ و فاکتور ارزی فقط تا 30 دقیقه معتبر است.";
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'📋 کپی مبلغ USDT','copy_text'=>['text'=>$amountText]],['text'=>'📋 کپی آدرس','copy_text'=>['text'=>$wallet]]],
+        [['text'=>'❌ لغو و بازگشت','callback_data'=>'mainMenu']]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,$msg,$keys,'HTML');
+    exit;
+}
+if(preg_match('/^payWithUsdt(.+)$/',(string)($userInfo['step']??''),$m) && $text != ($buttonValues['cancel']??'')){
+    $hash=(string)$m[1];
+    if(!isset($update->message->photo)){ sendMessage("❌ لطفاً اسکرین‌شات رسید را به‌صورت عکس بفرستید و هش تراکنش را در کپشن عکس بنویسید."); exit; }
+    $txText=trim((string)($caption??''));
+    if(!preg_match('/0x[a-fA-F0-9]{64}/',$txText,$txm)){
+        sendMessage("❌ هش تراکنش BEP20 در کپشن پیدا نشد.\n\nعکس را دوباره بفرستید و هش تراکنش مثل <code>0x...</code> را در کپشن قرار دهید.",null,'HTML');
+        exit;
+    }
+    $txHash=strtolower($txm[0]);
+    // A blockchain transaction hash may only be attached to one invoice.
+    $stmt=$connection->prepare("SELECT `tracking_code` FROM `pays` WHERE LOWER(`usdt_tx_hash`)=? AND `hash_id`<>? LIMIT 1");
+    if($stmt){
+        $stmt->bind_param('ss',$txHash,$hash); $stmt->execute(); $duplicateTx=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        if($duplicateTx){
+            sendMessage("❌ این هش تراکنش قبلاً برای یک فاکتور دیگر ثبت شده است.\nاگر فکر می‌کنید اشتباهی رخ داده، کد پیگیری خود را برای مدیریت ارسال کنید.",null,'HTML');
+            exit;
+        }
+    }
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (int)($pay['user_id']??0)!=(int)$from_id){ sendMessage("❌ فاکتور پیدا نشد",$removeKeyboard); setUser(); exit; }
+    if((string)($pay['state']??'')!=='pending'){ sendMessage("این فاکتور قبلاً ارسال یا پردازش شده است.",$removeKeyboard); setUser(); exit; }
+    $tracking=deltaEnsurePayTrackingCode($hash);
+    $uid=(int)$pay['user_id']; $rate=(int)($pay['usdt_rate']??0); $amount=(float)($pay['usdt_amount']??0);
+    $amountText=number_format($amount,4,'.','');
+    $expired=((int)($pay['usdt_expires_at']??0)>0 && time()>(int)$pay['usdt_expires_at']);
+    $photos=$update->message->photo;
+    $lastPhoto=is_array($photos) ? end($photos) : null;
+    $photoId=(is_object($lastPhoto) && isset($lastPhoto->file_id)) ? (string)$lastPhoto->file_id : (string)($fileid??'');
+    if($photoId===''){ sendMessage("❌ دریافت عکس رسید ناموفق بود؛ لطفاً تصویر را دوباره ارسال کنید."); exit; }
+    $msg="🪙 <b>رسید پرداخت ارزی USDT BEP20</b>\n\n"
+        .deltaUserShortInfo($uid)."\n\n"
+        ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
+        ."🧾 نوع فاکتور: <code>".htmlspecialchars((string)($pay['type']??''),ENT_QUOTES,'UTF-8')."</code>\n"
+        ."💰 مبلغ فاکتور: <b>".number_format((int)$pay['price'])." تومان</b>\n"
+        ."📊 نرخ تتر هنگام ساخت فاکتور: <b>".number_format($rate)." تومان</b>\n"
+        ."💲 مبلغ فاکتور ارزی: <b>{$amountText} USDT</b>\n"
+        ."🔗 شبکه: <b>BSC (BEP20)</b>\n"
+        ."🧬 هش تراکنش:\n<code>".htmlspecialchars($txHash,ENT_QUOTES,'UTF-8')."</code>\n"
+        .($expired?"\n⚠️ <b>رسید بعد از پایان مهلت ۳۰ دقیقه‌ای ارسال شده و نیاز به بررسی دقیق دارد.</b>":"");
+    $keyboard=deltaReceiptAdminKeyboardForPay($pay,$uid);
+    $res=sendPhotoToAdmins($photoId,$msg,$keyboard,'HTML');
+    $msgId=(is_object($res)&&isset($res->result->message_id))?(int)$res->result->message_id:0;
+    $receiptNow=time(); $adminChat=(int)$admin;
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`payment_method`='usdt_bep20',`usdt_tx_hash`=?,`receipt_submitted_at`=?,`message_id`=?,`chat_id`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('siiis',$txHash,$receiptNow,$msgId,$adminChat,$hash); $stmt->execute(); $stmt->close();
+    sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\nلطفاً برای ثبت سفارش صبر کنید.\n\n🔖 کد پیگیری: <code>{$tracking}</code>",$removeKeyboard,'HTML');
+    sendMessage($mainValues['reached_main_menu'],getMainKeys());
+    setUser();
+    exit;
+}
+
+// ---------------- Customer pending orders ----------------
+if($data==="pendingOrders"){
+    if(($botState['pendingOrdersState']??'off')!=='on'){ alert('این بخش غیرفعال است',true); exit; }
+    $stmt=$connection->prepare("SELECT `id`,`hash_id`,`price`,`type`,`request_date` FROM `pays` WHERE `user_id`=? AND `state`='have_sent' ORDER BY `id` DESC LIMIT 30");
+    $stmt->bind_param('i',$from_id); $stmt->execute(); $res=$stmt->get_result(); $stmt->close();
+    $rows=[];
+    while($p=$res->fetch_assoc()){
+        $tracking=deltaEnsurePayTrackingCode($p['hash_id']);
+        $rows[]=[['text'=>'⏳ سفارش :'.$tracking,'callback_data'=>'pendingOrder'.(int)$p['id']]];
+    }
+    if(!$rows) $rows[]=[['text'=>'✅ سفارش در حال انتظاری ندارید','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'mainMenu']];
+    smartSendOrEdit($message_id,"⏳ سفارش‌های در حال انتظار\n\nفقط سفارش‌هایی که رسیدشان ارسال شده و هنوز توسط مدیریت تأیید یا رد نشده‌اند اینجا نمایش داده می‌شوند.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+if(preg_match('/^pendingOrder(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر در حالت انتظار نیست',true); $data='pendingOrders'; }
+    else{
+        $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+        $type=htmlspecialchars((string)($pay['type']??''),ENT_QUOTES,'UTF-8');
+        $txt="⏳ <b>سفارش در حال انتظار</b>\n\n🔖 کد پیگیری: <code>{$tracking}</code>\n🧾 نوع سفارش: <code>{$type}</code>\n💰 مبلغ: <b>".number_format((int)$pay['price'])." تومان</b>\n\nرسید شما ثبت شده و منتظر بررسی مدیریت است.";
+        $keys=json_encode(['inline_keyboard'=>[
+            [['text'=>'❌ لغو سفارش','callback_data'=>'pendingCancelAsk'.$pid],['text'=>'🔔 ارسال مجدد','callback_data'=>'pendingResend'.$pid]],
+            [['text'=>$buttonValues['back_button'],'callback_data'=>'pendingOrders']]
+        ]],JSON_UNESCAPED_UNICODE);
+        smartSendOrEdit($message_id,$txt,$keys,'HTML'); exit;
+    }
+}
+if(preg_match('/^pendingCancelAsk(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'✅ بله، لغو سفارش','callback_data'=>'pendingCancelYes'.$pid]],
+        [['text'=>'↩️ خیر','callback_data'=>'pendingOrder'.$pid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"⚠️ آیا از لغو این سفارش مطمئن هستید؟\nپس از لغو، دکمه تأیید مدیر برای این سفارش قابل استفاده نخواهد بود.",$keys);
+    exit;
+}
+if(preg_match('/^pendingCancelYes(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر قابل لغو نیست',true); exit; }
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='cancelled_by_user' WHERE `id`=? AND `user_id`=? AND `state`='have_sent'");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $changed=$stmt->affected_rows>0; $stmt->close();
+    if(!$changed){ alert('وضعیت سفارش تغییر کرده است',true); exit; }
+    $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+    if(!empty($pay['message_id']) && !empty($pay['chat_id'])){
+        editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شده توسط کاربر ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),(int)$pay['message_id'],$pay['chat_id']);
+    }
+    sendToAdmins("❌ سفارش <code>{$tracking}</code> توسط کاربر لغو شد.\n👤 آیدی کاربر: <code>{$from_id}</code>",null,'HTML');
+    alert('✅ سفارش لغو شد',true);
+    $rows=[[['text'=>$buttonValues['back_button'],'callback_data'=>'pendingOrders']]];
+    smartSendOrEdit($message_id,"❌ سفارش <code>{$tracking}</code> لغو شد.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE),'HTML');
+    exit;
+}
+if(preg_match('/^pendingResend(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر در انتظار نیست',true); exit; }
+    $last=(int)($pay['pending_remind_at']??0);
+    if($last>0 && time()-$last<3600){
+        $remain=(int)ceil((3600-(time()-$last))/60);
+        alert("ارسال مجدد هر یک ساعت یک‌بار ممکن است. حدود {$remain} دقیقه دیگر دوباره امتحان کنید.",true);
+        exit;
+    }
+    $now=time();
+    $stmt=$connection->prepare("UPDATE `pays` SET `pending_remind_at`=? WHERE `id`=? AND `state`='have_sent'");
+    $stmt->bind_param('ii',$now,$pid); $stmt->execute(); $stmt->close();
+    $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+    sendToAdmins("🔔 سفارش <code>{$tracking}</code> در حال انتظار است؛ جهت تأیید آن اقدام نمایید.\n\n👤 آیدی کاربر: <code>{$from_id}</code>\n💰 مبلغ: <b>".number_format((int)$pay['price'])." تومان</b>",null,'HTML');
+    alert('✅ یادآوری برای مدیریت ارسال شد',true);
     exit;
 }
 
@@ -3522,9 +3719,14 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
 }
 if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     if($data!="botSettings"){
-        if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
-        else $newValue = $botState[$match[1]]=="on"?"off":"on";
+        if($match[1] == "cartToCartAutoAcceptType") $newValue = ($botState[$match[1]] ?? "0") == "0"?"1":(($botState[$match[1]] ?? "0") == "1"?"2":0);
+        else $newValue = ($botState[$match[1]] ?? "off")=="on"?"off":"on";
         setSettings($match[1], $newValue);
+        // Never let enabling auto-approval sweep old receipts. Only receipts submitted
+        // from this activation point onward are eligible.
+        if($match[1] === "cartToCartAutoAcceptState" && $newValue === "on"){
+            setSettings("cartToCartAutoAcceptSince", (string)time());
+        }
     }
     smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
 }
@@ -3822,6 +4024,9 @@ if(preg_match('/^changePaymentKeys(\w+)/',$data,$match) && ($from_id == $admin |
             break;
         case "tronwallet":
             $gate = "آدرس والت ترون";
+            break;
+        case "usdtBep20Wallet":
+            $gate = "آدرس کیف پول USDT روی شبکه BEP20";
             break;
     }
     sendMessage("🔘|لطفا $gate را وارد کنید", $cancelKey);
@@ -4458,14 +4663,101 @@ if(preg_match('/^uBuyLimitSetPanel(\d+)/',$userInfo['step'],$match) && ($from_id
     sendMessage("✅ ذخیره شد",$removeKeyboard);
     sendMessage(renderUserInfoTitle($uid), getUserInfoKeys($uid), "HTML");
 }
-if(preg_match('/^uAuto(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^uForceAutoAsk(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $uid=(int)$match[1];
-    $type="USER_NO_AUTOAPPROVE_" . $uid;
-    $val = getSettingValue($type,"0");
-    $newVal = ($val=="1")?"0":"1";
-    upsertSettingValue($type, $newVal);
-    alert($newVal=="1"?"✅ استثنا شد":"❌ برداشته شد");
-    refreshUserInfoPanel($uid, $message_id);
+    $enabled=(int)getSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0")>0;
+    $txt=$enabled
+        ? "⚡ این کاربر در حال حاضر در لیست تأیید خودکار دائمی است.\n\nآیا می‌خواهید این استثنا لغو شود؟"
+        : "⚡ آیا می‌خواهید این کاربر همیشه خودکار رسیدش تأیید شود؟\n\nحتی اگر تأیید خودکار عمومی خاموش باشد، رسیدهای جدید این کاربر به‌صورت خودکار تأیید می‌شوند. رسیدهای قدیمی شامل این حالت نمی‌شوند.";
+    $keys=json_encode(['inline_keyboard'=>[
+        $enabled
+            ? [['text'=>'✅ بله، لغو شود','callback_data'=>'uForceAutoNo'.$uid],['text'=>'❌ خیر','callback_data'=>'uRefresh'.$uid]]
+            : [['text'=>'✅ آره','callback_data'=>'uForceAutoYes'.$uid],['text'=>'❌ نه','callback_data'=>'uRefresh'.$uid]],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'uRefresh'.$uid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,$txt,$keys);
+    exit;
+}
+if(preg_match('/^uForceAutoYes(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    // Store the activation timestamp, not just 1. This protects old receipts.
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,(string)time());
+    alert("✅ تأیید خودکار دائمی برای این کاربر فعال شد");
+    refreshUserInfoPanel($uid,$message_id);
+    exit;
+}
+if(preg_match('/^uForceAutoNo(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0");
+    alert("✅ استثنای تأیید خودکار لغو شد");
+    refreshUserInfoPanel($uid,$message_id);
+    exit;
+}
+if($data==="resetAutoApproveQueueAsk" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'✅ بله، از همین لحظه','callback_data'=>'resetAutoApproveQueueYes']],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"♻️ با این کار هیچ رسید قدیمی به‌صورت خودکار تأیید نمی‌شود.\n\nاز این لحظه به بعد فقط رسیدهای جدید وارد صف تأیید خودکار خواهند شد.\n\nانجام شود؟",$keys);
+    exit;
+}
+if($data==="resetAutoApproveQueueYes" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    setSettings("cartToCartAutoAcceptSince",(string)time());
+    alert("✅ صف تأیید خودکار ریست شد؛ رسیدهای قبلی نادیده گرفته می‌شوند",true);
+    smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
+    exit;
+}
+if($data==="autoApproveExceptions" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $rows=[];
+    $res=$connection->query("SELECT `type`,`value` FROM `setting` WHERE `type` LIKE 'USER_FORCE_AUTOAPPROVE_%' AND CAST(`value` AS UNSIGNED)>0 ORDER BY `id` DESC");
+    if($res){
+        while($r=$res->fetch_assoc()){
+            if(!preg_match('/USER_FORCE_AUTOAPPROVE_(\d+)/',(string)$r['type'],$mm)) continue;
+            $uid=(int)$mm[1];
+            $name='';
+            $stmt=$connection->prepare("SELECT `name`,`username` FROM `users` WHERE `userid`=? LIMIT 1");
+            if($stmt){ $stmt->bind_param('i',$uid); $stmt->execute(); $u=$stmt->get_result()->fetch_assoc(); $stmt->close(); $name=trim((string)($u['username']??$u['name']??'')); }
+            $label='👤 '.$uid.($name!==''?' | '.$name:'');
+            $rows[]=[['text'=>$label,'callback_data'=>'receiptUserInfo_'.$uid],['text'=>'❌ لغو','callback_data'=>'removeForceAuto'.$uid]];
+        }
+    }
+    if(!$rows) $rows[]=[['text'=>'هیچ کاربری استثنا نشده','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']];
+    smartSendOrEdit($message_id,"👥 کاربرهای استثنا شده تأیید خودکار\n\nاین کاربران حتی با خاموش بودن تأیید خودکار عمومی، فقط برای رسیدهای جدید خودشان به‌صورت خودکار تأیید می‌شوند.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+if(preg_match('/^removeForceAuto(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".(int)$match[1],"0");
+    alert("✅ از لیست استثناها حذف شد");
+    $data="autoApproveExceptions";
+    $rows=[];
+    $res=$connection->query("SELECT `type`,`value` FROM `setting` WHERE `type` LIKE 'USER_FORCE_AUTOAPPROVE_%' AND CAST(`value` AS UNSIGNED)>0 ORDER BY `id` DESC");
+    if($res){
+        while($r=$res->fetch_assoc()){
+            if(!preg_match('/USER_FORCE_AUTOAPPROVE_(\d+)/',(string)$r['type'],$mm)) continue;
+            $uid=(int)$mm[1];
+            $rows[]=[['text'=>'👤 '.$uid,'callback_data'=>'receiptUserInfo_'.$uid],['text'=>'❌ لغو','callback_data'=>'removeForceAuto'.$uid]];
+        }
+    }
+    if(!$rows) $rows[]=[['text'=>'هیچ کاربری استثنا نشده','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']];
+    smartSendOrEdit($message_id,"👥 کاربرهای استثنا شده تأیید خودکار",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+
+// Legacy callback kept safe: it now opens the new force-auto confirmation instead of
+// enabling the old inverse (NO_AUTOAPPROVE) behavior.
+if(preg_match('/^uAuto(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    $enabled=(int)getSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0")>0;
+    $keys=json_encode(['inline_keyboard'=>[
+        $enabled
+            ? [['text'=>'✅ لغو استثنا','callback_data'=>'uForceAutoNo'.$uid]]
+            : [['text'=>'✅ آره، همیشه خودکار','callback_data'=>'uForceAutoYes'.$uid]],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'uRefresh'.$uid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"آیا می‌خواهید این کاربر همیشه خودکار رسیدش تأیید شود؟",$keys);
+    exit;
 }
 
 
@@ -4836,6 +5128,7 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     $stmt->bind_param("siii", $hash_id, $from_id, $text, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     
     $keyboard = array();
@@ -4844,13 +5137,14 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     if($botState['zarinpal'] == "on") $keyboard[] = [['text' => $buttonValues['zarinpal_gateway'],  'url' => $botUrl . "pay/?zarinpal&hash_id=" . $hash_id]];
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)',  'callback_data' => "payWithUsdt" . $hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
 
     
 	$keys = json_encode(['inline_keyboard'=>$keyboard]);
-    sendMessage("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n\nلطفا روش پرداخت را انتخاب کنید",$keys);
+    sendMessage("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>\n\nلطفا روش پرداخت را انتخاب کنید",$keys,"HTML");
     setUser();
 }
 if(preg_match('/increaseWalletWithCartToCart(?<hashId>.*)/',$data, $match)) {
@@ -4886,19 +5180,22 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $payInfo = $stmt->get_result()->fetch_assoc();
         $stmt->close();
         $price = number_format($payInfo['price']);
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
 
     
 
-        sendMessage($mainValues['order_increase_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_increase_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         $msg = str_replace(['PRICE', 'USERNAME', 'NAME', 'USER-ID'],[$price, $username, $name, $from_id], $mainValues['increase_wallet_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
         
         $keyboard = getPaymentAdminKeyboard($match[1], $from_id);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -4916,8 +5213,9 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     
     if($payInfo['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
     
@@ -5924,6 +6222,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
     }
     $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'ارزی ریالی', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);
+    $msg .= deltaTrackingLineByHash((string)($payInfo['hash_id']??''));
     
     sendToAdmins($msg, $keys, "html");
 }
@@ -5990,6 +6289,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         ]]);
     
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+        $msg .= deltaTrackingLineByHash((string)($payInfo['hash_id']??''));
     
     sendToAdmins($msg, $keys, "html");
     }
@@ -6118,6 +6418,9 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         $stmt->bind_param("s", $uuid);
         $stmt->execute();
         $stmt->close();
+        $approvedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet',`approved_at`=? WHERE `hash_id`=? AND `state`='pending'");
+        $stmt->bind_param("is",$approvedAt,$match[1]); $stmt->execute(); $stmt->close();
         $keys = json_encode(['inline_keyboard'=>[
             [
                 ['text'=>"اخیش یکی حجم زد 😁",'callback_data'=>"deltach"]
@@ -6697,8 +7000,8 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $rowId = $match[1];
 
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -6863,6 +7166,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $rowId = $stmt->insert_id;
         $stmt->close();
     }
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     
     if(!empty($freeVolumeQuota)){
@@ -6874,6 +7178,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
         if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
         if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payCustomWithWallet$hash_id"]];
+        if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
         if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
     }
 
@@ -6881,7 +7186,9 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
     $keyboard[] = [['text' => '🔁 تغییر پلن', 'callback_data' => "selectCategory{$call_id}_{$sid}_{$match['buyType']}"]];
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     $price = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
-    sendMessage(str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']),json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    $invoiceMsg = str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']);
+    $invoiceMsg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
+    sendMessage($invoiceMsg,json_encode(['inline_keyboard'=>$keyboard]), "HTML");
     setUser();
 }
 if(preg_match('/^haveDiscount(.+?)_(.*)/',$data,$match)){
@@ -6994,8 +7301,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         $rowId = $match[3];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -7295,6 +7602,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
             if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
             if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
+            if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
             if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
         }
         
@@ -7370,6 +7678,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
 	    $keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     }
     $priceC = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
+    $trackingCode = !empty($hash_id) ? deltaEnsurePayTrackingCode($hash_id) : '';
     if($invoiceOfferId>0){
         $msg=specialOfferBuildInvoiceMessage($specialInvoice,(int)($userInfo['wallet'] ?? 0));
     }elseif(isset($accountCount)){
@@ -7398,6 +7707,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $mainValues['buy_subscription_detail']
         );
     }
+    if($trackingCode!=='') $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
@@ -7622,6 +7932,7 @@ if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
         ]]);
     $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 ['کیف پول', $from_id, $username, $first_name, $price, $baseRemark,$volume, $days], $mainValues['buy_custom_account_request']);
+    $msg .= deltaTrackingLineByHash($match[1]);
     sendToAdmins($msg, $keys, "html");
     notifyUserQuotaIfLow($uid);
 }
@@ -7868,20 +8179,23 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $filename = $catname." ".$res['title']; 
         $fileprice = $payInfo['price'];
         $remark = function_exists('npvExtractRemarkFromPayDescription') ? npvExtractRemarkFromPayDescription($payInfo['description']) : $payInfo['description'];
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
         
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_buy_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                             ["کارت به کارت", $from_id, $username, $first_name, $fileprice, $remark,$volume, $days], $mainValues['buy_custom_account_request']);
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
         $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "decline$uid", $uid);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
     }else{
         sendMessage($mainValues['please_send_only_image']);
@@ -7898,8 +8212,9 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     
     if($payInfo['state'] == "approved" || $payInfo['state'] == "paid_with_wallet") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet')");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ? AND `state` NOT IN ('approved','paid_with_wallet')");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
@@ -8044,7 +8359,8 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     define('IMAGE_HEIGHT',540);
 
     (function_exists('npvSendManualLockRequestOrNormal') ? npvSendManualLockRequestOrNormal($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu", $file_detail ?? [], $payInfo['description'] ?? '', $serverInfo ?? []) : xuiSendOrderDeliveryPhoto($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu"));
-    sendMessage('✅ کانفیگ و براش ارسال کردم', getMainKeys());
+    $trackingCode=deltaEnsurePayTrackingCode((string)$payInfo['hash_id']);
+    sendMessage("✅ کانفیگ و براش ارسال کردم\nریمارک: <code>".htmlspecialchars((string)$remark,ENT_QUOTES,'UTF-8')."</code>\nحجم سرویس: <b>{$volume} گیگ</b>\nمدت زمان سرویس: <b>{$days} روز</b>\nکد پیگیری: <code>{$trackingCode}</code>", getMainKeys(), "HTML");
     
     $agentBought = $payInfo['agent_bought'];
 	$stmt = $connection->prepare("INSERT INTO `orders_list` 
@@ -8192,7 +8508,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
     }
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -8449,6 +8765,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 ['کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['renew_account_request_message']);}
     else{$msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);}
+    $msg .= deltaTrackingLineByHash($match[1]);
 
     sendToAdmins($msg, $keys, "html");
 }
@@ -8550,8 +8867,9 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
             $filename = $catname." ".$res['title']; 
         }
         $fileprice = $payInfo['price'];
+        $trackingCode = deltaEnsurePayTrackingCode($match[1]);
     
-        sendMessage($mainValues['order_buy_sent'],$removeKeyboard);
+        sendMessage($mainValues['order_buy_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         if($payInfo['agent_count'] != 0) $msg = str_replace(['ACCOUNT-COUNT', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK"],[$payInfo['agent_count'], 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename], $mainValues['buy_new_much_account_request']);
@@ -8564,6 +8882,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
 🔐 Device ID ثبت‌شده:
 <code>{$safeDeviceId}</code>";
         }
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
 
         $keyboard = getReceiptAdminKeyboard("accept" . $match[1], "declineOffer" . $match[1] . "_" . $uid, $uid);
         setUser('', 'temp');
@@ -8571,8 +8890,9 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $msgId = $res->result->message_id;
         
         if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -8712,8 +9032,9 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     if($payInfo['state'] == "approved") exit();
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` != 'approved'");
-    $stmt->bind_param("s", $payProvisionHash);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ? AND `state` != 'approved'");
+    $stmt->bind_param("is", $approvedAt, $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
     $stmt->close();
@@ -8995,9 +9316,21 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
         $msg = str_replace(['USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'FILENAME'],
                     [$uid, $user_name, $uname, $price, $remark,$filename], $mainValues['invite_buy_new_account']);
             
+            $msg .= deltaTrackingLineByHash($payProvisionHash);
             sendToAdmins($msg);
         }
     }
+
+    $trackingCode=deltaEnsurePayTrackingCode($payProvisionHash);
+    $doneTitle=($payInfo['type']==='RENEW_SCONFIG')?'✅ تمدید سرویس انجام شد':'✅ کانفیگ و برای کاربر ارسال شد';
+    $finalReport=$doneTitle
+        ."\n\n👤 آیدی کاربر: <code>{$uid}</code>"
+        ."\n✏️ ریمارک: <code>".htmlspecialchars((string)($remark??''),ENT_QUOTES,'UTF-8')."</code>"
+        ."\n🔋 حجم سرویس: <b>".($volume??0)." گیگ</b>"
+        ."\n⏰ مدت زمان سرویس: <b>".($days??0)." روز</b>"
+        ."\n💰 مبلغ: <b>".number_format((int)($price??0))." تومان</b>"
+        ."\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
+    sendToAdmins($finalReport,null,'HTML');
 }
 if(preg_match('/^declineOffer(.+)_(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser('declineOfferReason|'.$match[1].'|'.$match[2].'|'.$message_id);
@@ -9122,6 +9455,7 @@ if(!function_exists('pgRenewBuildAdminReport')){
         }
         $safeService = htmlspecialchars((string)$serviceName, ENT_QUOTES, 'UTF-8');
         $safeTitle = htmlspecialchars((string)$renewTitle, ENT_QUOTES, 'UTF-8');
+        $tracking = deltaEnsurePayTrackingCode((string)($pay['hash_id'] ?? ''));
         $volText = rtrim(rtrim(number_format($volume, 2, '.', ''), '0'), '.');
         if($volText === '') $volText = '0';
         return "🔁 <b>گزارش تمدید سرویس</b>\n\n".
@@ -9131,6 +9465,7 @@ if(!function_exists('pgRenewBuildAdminReport')){
                "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
                "➕ روز افزوده: <b>{$days} روز</b>\n".
                "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
+               "🔖 کد پیگیری: <code>{$tracking}</code>\n".
                "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>";
     }
 }
@@ -9298,7 +9633,8 @@ if(preg_match('/^pgRenewBuyFull_(\d+)_(\d+)$/', $data, $m)){
     if(!$plan){ alert('پلن تمدید کلی معتبر نیست'); exit; }
     $hash=pgRenewCreatePay($from_id, 'PG_RENEW_FULL_'.$oid.'_'.$pid, (int)$plan['price']);
     $vlabel=((float)$plan['volume']>0)?rtrim(rtrim(number_format((float)$plan['volume'],2,'.',''),'0'),'.').' گیگ':'نامحدود';
-    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
     smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
 }
@@ -9312,7 +9648,8 @@ if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     $kind=$plan['kind']; $type = $kind=='volume' ? 'PG_RENEW_VOLUME_' : 'PG_RENEW_DAY_';
     $hash=pgRenewCreatePay($from_id, $type.$oid.'_'.$pid, (int)$plan['price']);
     $unit=$kind=='volume'?'گیگ':'روز';
-    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
     smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
 }
@@ -9369,7 +9706,7 @@ if(preg_match('/^pgRenewPayQuota(.+)$/', $data, $m)){
             throw new Exception('خطا در تمدید پاسارگارد: '.($res->msg??'خطای نامشخص'));
         }
 
-        $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_quota' WHERE `hash_id`=? AND `user_id`=? AND `state`='processing_quota'");
+        $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_quota',`payment_method`='quota' WHERE `hash_id`=? AND `user_id`=? AND `state`='processing_quota'");
         $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $stmt->close();
 
         $remainingAfter=getUserRemainingBuyVolume($from_id);
@@ -9419,7 +9756,7 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
     $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید پاسارگارد: '.($res->msg??'خطای نامشخص'), true); exit; }
     $stmt=$connection->prepare("UPDATE `users` SET `wallet`=`wallet`-? WHERE `userid`=?"); $price=(int)$pay['price']; $stmt->bind_param('ii',$price,$from_id); $stmt->execute(); $stmt->close();
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, $from_id), null, 'HTML');
     smartSendOrEdit($message_id, "✅ تمدید با موفقیت انجام شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", getMainKeys());
     exit;
@@ -9437,11 +9774,13 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $photos = $update->message->photo;
     $lastPhoto = is_array($photos) ? end($photos) : end($photos);
     $fileid = $lastPhoto->file_id ?? '';
-    sendMessage($mainValues['renew_order_sent'] ?? 'رسید ارسال شد', $removeKeyboard); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    sendMessage(($mainValues['renew_order_sent'] ?? 'رسید ارسال شد')."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $removeKeyboard, 'HTML'); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
-    $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان", $keys, 'HTML');
+    $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
+    $receiptNow=time(); $adminChat=(int)$admin;
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id`=?, `chat_id`=? WHERE `hash_id`=?"); $stmt->bind_param('iiis',$receiptNow,$msgId,$adminChat,$hash); $stmt->execute(); $stmt->close();
     exit;
 }
 if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -9455,7 +9794,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $stmt=$connection->prepare("SELECT `amount` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['amount']??0); }
     $res=pgRenewApply($oid,$days,$volume,$fullReset,$fullPlanId);
     if(!is_object($res) || empty($res->success)){ alert('خطا در تمدید: '.($res->msg??'خطا'), true); exit; }
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved' WHERE `hash_id`=?"); $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    $approvedAt=time(); $stmt=$connection->prepare("UPDATE `pays` SET `state`='approved',`approved_at`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$approvedAt,$hash); $stmt->execute(); $stmt->close();
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'✅ تایید شد','callback_data'=>'deltach']]]], JSON_UNESCAPED_UNICODE));
     sendToAdmins(pgRenewBuildAdminReport($pay, $oid, $days, $volume, (int)$pay['user_id']), null, 'HTML');
     sendMessage("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز", null, null, $pay['user_id']);
@@ -11508,6 +11847,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     $stmt->execute();
     $rowId = $stmt->insert_id;
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     
     if($botState['cartToCartState'] == "on") $keyboard[] = [['text' => $buttonValues['cart_to_cart'],  'callback_data' => "payWithCartToCart$hash_id"]];
@@ -11516,6 +11856,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
@@ -11531,6 +11872,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
         [$name, number_format($basePrice).' تومان', number_format($price).' تومان', $desc, number_format($currentWallet), number_format($walletAfter), ($respd['volume']??0), ($respd['days']??0), number_format($discountAmount), $discountPercent],
         $mainValues['buy_subscription_detail']
     );
+    $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/sConfigUpdate(\d+)/', $data,$match)){
@@ -13474,8 +13816,8 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $rowId = $match[2];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -13586,6 +13928,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $rowId = $stmt->insert_id;
         $stmt->close();
     }else $price = $afterDiscount;
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     if($price == 0) $price = "رایگان";
     else $price .= " تومان";
@@ -13596,6 +13939,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "پرداخت با موجودی مبلغ $price",  'callback_data' => "payRenewWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     if(!preg_match('/^discountRenew/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountRenew_" . $match[1] . "_" . $rowId]];
@@ -13604,9 +13948,9 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
 
 
 
-    sendMessage("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :",json_encode([
+    sendMessage("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode([
             'inline_keyboard' => $keyboard
-        ]));
+        ]),"HTML");
 }
 if(preg_match('/payRenewWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -13672,12 +14016,14 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $price = $payInfo['price'];
         $volume = $respd['volume'];
         $days = $respd['days'];
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
         
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         // notify admin
         
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کارت به کارت', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     
         $keyboard = getReceiptAdminKeyboard("approveRenewAcc$hash_id", "decRenewAcc$hash_id", $uid);
     
@@ -13685,8 +14031,9 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -13703,8 +14050,9 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
     
     if($payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
 
@@ -13835,7 +14183,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
     
     if($payInfo['state'] == "paid_with_wallet" || $payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet', `payment_method`='wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
     $stmt->close();
@@ -13922,6 +14270,7 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
             ],
         ]]);
     $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کیف پول', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
+    $msg .= deltaTrackingLineByHash($match[1]);
 
     sendToAdmins($msg, $keys, "html");
     exit;
@@ -14479,6 +14828,7 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     $stmt->bind_param("sisii", $hash_id, $from_id,$type, $planprice, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     
     $keyboard = array();
@@ -14488,10 +14838,11 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payIncraseDayWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode(['inline_keyboard' => $keyboard]),"HTML");
 }
 if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -14546,12 +14897,14 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->close();
         $price = $payParam['price'];
         $volume = $res['volume'];
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
     
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin   
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'زمان', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     
         $keyboard = getReceiptAdminKeyboard("approveIncreaseDay{$match[1]}", "decIncreaseDay{$match[1]}", $from_id);
 
@@ -14560,8 +14913,9 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{ 
@@ -14580,8 +14934,9 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
     
     if($payParam['state'] == "approved") exit();
     
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
     
@@ -14670,11 +15025,6 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
-    $stmt->bind_param("s", $match[1]);
-    $stmt->execute();
-    $stmt->close();
-
     preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo);
     $orderId = $increaseInfo[1];
     
@@ -14714,9 +15064,8 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
         alert("💡موجودی کیف پول (".number_format($userwallet)." تومان) کافی نیست لطفا به مقدار ".number_format($needamount)." تومان شارژ کنید ",true);
         exit;
     }
+    $trackingCode=deltaEnsurePayTrackingCode($match[1]);
 
-    
-    
     if($serverType == "marzban" || $serverType == "pasarguard"){
         $response = editMarzbanConfig($server_id, ['remark'=>$remark, 'plus_day'=>$volume]);
     }else{
@@ -14743,7 +15092,10 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
         $stmt->bind_param("ii", $price, $from_id);
         $stmt->execute();
         $stmt->close();
-        smartSendOrEdit($message_id, "✅$volume روز به مدت زمان سرویس شما اضافه شد",getMainKeys());
+        $approvedAt=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state`='paid_with_wallet',`payment_method`='wallet',`approved_at`=? WHERE `hash_id`=? AND `state`='pending'");
+        $stmt->bind_param("is",$approvedAt,$match[1]); $stmt->execute(); $stmt->close();
+        smartSendOrEdit($message_id, "✅$volume روز به مدت زمان سرویس شما اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",getMainKeys(),"HTML");
         
         $keys = json_encode(['inline_keyboard'=>[
             [
@@ -14759,6 +15111,7 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume روز
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>{$trackingCode}</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
 
@@ -14846,6 +15199,7 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     $stmt->bind_param("sisii", $hash_id, $from_id,$type, $planprice, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     $keyboard = array();
     
@@ -14859,10 +15213,11 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "💰پرداخت با موجودی  " . $planprice,  'callback_data' => "payIncraseWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode(['inline_keyboard' => $keyboard]),"HTML");
 } 
 if(preg_match('/payIncreaseWithCartToCart(.*)/',$data, $match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -14918,12 +15273,14 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $price = $payParam['price'];
         $volume = $res['volume'];
         $state = str_replace('payIncreaseWithCartToCart','',$userInfo['step']);
-        sendMessage($mainValues['renew_order_sent'],$removeKeyboard);
+        $trackingCode=deltaEnsurePayTrackingCode($match[1]);
+        sendMessage($mainValues['renew_order_sent']."\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
     
         // notify admin
 
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'حجم', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
+        $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
 
          $keyboard = getReceiptAdminKeyboard("approveIncreaseVolume{$match[1]}", "decIncreaseVolume{$match[1]}", $from_id);
 
@@ -14931,8 +15288,9 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
-        $stmt->bind_param("iis", $msgId, $admin, $match[1]);
+        $receiptNow=time();
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=?, `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt->bind_param("iiis", $receiptNow, $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
     }else{
@@ -14951,8 +15309,9 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
 
     if($payParam['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ?");
-    $stmt->bind_param("s", $match[1]);
+    $approvedAt=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `approved_at`=? WHERE `hash_id` = ?");
+    $stmt->bind_param("is", $approvedAt, $match[1]);
     $stmt->execute();
     $stmt->close();
 
@@ -15116,12 +15475,6 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
-    $stmt->bind_param("s", $match[1]);
-    $stmt->execute();
-    $stmt->close();
-
-
     preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType, $increaseInfo);
     $orderId = $increaseInfo[1];
     
@@ -15154,6 +15507,7 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
         alert("💡موجودی کیف پول (".number_format($userwallet)." تومان) کافی نیست لطفا به مقدار ".number_format($needamount)." تومان شارژ کنید ",true);
         exit;
     }
+    $trackingCode=deltaEnsurePayTrackingCode($match[1]);
     
     $stmt = $connection->prepare("SELECT * FROM server_config WHERE id=?");
     $stmt->bind_param("i", $server_id);
@@ -15194,9 +15548,10 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
 🎈 نام سرویس: $remark
 ⏰ مدت افزایش: $volume گیگ
 💰قیمت: $price تومان
+🔖 کد پیگیری: <code>{$trackingCode}</code>
 ⁮⁮ ⁮⁮
         ", $keys, "html");
-        smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys());exit;
+        smartSendOrEdit($message_id, "✅$volume گیگ به حجم سرویس شما اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",getMainKeys(),"HTML");exit;
         
 
     }else {
@@ -16083,6 +16438,78 @@ if(preg_match('/^addDiscountCanUse(.*)/',$userInfo['step'],$match) && $text != $
         sendMessage("مدیریت کد های تخفیف",getDiscountCodeKeys());
     }else sendMessage("🔘|لطفا فقط عدد بفرستید");
 }
+if($data=="addPrivateDiscountCode" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    delMessage();
+    setUser('', 'temp');
+    setUser('privateDiscountUser');
+    sendMessage("👤 آیدی عددی کاربری که این کد فقط برای او قابل استفاده باشد را ارسال کنید.",$cancelKey);
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountUser" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!ctype_digit(trim((string)$text)) || (int)$text<=0){ sendMessage("❌ فقط آیدی عددی معتبر ارسال کنید."); exit; }
+    $target=(int)$text;
+    $stmt=$connection->prepare("SELECT `userid` FROM `users` WHERE `userid`=? LIMIT 1");
+    $stmt->bind_param('i',$target); $stmt->execute(); $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+    if(!$exists){ sendMessage("❌ این آیدی در کاربران ربات پیدا نشد. دوباره آیدی عددی را بفرستید."); exit; }
+    setUser(json_encode(['target_user_id'=>$target],JSON_UNESCAPED_UNICODE),'temp');
+    setUser('privateDiscountText');
+    sendMessage("🎟 متن کد تخفیف اختصاصی را خودتان وارد کنید.\n\nمثال: <code>DELTA20</code>\nفاصله مجاز نیست؛ حروف، عدد، _ و - قابل استفاده است.",$cancelKey,'HTML');
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountText" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $code=trim((string)$text);
+    if(!preg_match('/^[\p{L}\p{N}_-]{2,64}$/u',$code)){ sendMessage("❌ کد باید ۲ تا ۶۴ کاراکتر و بدون فاصله باشد."); exit; }
+    $stmt=$connection->prepare("SELECT `id` FROM `discounts` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$code); $stmt->execute(); $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+    if($exists){ sendMessage("❌ این کد قبلاً ساخته شده؛ یک کد دیگر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['hash_id']=$code;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp');
+    setUser('privateDiscountAmount');
+    sendMessage("🔘 مقدار تخفیف را وارد کنید.\nبرای درصد علامت % را کنار عدد بگذارید؛ در غیر این صورت مبلغ به تومان است.",$cancelKey);
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountAmount" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $raw=trim((string)$text); $type=strpos($raw,'%')!==false?'percent':'amount'; $raw=trim(str_replace('%','',$raw));
+    if(!is_numeric($raw) || (float)$raw<0){ sendMessage("❌ فقط عدد یا درصد معتبر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['type']=$type; $draft['amount']=(int)$raw;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountDate');
+    sendMessage("🔘 مدت زمان این تخفیف را به روز وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountDate" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['date']=(int)$text>0 ? time()+((int)$text*86400) : 0;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountCount');
+    sendMessage("🔘 تعداد استفاده کل این کد را وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountCount" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['count']=(int)$text>0?(int)$text:-1;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountCanUse');
+    sendMessage("🔘 تعداد دفعاتی که همین کاربر می‌تواند از کد استفاده کند را وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountCanUse" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $canUse=(int)$text>0?(int)$text:-1;
+    $target=(int)($draft['target_user_id']??0); $code=(string)($draft['hash_id']??'');
+    if($target<=0 || $code===''){ sendMessage("❌ اطلاعات ساخت کد ناقص شد؛ دوباره از مدیریت تخفیف شروع کنید.",$removeKeyboard); setUser(); setUser('','temp'); exit; }
+    $stmt=$connection->prepare("INSERT INTO `discounts` (`hash_id`,`type`,`amount`,`expire_date`,`expire_count`,`can_use`,`target_user_id`) VALUES (?,?,?,?,?,?,?)");
+    $amount=(int)($draft['amount']??0); $date=(int)($draft['date']??0); $count=(int)($draft['count']??-1); $type=(string)($draft['type']??'amount');
+    $stmt->bind_param("ssiiiii",$code,$type,$amount,$date,$count,$canUse,$target);
+    $stmt->execute(); $stmt->close();
+    sendMessage("✅ کد اختصاصی <code>".htmlspecialchars($code,ENT_QUOTES,'UTF-8')."</code> فقط برای کاربر <code>{$target}</code> ساخته شد.",$removeKeyboard,"HTML");
+    setUser(); setUser('','temp');
+    sendMessage("مدیریت کد های تخفیف",getDiscountCodeKeys());
+    exit;
+}
+
 if(preg_match('/^delDiscount(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $stmt = $connection->prepare("DELETE FROM `discounts` WHERE `id` = ?");
     $stmt->bind_param("i", $match[1]);

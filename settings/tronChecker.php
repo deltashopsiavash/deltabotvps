@@ -14,6 +14,7 @@ while($payParam = $paysList->fetch_assoc()){
     $user_id = $payParam['user_id'];
     $payType = $payParam['type'];
     $hash_id = $payParam['payid'];
+    $trackingCode = deltaEnsurePayTrackingCode((string)($payParam['hash_id'] ?? ''));
     $tronPrice = $payParam['tron_price'];
     $state = $payParam['state'];
     
@@ -33,7 +34,7 @@ while($payParam = $paysList->fetch_assoc()){
     $userInfo = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     
-    if($success = "SUCCESS" && isset($success)){
+    if(isset($success) && $success === "SUCCESS"){
         $firstTime = $result['timestamp']/1000;
     	$secondTime = time();
     
@@ -56,7 +57,7 @@ while($payParam = $paysList->fetch_assoc()){
                     $stmt->bind_param("i", $rowId);
                     $stmt->execute();
                     $stmt->close();
-                    sendToAdmins("🧾 پرداخت ترون نیاز به تایید دستی دارد\nکاربر: $user_id\nنوع: $payDescription\nمبلغ: " . number_format($payParam['price']) . " تومان\nHash: $hash_id", null, null);
+                    sendToAdmins("🧾 پرداخت ترون نیاز به تایید دستی دارد\nکاربر: <code>$user_id</code>\nنوع: $payDescription\nمبلغ: " . number_format($payParam['price']) . " تومان\nHash: <code>$hash_id</code>\n🔖 کد پیگیری: <code>$trackingCode</code>", null, "HTML");
                     continue;
                 }
 
@@ -68,8 +69,9 @@ while($payParam = $paysList->fetch_assoc()){
                 $days = $payParam['day'];
                 $agentBought = $payParam['agent_bought'];
                 
-                $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `id` =?");
-                $stmt->bind_param("i", $rowId);
+                $approvedAt=time();
+                $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved', `payment_method`='tron', `approved_at`=? WHERE `id` =?");
+                $stmt->bind_param("ii", $approvedAt, $rowId);
                 $stmt->execute();
                 $stmt->close();
                 
@@ -338,6 +340,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                 🔮 نام سرویس: $remark
                 🔋حجم سرویس: $volume گیگ
                 ⏰ مدت سرویس: $days روز
+                🔖 کد پیگیری: <code>$trackingCode</code>
                 ⁮⁮ 
                 ", $keys, "html");
                 }
@@ -346,8 +349,8 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                     $stmt->bind_param("ii", $price, $user_id);
                     $stmt->execute(); 
                     $stmt->close(); 
-                    sendMessage("تراکنش شما با تکسید آیدی $hash_id تأیید شد\n ✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",null,null,$user_id);
-                    sendToAdmins("✅ مبلغ " . number_format($price) . " تومان ($tronPrice ترون) به کیف پول کاربر $user_id توسط درگاه ترون اضافه شد", null, null);                
+                    sendMessage("تراکنش شما با تکسید آیدی $hash_id تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
+                    sendToAdmins("✅ مبلغ " . number_format($price) . " تومان ($tronPrice ترون) به کیف پول کاربر <code>$user_id</code> توسط درگاه ترون اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>", null, "HTML");                
                 }
                 elseif($payType == "RENEW_ACCOUNT"){
                     $oid = $plan_id;
@@ -428,6 +431,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                 🔖 نام کاربری: $username
                 💰مبلغ پرداختی: $price تومان ($tronPrice ترون)
                 🔮 نام سرویس: $remark
+                🔖 کد پیگیری: <code>$trackingCode</code>
                 ⁮⁮ ⁮⁮
                 ", $keys, "html");
                 exit;
@@ -487,7 +491,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                         $stmt->execute();
                         $stmt->close();
                         
-                        sendMessage("پرداخت شما با تکسید آیدی $hash_id با موفقیت انجام شد. $volume روز به مدت زمان سرویس شما اضافه شد",null,null,$user_id);
+                        sendMessage("پرداخت شما با تکسید آیدی $hash_id با موفقیت انجام شد. $volume روز به مدت زمان سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
                         $keys = json_encode(['inline_keyboard'=>[
                         [
                             ['text'=>"خرید از درگاه ترون 💞",'callback_data'=>'deltach'],
@@ -505,6 +509,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                 🔖 نام کاربری: $username
                 💰مبلغ پرداختی: $price تومان ($tronPrice ترون)
                 🔮 نام سرویس: $remark
+                🔖 کد پیگیری: <code>$trackingCode</code>
                 ⁮⁮ ⁮⁮
                 ", $keys, "html");
                 exit;
@@ -562,7 +567,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                         $stmt->bind_param("s", $uuid);
                         $stmt->execute();
                         $stmt->close();
-                        sendMessage("پرداخت شما با تکسید آیدی $hash_id تأیید شد. $volume گیگ به حجم سرویس شما اضافه شد",null,null,$user_id);
+                        sendMessage("پرداخت شما با تکسید آیدی $hash_id تأیید شد. $volume گیگ به حجم سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
                         $keys = json_encode(['inline_keyboard'=>[
                         [
                             ['text'=>"خرید از درگاه ترون 💞",'callback_data'=>'deltach'],
@@ -580,6 +585,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                 🔖 نام کاربری: $username
                 💰مبلغ پرداختی: $price تومان ($tronPrice ترون)
                 🔮 نام سرویس: $remark
+                🔖 کد پیگیری: <code>$trackingCode</code>
                 ⁮⁮ ⁮⁮
                 ", $keys, "html");
                 exit;
@@ -649,7 +655,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                 	$stmt->bind_param("iiisii", $user_id, $server_id, $inbound_id, $remark, $price, $time);
                 	$stmt->execute();
                 	$stmt->close();
-                    sendMessage("تراکنش شما با تکسید آیدی $hash_id تأیید شد\n✅سرویس $remark با موفقیت تمدید شد",null,null,$user_id);
+                    sendMessage("تراکنش شما با تکسید آیدی $hash_id تأیید شد\n✅سرویس $remark با موفقیت تمدید شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
                 
                 }
             }else{
