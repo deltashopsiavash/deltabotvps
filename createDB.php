@@ -38,6 +38,7 @@ $connection->query("CREATE TABLE `discounts` (
   `expire_count` int(255) NOT NULL,
   `used_by` text DEFAULT NULL,
   `can_use` int(255) NOT NULL DEFAULT 1,
+  `target_user_id` bigint(20) NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
 )");
 
@@ -126,6 +127,7 @@ $connection->query("CREATE TABLE `orders_list` (
 $connection->query("CREATE TABLE IF NOT EXISTS `pays` (
     `id` int(255) NOT NULL AUTO_INCREMENT,
     `hash_id` varchar(1000) NOT NULL,
+    `tracking_code` varchar(8) DEFAULT NULL,
     `description` varchar(5000) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
     `payid` varchar(500) DEFAULT NULL,
     `user_id` bigint(10) NOT NULL,
@@ -135,7 +137,16 @@ $connection->query("CREATE TABLE IF NOT EXISTS `pays` (
     `day` int(255),
     `price` int(255) NOT NULL,
     `request_date` int(255) NOT NULL,
+    `receipt_submitted_at` int(11) NOT NULL DEFAULT 0,
+    `pending_remind_at` int(11) NOT NULL DEFAULT 0,
     `state` varchar(255) NOT NULL,
+    `payment_method` varchar(32) NOT NULL DEFAULT '',
+    `auto_approved` tinyint(1) NOT NULL DEFAULT 0,
+    `approved_at` int(11) NOT NULL DEFAULT 0,
+    `usdt_rate` int(11) NOT NULL DEFAULT 0,
+    `usdt_amount` decimal(20,8) NOT NULL DEFAULT 0,
+    `usdt_expires_at` int(11) NOT NULL DEFAULT 0,
+    `usdt_tx_hash` varchar(190) DEFAULT NULL,
     `agent_bought` int(1) NOT NULL DEFAULT 0,
     `agent_count` int(255) NOT NULL DEFAULT 0,
     `special_offer_id` INT NOT NULL DEFAULT 0,
@@ -143,7 +154,8 @@ $connection->query("CREATE TABLE IF NOT EXISTS `pays` (
     `special_offer_reserved_until` INT NOT NULL DEFAULT 0,
     `message_id` INT NULL DEFAULT NULL,
     `chat_id` VARCHAR(500) NULL DEFAULT NULL,
-    PRIMARY KEY (`id`)
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uniq_tracking_code` (`tracking_code`)
 );");
 
 $connection->query("CREATE TABLE IF NOT EXISTS `special_offers` (
@@ -273,8 +285,8 @@ $connection->query("INSERT INTO `setting` (`id`, `type`, `value`) VALUES
 (1, 'TICKETS_CATEGORY', 'شکایت'),
 (2, 'INVITE_BANNER_AMOUNT', '3000'),
 (3, 'INVITE_BANNER_TEXT', '{\"type\":\"photo\",\"caption\":\"\\ud83d\\udd30\\u0628\\u0631\\u062a\\u0631\\u06cc\\u0646 \\u0648 \\u0628\\u0647\\u062a\\u0631\\u06cc\\u0646 \\u0631\\u0628\\u0627\\u062a vpn \\u0628\\u0627 \\u06a9\\u0627\\u0646\\u06a9\\u0634\\u0646 \\u0647\\u0627\\u06cc \\u0631\\u0627\\u06cc\\u06af\\u0627\\u0646\\n\\u2705 \\u062d\\u062a\\u0645\\u0627 \\u0639\\u0636\\u0648 \\u0631\\u0628\\u0627\\u062a \\u0628\\u0634\\u06cc\\u062f \\u0648 \\u0627\\u0632 \\u062a\\u062e\\u0641\\u06cc\\u0641 \\u0647\\u0627\\u06cc \\u0648\\u06cc\\u0698\\u0647 \\u0644\\u0630\\u062a \\u0628\\u0628\\u0631\\u06cc\\u0646\\n\\n\\ud83d\\udd17 LINK\",\"file_id\":\"AgACAgQAAxkBAAJRKWRtX3wObRa3qAR_gkJgyKDdkHZsAAKAuzEbRaBpU3QQ2kLLt7MVAQADAgADeAADLwQ\"}'),
-(4, 'PAYMENT_KEYS', '{\"nowpayment\":\"cccc-cccc-cccc-cccc\",\"zarinpal\":\"aaaa-aaaa-aaaa-aaaa\",\"nextpay\":\"bbbb-bbbb-bbbb-bbbb\",\"bankAccount\":\"6104-6104-6104-6104\",\"holderName\":\"\\u0648\\u06cc\\u0632\\u0648\\u06cc\\u0632\"}'),
-(5, 'BOT_STATES', '{\"requirePhone\": \"off\", \"requireIranPhone\": \"off\", \"sellState\": \"on\", \"botState\": \"on\", \"searchState\": \"on\", \"rewaredTime\": \"3\", \"cartToCartState\": \"on\", \"nextpay\": \"on\", \"zarinpal\": \"on\", \"nowPaymentWallet\": \"on\", \"nowPaymentOther\": \"on\", \"walletState\": \"on\", \"rewardChannel\": \"@deltadev\", \"lockChannel\": \"@deltach\", \"changeProtocolState\": null, \"renewAccountState\": null, \"switchLocationState\": \"on\", \"increaseTimeState\": \"on\", \"increaseVolumeState\": \"on\", \"gbPrice\": \"100\", \"dayPrice\": \"100\", \"subLinkState\": \"on\", \"volumeWebState\": \"on\", \"plandelkhahState\": \"off\", \"weSwapState\": \"on\", \"cartToCartAutoAcceptState\": \"off\", \"cartToCartAutoAcceptType\": \"0\", \"cartToCartAutoAcceptTime\": \"10\"}');
+(4, 'PAYMENT_KEYS', '{\"nowpayment\":\"cccc-cccc-cccc-cccc\",\"zarinpal\":\"aaaa-aaaa-aaaa-aaaa\",\"nextpay\":\"bbbb-bbbb-bbbb-bbbb\",\"bankAccount\":\"6104-6104-6104-6104\",\"usdtBep20Wallet\":\"\",\"holderName\":\"\\u0648\\u06cc\\u0632\\u0648\\u06cc\\u0632\"}'),
+(5, 'BOT_STATES', '{\"requirePhone\": \"off\", \"requireIranPhone\": \"off\", \"sellState\": \"on\", \"botState\": \"on\", \"searchState\": \"on\", \"rewaredTime\": \"3\", \"cartToCartState\": \"on\", \"nextpay\": \"on\", \"zarinpal\": \"on\", \"nowPaymentWallet\": \"on\", \"nowPaymentOther\": \"on\", \"walletState\": \"on\", \"rewardChannel\": \"@deltadev\", \"lockChannel\": \"@deltach\", \"changeProtocolState\": null, \"renewAccountState\": null, \"switchLocationState\": \"on\", \"increaseTimeState\": \"on\", \"increaseVolumeState\": \"on\", \"gbPrice\": \"100\", \"dayPrice\": \"100\", \"subLinkState\": \"on\", \"volumeWebState\": \"on\", \"plandelkhahState\": \"off\", \"weSwapState\": \"on\", \"cartToCartAutoAcceptState\": \"off\", \"cartToCartAutoAcceptType\": \"0\", \"cartToCartAutoAcceptTime\": \"10\", \"cartToCartAutoAcceptSince\": \"0\", \"usdtBep20State\": \"off\", \"pendingOrdersState\": \"off\"}');
 ");
 
 
