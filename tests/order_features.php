@@ -28,6 +28,9 @@ expectFeature(!deltaForceAutoApprove(6166906522), 'Forced approval should be rev
 $code = deltaTrackingCode('known-invoice');
 expectFeature((bool)preg_match('/^[1-9][0-9]{7}$/', $code), 'Tracking code must be eight digits');
 expectFeature($code === deltaTrackingCode('known-invoice'), 'Tracking code must be stable');
+expectFeature(!deltaIsUsdtInvoice('known-invoice'), 'Ordinary receipts are eligible for auto approval');
+upsertSettingValue('USDT_INVOICE_known-invoice','{}');
+expectFeature(deltaIsUsdtInvoice('known-invoice'), 'Crypto receipts require manual review');
 
 $paymentKeys = ['usdtwallet' => '0xA5236df156BE4195735700caDa970Ac0Fef3a59B'];
 $quote = ['rate' => 243642, 'price' => 45000, 'amount' => '0.1847', 'wallet' => $paymentKeys['usdtwallet']];

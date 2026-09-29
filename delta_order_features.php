@@ -88,6 +88,9 @@ if(!function_exists('deltaUsdtRateToman')){
     }
 }
 if(!function_exists('deltaUsdtPayText')){
+    function deltaIsUsdtInvoice($hash){
+        return getSettingValue('USDT_INVOICE_'.(string)$hash,null)!==null;
+    }
     function deltaUsdtAmount($price,$rate){
         // Round upwards: the net amount received must cover the invoice.
         return number_format(ceil(((int)$price/(int)$rate)*10000)/10000,4,'.','');
@@ -132,7 +135,7 @@ if(!function_exists('deltaReceiptCallbacks')){
     function deltaReceiptCallbacks($pay){
         $hash=(string)$pay['hash_id']; $uid=(int)$pay['user_id']; $type=(string)$pay['type'];
         if($type==='INCREASE_WALLET') return ['approvePayment'.$hash,'decPayment'.$hash];
-        if($type==='RENEW_SCONFIG') return ['approveRenewAcc'.$hash,'decRenewAcc'.$hash];
+        if($type==='RENEW_SCONFIG') return ['accept'.$hash,'declineOffer'.$hash.'_'.$uid];
         if(strpos($type,'INCREASE_DAY_')===0) return ['approveIncreaseDay'.$hash,'decIncreaseDay'.$hash];
         if(strpos($type,'INCREASE_VOLUME_')===0) return ['approveIncreaseVolume'.$hash,'decIncreaseVolume'.$hash];
         if(strpos($type,'PG_RENEW_')===0) return ['approvePgRenew'.$hash,'decPgRenew'.$hash];
@@ -213,6 +216,9 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $tx=trim((string)($update->message->caption??''));
             if(!preg_match('/\b0x[a-fA-F0-9]{64}\b/',$tx,$txMatch)){ sendMessage('❌ هش تراکنش BEP20 را در کپشن عکس بفرستید (0x به‌همراه ۶۴ رقم یا حرف).'); exit; }
             $tx=strtolower($txMatch[0]);
+            $txKey='USDT_TX_'.sha1($tx);
+            $previous=getSettingValue($txKey,'');
+            if($previous!=='' && $previous!==$hash){ sendMessage('❌ این هش تراکنش قبلاً برای فاکتور دیگری ثبت شده است.'); exit; }
             $meta=json_decode((string)getSettingValue('USDT_INVOICE_'.$hash,'{}'),true);
             if(!is_array($meta) || (int)($meta['expires_at']??0)<time()){ sendMessage('⏰ اعتبار ۳۰ دقیقه‌ای فاکتور ارزی تمام شده است. دوباره فاکتور ارزی بسازید.'); setUser(); exit; }
             $stmt=$connection->prepare("SELECT * FROM pays WHERE hash_id=? AND user_id=? LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
@@ -228,6 +234,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             if(empty($res->ok)){ sendMessage('ارسال رسید به مدیریت ناموفق بود؛ لطفاً دوباره تلاش کنید.'); exit; }
             $mid=(int)($res->result->message_id??0);
             $stmt=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE hash_id=? AND user_id=? AND state='pending'"); $stmt->bind_param('iisi',$mid,$admin,$hash,$from_id); $stmt->execute(); $stmt->close();
+            upsertSettingValue($txKey,$hash);
             deltaMarkReceiptSubmitted($hash);
             sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\n\n".deltaTrackingLine($hash),$removeKeyboard,'HTML'); setUser(); exit;
         }

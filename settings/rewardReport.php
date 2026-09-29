@@ -110,6 +110,9 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         $payType = $payInfo['type'];
         $deviceId = $payInfo['device_id'];
         if(getSettingValue('AUTOAPPROVE_FAILED_'.(int)$rowId,'0')==='1') continue;
+        // A photo and transaction hash do not prove an on-chain USDT deposit.
+        // Crypto receipts must remain in the administrator's review queue.
+        if(function_exists('deltaIsUsdtInvoice') && deltaIsUsdtInvoice($payInfo['hash_id'])) continue;
         // The invoice date is not a receipt date. Legacy receipts without a
         // submission marker always remain available for manual review.
         if(!function_exists('deltaReceiptHasSubmissionMarker') || !deltaReceiptHasSubmissionMarker($payInfo['hash_id'])) continue;
