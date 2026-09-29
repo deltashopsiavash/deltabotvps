@@ -4906,6 +4906,7 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $stmt->execute();
         $stmt->close();
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -7893,6 +7894,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $stmt->execute();
         $stmt->close();
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
     }
@@ -8586,6 +8588,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
+        if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
         if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($match[1]);
     }else{
         sendMessage($mainValues['please_send_only_image']);
