@@ -1892,6 +1892,8 @@ function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMen
     }
     if(!empty($copyRow)) $rows[] = $copyRow;
     if(trim((string)$hashId) !== ''){
+        $track=deltaTrackingCode($hashId);
+        $rows[] = [['text' => '🔖 کد پیگیری: '.$track, 'copy_text' => ['text' => $track]]];
         $rows[] = [['text' => '📷 ارسال عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $hashId]];
         $rows[] = [['text' => '📩 ارسال پیامک واریزی', 'callback_data' => 'payTextReceipt' . $hashId]];
     }
@@ -5143,8 +5145,9 @@ function getDiscountCodeKeys(){
             $hashId = $row['hash_id'];
             $rowId = $row['id'];
             $canUse = $row['can_use'];
+            $owner=function_exists('deltaDiscountOwner') ? deltaDiscountOwner($hashId) : 0;
             
-            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>$hashId,'callback_data'=>'copyHash' . $hashId]];
+            $keys[] = [['text'=>'❌','callback_data'=>"delDiscount" . $rowId],['text'=>$canUse==-1?'نامحدود':$canUse, 'callback_data'=>"deltach"],['text'=>$date,'callback_data'=>"deltach"],['text'=>$count,'callback_data'=>"deltach"],['text'=>$amount,'callback_data'=>"deltach"],['text'=>($owner>0?'🔐 ':'').$hashId,'callback_data'=>'copyDiscountId' . $rowId]];
         }
     }else{
         $keys[] = [['text'=>"کد تخفیفی یافت نشد",'callback_data'=>"deltach"]];

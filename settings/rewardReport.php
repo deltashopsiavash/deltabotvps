@@ -62,7 +62,7 @@ if($rewaredTime>0 && $rewaredChannel != null){
 
         $todayStart = strtotime('today');
         $topText = "";
-        $stmt = $connection->prepare("SELECT p.user_id, SUM(p.price) AS total, COUNT(*) AS cnt, u.name, u.username FROM pays p LEFT JOIN users u ON u.userid=p.user_id WHERE p.request_date>=? AND p.state IN ('paid','approved','paid_with_wallet') GROUP BY p.user_id ORDER BY total DESC LIMIT 5");
+        $stmt = $connection->prepare("SELECT p.user_id, SUM(p.price) AS total, COUNT(*) AS cnt, u.name, u.username FROM pays p LEFT JOIN users u ON u.userid=p.user_id WHERE p.request_date>=? AND p.type<>'INCREASE_WALLET' AND p.state IN ('paid','approved','paid_with_wallet') GROUP BY p.user_id ORDER BY total DESC LIMIT 5");
         if($stmt){
             $stmt->bind_param("i",$todayStart); $stmt->execute(); $top=$stmt->get_result(); $stmt->close();
             $rank=1;
@@ -97,7 +97,7 @@ if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
     $autoFrom = function_exists('deltaAutoApproveFrom') ? deltaAutoApproveFrom() : 0;
-    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent'");
+    $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' ORDER BY `id` ASC");
     $stmt->execute();
     $info = $stmt->get_result();
     $stmt->close();
@@ -109,6 +109,16 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         $user_id = $payInfo['user_id'];
         $payType = $payInfo['type'];
         $deviceId = $payInfo['device_id'];
+        if(getSettingValue('AUTOAPPROVE_FAILED_'.(int)$rowId,'0')==='1') continue;
+        // A photo and transaction hash do not prove an on-chain USDT deposit.
+        // Crypto receipts must remain in the administrator's review queue.
+        if(function_exists('deltaIsUsdtInvoice') && deltaIsUsdtInvoice($payInfo['hash_id'])) continue;
+        // The invoice date is not a receipt date. Legacy receipts without a
+        // submission marker always remain available for manual review.
+        if(!function_exists('deltaReceiptHasSubmissionMarker') || !deltaReceiptHasSubmissionMarker($payInfo['hash_id'])) continue;
+        if(!in_array($payType,['INCREASE_WALLET','BUY_SUB','RENEW_ACCOUNT','RENEW_SCONFIG'],true)
+            && !preg_match('/^INCREASE_(?:DAY|VOLUME)_\d+_\d+$/',$payType)
+            && !preg_match('/^PG_RENEW_(?:FULL|VOLUME|DAY)_\d+_\d+$/',$payType)) continue;
         
         $stmt = $connection->prepare("SELECT * FROM `users` WHERE `userid` = ?");
         $stmt->bind_param("i", $user_id);
@@ -150,24 +160,49 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         
         $agentBought = $payInfo['agent_bought'];
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =?");
+        // Claim once even if two cron runs overlap or an admin acts at once.
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =? AND `state`='have_sent'");
         $stmt->bind_param("i", $rowId);
         $stmt->execute();
+        $claimed=$stmt->affected_rows===1;
         $stmt->close();
+        if(!$claimed) continue;
 
         if(!empty($rewaredChannel)){
             $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
             $mode = $forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی';
             $nm = trim((string)($userinfo['name'] ?? ''));
             $un = trim((string)($userinfo['username'] ?? ''));
+            $detail='';
+            if($payType==='BUY_SUB' || $payType==='RENEW_SCONFIG'){
+                $pid=(int)$payInfo['plan_id'];
+                $planStmt=$connection->prepare('SELECT title,volume,days FROM server_plans WHERE id=? LIMIT 1');
+                $planStmt->bind_param('i',$pid); $planStmt->execute(); $plan=$planStmt->get_result()->fetch_assoc(); $planStmt->close();
+                if($plan){
+                    $detail.='📦 پلن: '.htmlspecialchars((string)$plan['title'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+                    $detail.='🔋 حجم: '.($payType==='BUY_SUB' && (int)$payInfo['volume']>0 ? $payInfo['volume'] : $plan['volume'])." گیگ\n";
+                    $detail.='⏰ مدت: '.($payType==='BUY_SUB' && (int)$payInfo['day']>0 ? $payInfo['day'] : $plan['days'])." روز\n";
+                }
+                if($payType==='RENEW_SCONFIG'){
+                    $conf=json_decode((string)$payInfo['description'],true);
+                    $detail.='🔮 سرویس: '.htmlspecialchars((string)($conf['remark']??'-'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+                }
+            }elseif($payType==='RENEW_ACCOUNT' || preg_match('/^(?:INCREASE_(?:DAY|VOLUME)|PG_RENEW_(?:FULL|VOLUME|DAY))_(\d+)_/',$payType,$orderMatch)){
+                $oid=$payType==='RENEW_ACCOUNT'?(int)$payInfo['plan_id']:(int)$orderMatch[1];
+                $orderStmt=$connection->prepare('SELECT remark FROM orders_list WHERE id=? LIMIT 1');
+                $orderStmt->bind_param('i',$oid); $orderStmt->execute(); $order=$orderStmt->get_result()->fetch_assoc(); $orderStmt->close();
+                if($order) $detail.='🔮 سرویس: '.htmlspecialchars((string)$order['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+            }
             $autoReport = "🤖 گزارش تأیید خودکار رسید\n\n".
                 "👤 آیدی عددی: <code>{$user_id}</code>\n".
                 "👨‍💼 نام: ".htmlspecialchars($nm,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
                 "⚡️ نام کاربری: ".htmlspecialchars($un,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
                 "🧾 نوع تراکنش: <code>".htmlspecialchars((string)$payType,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n".
+                $detail.
                 "💰 مبلغ: ".number_format((int)$price)." تومان\n".
                 "🔖 کد پیگیری: <code>{$track}</code>\n".
                 "⚙️ روش تأیید: {$mode}\n".
+                "📌 وضعیت: رسید پذیرفته شد و سفارش در حال پردازش است\n".
                 "🕒 زمان: ".date('Y-m-d H:i:s');
             sendMessage($autoReport,null,'HTML',$rewaredChannel);
         }
@@ -178,7 +213,7 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             $stmt->execute();
             $stmt->close();
             
-            sendMessage("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد", null, null, $user_id);
+            sendMessage(deltaAppendTracking("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد",$payInfo['hash_id']), null, 'HTML', $user_id);
         }
         elseif($payType == "BUY_SUB"){
             $fid = $payInfo['plan_id']; 
@@ -380,6 +415,7 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         💝 config : <code>$link</code>":"");
         
 $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
+$acc_text = deltaAppendTracking($acc_text,$payInfo['hash_id']);
                       
                     $file = RandomString() .".png";
                     $ecc = 'L';
@@ -502,7 +538,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             $stmt->execute();
             $stmt->close();
         
-            sendMessage("✅سرویس $remark با موفقیت تمدید شد",getMainKeys(), null, $user_id);
+            sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$payInfo['hash_id']),getMainKeys(), 'HTML', $user_id);
         }
         elseif(preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo)){
             $orderId = $increaseInfo[1];
@@ -559,7 +595,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                 $stmt->execute();
                 $stmt->close();
                 
-                sendMessage("✅$volume روز به مدت زمان سرویس شما اضافه شد",getMainKeys(), null, $user_id);
+                sendMessage(deltaAppendTracking("✅$volume روز به مدت زمان سرویس شما اضافه شد",$payInfo['hash_id']),getMainKeys(), 'HTML', $user_id);
             }else {
                 sendMessage("پرداخت شما با موفقیت انجام شد ولی به دلیل مشکل فنی امکان افزایش حجم نیست. لطفا به مدیریت اطلاع بدید یا 5دقیقه دیگر دوباره تست کنید مبلغ " . number_format($price) . " تومان به کیف پول شما اضافه شد", $user_id);
                 $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
@@ -615,7 +651,7 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                 $stmt->bind_param("s", $uuid);
                 $stmt->execute();
                 $stmt->close();
-                sendMessage( "✅$volume گیگ به حجم سرویس شما اضافه شد",getMainKeys(), null, $user_id);
+                sendMessage(deltaAppendTracking("✅$volume گیگ به حجم سرویس شما اضافه شد",$payInfo['hash_id']),getMainKeys(), 'HTML', $user_id);
             }else {
                 sendMessage("پرداخت شما با موفقیت انجام شد ولی مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید مبلغ " . number_format($price) . " تومان به کیف پول شما اضافه شد",null,null,$user_id);
                 
@@ -626,6 +662,29 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
 
                 sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id اضافه شد، میخواست حجم کانفیگشو افزایش بده",null,null,$admin);                
             }
+        }
+        elseif(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_(\d+)_(\d+)$/',$payType,$pgMatch)){
+            $oid=(int)$pgMatch[2]; $pid=(int)$pgMatch[3]; $days=0; $volume=0; $fullReset=$pgMatch[1]==='FULL';
+            if($fullReset){
+                $stmt=$connection->prepare("SELECT days,volume FROM server_plans WHERE id=? LIMIT 1");
+                $stmt->bind_param('i',$pid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
+                $days=(int)($plan['days']??0); $volume=(float)($plan['volume']??0);
+            }else{
+                $stmt=$connection->prepare("SELECT amount FROM pg_renew_plans WHERE id=? LIMIT 1");
+                $stmt->bind_param('i',$pid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
+                if($pgMatch[1]==='DAY') $days=(int)($plan['amount']??0);
+                else $volume=(float)($plan['amount']??0);
+            }
+            $response=($days>0 || $volume>0) ? pgRenewApply($oid,$days,$volume,$fullReset,$fullReset?$pid:0) : null;
+            if(!is_object($response) || empty($response->success)){
+                $stmt=$connection->prepare("UPDATE pays SET state='have_sent' WHERE id=? AND state='paid'");
+                $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
+                upsertSettingValue('AUTOAPPROVE_FAILED_'.$rowId,'1');
+                sendToAdmins('⚠️ تمدید خودکار پاسارگارد برای کد '.deltaTrackingCode($payInfo['hash_id']).' ناموفق بود؛ رسید برای بررسی دستی باقی ماند.',null,'HTML');
+                continue;
+            }
+            sendToAdmins(pgRenewBuildAdminReport($payInfo,$oid,$days,$volume,$user_id),null,'HTML');
+            sendMessage(deltaAppendTracking("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز",$payInfo['hash_id']),null,'HTML',$user_id);
         }
         elseif($payType == "RENEW_SCONFIG"){
             $user_id = $user_id;
@@ -647,7 +706,6 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
             $uuid = $configInfo['uuid'];
             $isMarzban = $configInfo['marzban'];
             
-            $remark = $payInfo['description'];
             $inbound_id = $payInfo['volume']; 
             
             if($isMarzban){
@@ -659,16 +717,19 @@ $acc_text .= xuiBuildOrderLinksText($botState, $botUrl, $uniqid, $subLink);
                     $response = editInboundTraffic($server_id, $uuid, $volume, $days, "renew");
             }
             
-        	if(is_null($response)){
-        		sendMessage('🔻مشکل فنی در اتصال به سرور. لطفا به مدیریت اطلاع بدید',null,null,$user_Id);
-        		exit;
-        	}
+	        if(!is_object($response) || empty($response->success)){
+                $stmt=$connection->prepare("UPDATE pays SET state='have_sent' WHERE id=? AND state='paid'");
+                $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
+                upsertSettingValue('AUTOAPPROVE_FAILED_'.$rowId,'1');
+                sendToAdmins('⚠️ تمدید خودکار برای کد '.deltaTrackingCode($payInfo['hash_id']).' ناموفق بود؛ رسید برای بررسی دستی باقی ماند.',null,'HTML');
+                continue;
+	        }
         	$stmt = $connection->prepare("INSERT INTO `increase_order` VALUES (NULL, ?, ?, ?, ?, ?, ?);");
         	$stmt->bind_param("iiisii", $user_id, $server_id, $inbound_id, $remark, $price, $time);
         	$stmt->execute();
         	$stmt->close();
 
-            sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$user_id);
+            sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$payInfo['hash_id']),null,'HTML',$user_id);
         }
         
 

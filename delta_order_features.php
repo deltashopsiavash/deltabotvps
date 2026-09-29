@@ -59,6 +59,9 @@ if(!function_exists('deltaForceAutoApprove')){
     function deltaReceiptSubmittedAt($hash,$fallback=0){
         return (int)getSettingValue(deltaReceiptMarkerKey($hash),(string)(int)$fallback);
     }
+    function deltaReceiptHasSubmissionMarker($hash){
+        return (int)getSettingValue(deltaReceiptMarkerKey($hash),'0')>0;
+    }
 }
 if(!function_exists('deltaUsdtRateToman')){
     function deltaUsdtRateToman(){
@@ -85,12 +88,19 @@ if(!function_exists('deltaUsdtRateToman')){
     }
 }
 if(!function_exists('deltaUsdtPayText')){
-    function deltaUsdtPayText($pay){
+    function deltaIsUsdtInvoice($hash){
+        return getSettingValue('USDT_INVOICE_'.(string)$hash,null)!==null;
+    }
+    function deltaUsdtAmount($price,$rate){
+        // Round upwards: the net amount received must cover the invoice.
+        return number_format(ceil(((int)$price/(int)$rate)*10000)/10000,4,'.','');
+    }
+    function deltaUsdtPayText($pay,$quote){
         global $paymentKeys;
-        $price=(int)($pay['price']??0); $rate=deltaUsdtRateToman();
-        if($rate<=0) return null;
-        $amountText=number_format($price/$rate,4,'.','');
-        $wallet=trim((string)($paymentKeys['usdtwallet']??''));
+        $price=(int)($pay['price']??0); $rate=(int)($quote['rate']??0);
+        if($rate<=0 || $price<=0) return null;
+        $amountText=(string)$quote['amount'];
+        $wallet=trim((string)($quote['wallet']??$paymentKeys['usdtwallet']??''));
         $track=deltaTrackingCode($pay['hash_id']??'');
         return "✅ پرداخت ارزی شما آماده‌ست♡\n\n".
             "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
@@ -125,7 +135,7 @@ if(!function_exists('deltaReceiptCallbacks')){
     function deltaReceiptCallbacks($pay){
         $hash=(string)$pay['hash_id']; $uid=(int)$pay['user_id']; $type=(string)$pay['type'];
         if($type==='INCREASE_WALLET') return ['approvePayment'.$hash,'decPayment'.$hash];
-        if($type==='RENEW_SCONFIG') return ['approveRenewAcc'.$hash,'decRenewAcc'.$hash];
+        if($type==='RENEW_SCONFIG') return ['accept'.$hash,'declineOffer'.$hash.'_'.$uid];
         if(strpos($type,'INCREASE_DAY_')===0) return ['approveIncreaseDay'.$hash,'decIncreaseDay'.$hash];
         if(strpos($type,'INCREASE_VOLUME_')===0) return ['approveIncreaseVolume'.$hash,'decIncreaseVolume'.$hash];
         if(strpos($type,'PG_RENEW_')===0) return ['approvePgRenew'.$hash,'decPgRenew'.$hash];
@@ -176,7 +186,12 @@ if(!function_exists('deltaFeatureHandleRequest')){
         if($isAdmin && ($userInfo['step']??'')==='deltaSetUsdtWallet' && $text!=($buttonValues['cancel']??'')){
             $stmt=$connection->prepare("SELECT value FROM setting WHERE type='PAYMENT_KEYS' LIMIT 1"); $stmt->execute(); $r=$stmt->get_result()->fetch_assoc(); $stmt->close();
             $pk=json_decode((string)($r['value']??'{}'),true); if(!is_array($pk)) $pk=[];
-            $pk['usdtwallet']=trim((string)$text);
+            $wallet=trim((string)$text);
+            if(!preg_match('/^0x[a-fA-F0-9]{40}$/',$wallet)){
+                sendMessage('❌ آدرس BSC باید با 0x شروع شود و دقیقاً ۴۰ رقم یا حرف هگز پس از آن داشته باشد.');
+                exit;
+            }
+            $pk['usdtwallet']=$wallet;
             upsertSettingValue('PAYMENT_KEYS',json_encode($pk,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
             setUser(); sendMessage('✅ آدرس کیف پول USDT ذخیره شد.',$removeKeyboard); sendMessage('تنظیمات درگاه و کانال',getGateWaysKeys()); exit;
         }
@@ -184,11 +199,13 @@ if(!function_exists('deltaFeatureHandleRequest')){
         if(preg_match('/^payWithUsdt(.+)$/',(string)$data,$m)){
             $hash=$m[1];
             $stmt=$connection->prepare("SELECT * FROM pays WHERE hash_id=? AND user_id=? LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
-            if(!$pay){ alert('فاکتور پیدا نشد.',true); exit; }
+            if(!$pay || (string)$pay['state']!=='pending'){ alert('این فاکتور دیگر برای پرداخت معتبر نیست.',true); exit; }
             if(($botState['usdtState']??'off')!=='on' || empty($paymentKeys['usdtwallet'])){ alert('پرداخت ارزی در حال حاضر فعال نیست.',true); exit; }
-            $txt=deltaUsdtPayText($pay); if($txt===null){ alert('دریافت نرخ لحظه‌ای تتر ناموفق بود؛ دوباره تلاش کنید.',true); exit; }
             $rate=deltaUsdtRateToman();
-            upsertSettingValue('USDT_INVOICE_'.$hash,json_encode(['rate'=>$rate,'created_at'=>time(),'expires_at'=>time()+1800],JSON_UNESCAPED_UNICODE));
+            if($rate<=0 || (int)$pay['price']<=0){ alert('دریافت نرخ لحظه‌ای تتر ناموفق بود؛ دوباره تلاش کنید.',true); exit; }
+            $quote=['rate'=>$rate,'amount'=>deltaUsdtAmount($pay['price'],$rate),'wallet'=>trim((string)$paymentKeys['usdtwallet']),'price'=>(int)$pay['price'],'created_at'=>time(),'expires_at'=>time()+1800];
+            $txt=deltaUsdtPayText($pay,$quote);
+            upsertSettingValue('USDT_INVOICE_'.$hash,json_encode($quote,JSON_UNESCAPED_UNICODE));
             setUser('deltaUsdtReceipt_'.$hash);
             smartSendOrEdit($message_id,$txt,json_encode(['inline_keyboard'=>[[['text'=>'↩️ بازگشت','callback_data'=>'mainMenu']]]],JSON_UNESCAPED_UNICODE),'HTML');
             exit;
@@ -197,18 +214,27 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $hash=$m[1];
             if(!isset($update->message->photo)){ sendMessage('📸 فقط عکس رسید را ارسال کنید و هش تراکنش را در کپشن همان عکس بنویسید.'); exit; }
             $tx=trim((string)($update->message->caption??''));
-            if($tx===''){ sendMessage('❌ هش تراکنش داخل کپشن عکس نیست. عکس را دوباره با هش تراکنش در کپشن ارسال کنید.'); exit; }
+            if(!preg_match('/\b0x[a-fA-F0-9]{64}\b/',$tx,$txMatch)){ sendMessage('❌ هش تراکنش BEP20 را در کپشن عکس بفرستید (0x به‌همراه ۶۴ رقم یا حرف).'); exit; }
+            $tx=strtolower($txMatch[0]);
+            $txKey='USDT_TX_'.sha1($tx);
+            $previous=getSettingValue($txKey,'');
+            if($previous!=='' && $previous!==$hash){ sendMessage('❌ این هش تراکنش قبلاً برای فاکتور دیگری ثبت شده است.'); exit; }
             $meta=json_decode((string)getSettingValue('USDT_INVOICE_'.$hash,'{}'),true);
             if(!is_array($meta) || (int)($meta['expires_at']??0)<time()){ sendMessage('⏰ اعتبار ۳۰ دقیقه‌ای فاکتور ارزی تمام شده است. دوباره فاکتور ارزی بسازید.'); setUser(); exit; }
             $stmt=$connection->prepare("SELECT * FROM pays WHERE hash_id=? AND user_id=? LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
-            if(!$pay){ setUser(); exit; }
-            $rate=(int)($meta['rate']??0); $usdt=$rate>0?((int)$pay['price']/$rate):0;
+            if(!$pay || (string)$pay['state']!=='pending'){ sendMessage('این سفارش قبلاً ثبت یا بسته شده است.'); setUser(); exit; }
+            $rate=(int)($meta['rate']??0);
+            if($rate<=0 || (int)($meta['price']??-1)!==(int)$pay['price']){ sendMessage('اطلاعات فاکتور ارزی معتبر نیست؛ دوباره فاکتور بسازید.'); setUser(); exit; }
+            $usdt=(string)$meta['amount'];
             $name=htmlspecialchars((string)($userInfo['name']??''),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
             $uname=htmlspecialchars((string)($userInfo['username']??''),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
-            $msg="💵 رسید پرداخت ارزی (USDT BEP20)\n\n👤 آیدی: <code>{$from_id}</code>\n👨‍💼 نام: {$name}\n⚡️ نام کاربری: {$uname}\n💰 مبلغ سرویس: ".number_format((int)$pay['price'])." تومان\n📊 نرخ تتر: ".number_format($rate)." تومان\n💲 مبلغ فاکتور: ".number_format($usdt,4,'.','')." USDT\n🧾 هش تراکنش:\n<code>".htmlspecialchars($tx,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n".deltaTrackingLine($hash);
+            $msg="💵 رسید پرداخت ارزی (USDT BEP20)\n\n👤 آیدی: <code>{$from_id}</code>\n👨‍💼 نام: {$name}\n⚡️ نام کاربری: {$uname}\n💰 مبلغ سرویس: ".number_format((int)$pay['price'])." تومان\n📊 نرخ تتر: ".number_format($rate)." تومان\n💲 مبلغ فاکتور: {$usdt} USDT\n🧾 نوع سفارش: <code>".htmlspecialchars((string)$pay['type'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n📋 آدرس مقصد: <code>".htmlspecialchars((string)$meta['wallet'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n🧾 هش تراکنش:\n<code>{$tx}</code>\n".deltaTrackingLine($hash);
             [$ok,$no]=deltaReceiptCallbacks($pay); $kb=getReceiptAdminKeyboard($ok,$no,$from_id);
-            $res=sendPhotoToAdmins($fileid,$msg,$kb,'HTML'); $mid=(int)($res->result->message_id??0);
-            $stmt=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE hash_id=?"); $stmt->bind_param('iis',$mid,$admin,$hash); $stmt->execute(); $stmt->close();
+            $res=sendPhotoToAdmins($fileid,$msg,$kb,'HTML');
+            if(empty($res->ok)){ sendMessage('ارسال رسید به مدیریت ناموفق بود؛ لطفاً دوباره تلاش کنید.'); exit; }
+            $mid=(int)($res->result->message_id??0);
+            $stmt=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE hash_id=? AND user_id=? AND state='pending'"); $stmt->bind_param('iisi',$mid,$admin,$hash,$from_id); $stmt->execute(); $stmt->close();
+            upsertSettingValue($txKey,$hash);
             deltaMarkReceiptSubmitted($hash);
             sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\n\n".deltaTrackingLine($hash),$removeKeyboard,'HTML'); setUser(); exit;
         }
@@ -223,7 +249,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $stmt=$connection->prepare("UPDATE pays SET state='declined' WHERE hash_id=? AND state IN ('have_sent','need_admin','pending')");
             $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
             @editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شد ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),$receiptMessageId);
-            sendMessage(deltaAppendTracking((string)$text,$hash),null,'HTML',$uid);
+            sendMessage(deltaAppendTracking(htmlspecialchars((string)$text,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),$hash),null,'HTML',$uid);
             sendMessage('رسید رد شد و از سفارش‌های در انتظار حذف شد.',$removeKeyboard);
             setUser();
             exit;
@@ -244,7 +270,8 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $hash=$m[1];
             $stmt=$connection->prepare("SELECT message_id,chat_id FROM pays WHERE hash_id=? AND user_id=? AND state IN ('have_sent','need_admin') LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $p=$stmt->get_result()->fetch_assoc(); $stmt->close();
             if(!$p){ alert('سفارش قابل لغو نیست.',true); exit; }
-            $stmt=$connection->prepare("UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND state IN ('have_sent','need_admin')"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $stmt->close();
+            $stmt=$connection->prepare("UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND state IN ('have_sent','need_admin')"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $changed=$stmt->affected_rows; $stmt->close();
+            if($changed!==1){ alert('این سفارش دیگر قابل لغو نیست.',true); exit; }
             if(!empty($p['message_id'])) @editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),(int)$p['message_id'],(int)($p['chat_id']?:$admin));
             sendToAdmins("❌ سفارش <code>".deltaTrackingCode($hash)."</code> توسط کاربر <code>{$from_id}</code> لغو شد.",null,'HTML');
             smartSendOrEdit($message_id,'✅ سفارش لغو شد.',deltaPendingOrdersKeyboard($from_id)); exit;
@@ -252,10 +279,11 @@ if(!function_exists('deltaFeatureHandleRequest')){
         if(preg_match('/^deltaPendingResend_(.+)$/',(string)$data,$m)){
             $hash=$m[1]; $key='PENDING_RESEND_'.$from_id.'_'.sha1($hash); $last=(int)getSettingValue($key,'0');
             if(time()-$last<3600){ alert('ارسال مجدد هر یک ساعت یک بار امکان‌پذیر است.',true); exit; }
-            $stmt=$connection->prepare("SELECT id FROM pays WHERE hash_id=? AND user_id=? AND state IN ('have_sent','need_admin') LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $ok=$stmt->get_result()->num_rows>0; $stmt->close();
-            if(!$ok){ alert('این سفارش دیگر در انتظار نیست.',true); exit; }
+            $stmt=$connection->prepare("SELECT * FROM pays WHERE hash_id=? AND user_id=? AND state IN ('have_sent','need_admin') LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            if(!$pay){ alert('این سفارش دیگر در انتظار نیست.',true); exit; }
             upsertSettingValue($key,(string)time());
-            sendToAdmins("🔔 سفارش <code>".deltaTrackingCode($hash)."</code> در حال انتظار است؛ جهت تأیید آن اقدام نمایید.\n👤 کاربر: <code>{$from_id}</code>",null,'HTML');
+            [$approve,$decline]=deltaReceiptCallbacks($pay);
+            sendToAdmins("🔔 سفارش <code>".deltaTrackingCode($hash)."</code> در حال انتظار است؛ جهت تأیید آن اقدام نمایید.\n👤 کاربر: <code>{$from_id}</code>",getReceiptAdminKeyboard($approve,$decline,$from_id),'HTML');
             alert('یادآوری برای مدیریت ارسال شد.'); exit;
         }
     }

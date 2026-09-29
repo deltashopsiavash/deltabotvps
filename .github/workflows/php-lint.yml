@@ -24,3 +24,5 @@ jobs:
           php -l config.php
           php -l delta_order_features.php
           php -l settings/rewardReport.php
+          php -l tests/order_features.php
+          php tests/order_features.php
