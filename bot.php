@@ -3,6 +3,7 @@ include_once 'config.php';
 
 check();
 
+if(function_exists('deltaFeatureHandleRequest')) deltaFeatureHandleRequest();
 
 function pgUserRenewSuggestionEnabled($userId){
     global $connection;
@@ -3525,6 +3526,7 @@ if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($f
         if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
         else $newValue = $botState[$match[1]]=="on"?"off":"on";
         setSettings($match[1], $newValue);
+        if($match[1] === 'cartToCartAutoAcceptState' && $newValue === 'on' && function_exists('deltaResetAutoApproveFrom')) deltaResetAutoApproveFrom();
     }
     smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
 }
@@ -4845,6 +4847,7 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
 
@@ -6716,7 +6719,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         if($accountCount <= 1) unset($accountCount);
         $stmt->close();
             
-        if($list->num_rows>0){
+        if($list->num_rows>0 && (!function_exists('deltaDiscountAllowedForUser') || deltaDiscountAllowedForUser($text,$from_id))){
             $discountInfo = $list->fetch_assoc();
             $amount = $discountInfo['amount'];
             $type = $discountInfo['type'];
@@ -6875,6 +6878,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
         if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payCustomWithWallet$hash_id"]];
         if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
     }
 
     if(!preg_match('/^discountCustomPlanDay/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountCustom_" . $rowId]];
@@ -7016,7 +7020,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             exit();
         }
         
-        if($list->num_rows>0){
+        if($list->num_rows>0 && (!function_exists('deltaDiscountAllowedForUser') || deltaDiscountAllowedForUser($text,$from_id))){
             $discountInfo = $list->fetch_assoc();
             $amount = $discountInfo['amount'];
             $type = $discountInfo['type'];
@@ -7296,6 +7300,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
             if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
             if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
         }
         
         if(!$specialOffer && !preg_match('/^discountSelectPlan/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountSelectPlan_" . $match[1] . "_" . $match[2] . "_" . $rowId]];
@@ -11517,6 +11522,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     $basePrice = (int)($respd['price'] ?? $price);
@@ -13488,7 +13494,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $afterDiscount = $payInfo['price'];
         $stmt->close();
         
-        if($list->num_rows>0){
+        if($list->num_rows>0 && (!function_exists('deltaDiscountAllowedForUser') || deltaDiscountAllowedForUser($text,$from_id))){
             $discountInfo = $list->fetch_assoc();
             $amount = $discountInfo['amount'];
             $type = $discountInfo['type'];
@@ -13597,6 +13603,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "پرداخت با موجودی مبلغ $price",  'callback_data' => "payRenewWithWallet$hash_id"]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     if(!preg_match('/^discountRenew/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountRenew_" . $match[1] . "_" . $rowId]];
 
@@ -14489,6 +14496,7 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payIncraseDayWithWallet$hash_id"]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
     smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
@@ -14860,6 +14868,7 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "💰پرداخت با موجودی  " . $planprice,  'callback_data' => "payIncraseWithWallet$hash_id"]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
+    if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
     smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
@@ -16032,6 +16041,66 @@ if(preg_match('/^editServer(\D+)(\d+)/',$userInfo['step'],$match) && $text != $b
 if($data=="discount_codes" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     smartSendOrEdit($message_id,"مدیریت کد های تخفیف",getDiscountCodeKeys());
 }
+if($data=="addPrivateDiscountCode" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    delMessage();
+    sendMessage("🔐 متن کد تخفیف اختصاصی را ارسال کنید (مثلاً DELTA-SIAVASH):",$cancelKey);
+    setUser("privateDiscountCodeText");
+}
+if(($userInfo['step'] ?? '') == "privateDiscountCodeText" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $code=trim((string)$text);
+    if($code==='' || strlen($code)>80){ sendMessage("کد معتبر نیست. حداکثر ۸۰ کاراکتر بفرستید."); }
+    else{
+        $stmt=$connection->prepare("SELECT id FROM discounts WHERE hash_id=? LIMIT 1"); $stmt->bind_param("s",$code); $stmt->execute(); $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+        if($exists) sendMessage("این کد قبلاً وجود دارد؛ یک کد دیگر بفرستید.");
+        else{ setUser("privateDiscountUser|".base64_encode($code)); sendMessage("👤 آیدی عددی کاربری که فقط مجاز به استفاده از این کد است را ارسال کنید:"); }
+    }
+}
+if(preg_match('/^privateDiscountUser\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!ctype_digit(trim((string)$text)) || (int)$text<=0){ sendMessage("فقط آیدی عددی معتبر ارسال کنید."); }
+    else{
+        $d=['code'=>base64_decode($m[1]),'user_id'=>(int)$text];
+        setUser("privateDiscountAmount|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
+        sendMessage("🔘 مقدار تخفیف را وارد کنید. برای درصد علامت % را کنار عدد بگذارید؛ در غیر این صورت مبلغ به تومان است.");
+    }
+}
+if(preg_match('/^privateDiscountAmount\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $d=json_decode(base64_decode($m[1]),true); $raw=trim(str_replace('%','',(string)$text));
+    if(!is_numeric($raw)){ sendMessage("فقط عدد یا درصد معتبر بفرستید."); }
+    else{
+        $d['type']=strpos((string)$text,'%')!==false?'percent':'amount'; $d['amount']=(int)$raw;
+        setUser("privateDiscountDate|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
+        sendMessage("مدت زمان این تخفیف را به روز وارد کنید؛ برای نامحدود 0 بفرستید.");
+    }
+}
+if(preg_match('/^privateDiscountDate\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    else{
+        $d=json_decode(base64_decode($m[1]),true); $d['date']=(int)$text===0?0:time()+((int)$text*86400);
+        setUser("privateDiscountCount|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
+        sendMessage("تعداد استفاده کل کد را وارد کنید؛ برای نامحدود 0 بفرستید.");
+    }
+}
+if(preg_match('/^privateDiscountCount\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    else{
+        $d=json_decode(base64_decode($m[1]),true); $d['count']=(int)$text>0?(int)$text:-1;
+        setUser("privateDiscountCanUse|".base64_encode(json_encode($d,JSON_UNESCAPED_UNICODE)));
+        sendMessage("تعداد استفاده مجاز برای همان کاربر را وارد کنید؛ برای نامحدود 0 بفرستید.");
+    }
+}
+if(preg_match('/^privateDiscountCanUse\|(.+)$/',$userInfo['step'] ?? '',$m) && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text)){ sendMessage("فقط عدد بفرستید."); }
+    else{
+        $d=json_decode(base64_decode($m[1]),true); $can=(int)$text>0?(int)$text:-1;
+        $stmt=$connection->prepare("INSERT INTO discounts (hash_id,type,amount,expire_date,expire_count,can_use) VALUES (?,?,?,?,?,?)");
+        $stmt->bind_param("ssiiii",$d['code'],$d['type'],$d['amount'],$d['date'],$d['count'],$can); $stmt->execute(); $stmt->close();
+        if(function_exists('deltaSetDiscountOwner')) deltaSetDiscountOwner($d['code'],(int)$d['user_id']);
+        setUser();
+        sendMessage("✅ کد اختصاصی <code>".htmlspecialchars($d['code'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code> فقط برای کاربر <code>".(int)$d['user_id']."</code> ساخته شد.",$removeKeyboard,"HTML");
+        sendMessage("مدیریت کد های تخفیف",getDiscountCodeKeys());
+    }
+}
+
 if($data=="addDiscountCode" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     delMessage();
     sendMessage("🔘|لطفا مقدار تخفیف را وارد کنید\nبرای درصد علامت % را در کنار عدد وارد کنید در غیر آن مقدار تخفیف به تومان محاسبه میشود",$cancelKey);
