@@ -3,7 +3,27 @@
 
 if(!function_exists('deltaTrackingCode')){
     function deltaTrackingCode($hash){
-        $n=(int)sprintf('%u', crc32('delta-track|'.(string)$hash));
+        global $connection;
+        $hash=(string)$hash;
+        // For normal invoices use the database payment ID and a bijective
+        // permutation over 0..89,999,999. This keeps codes 8 digits, non-sequential
+        // looking, and collision-free while pay IDs stay within that range.
+        if($hash!=='' && isset($connection) && $connection){
+            $stmt=$connection->prepare("SELECT id FROM pays WHERE hash_id=? LIMIT 1");
+            if($stmt){
+                $stmt->bind_param('s',$hash);
+                $stmt->execute();
+                $row=$stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                $id=(int)($row['id']??0);
+                if($id>0 && $id<90000000){
+                    $mixed=(($id * 32452843) + 27182818) % 90000000;
+                    return (string)(10000000 + $mixed);
+                }
+            }
+        }
+        // Defensive fallback for non-persisted/legacy hashes.
+        $n=(int)sprintf('%u', crc32('delta-track|'.$hash));
         return (string)(10000000 + ($n % 90000000));
     }
     function deltaTrackingLine($hash){
