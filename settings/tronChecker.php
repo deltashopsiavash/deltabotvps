@@ -491,7 +491,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                         $stmt->execute();
                         $stmt->close();
                         
-                        sendMessage("پرداخت شما با تکسید آیدی $hash_id با موفقیت انجام شد. $volume روز به مدت زمان سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,null,$user_id);
+                        sendMessage("پرداخت شما با تکسید آیدی $hash_id با موفقیت انجام شد. $volume روز به مدت زمان سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
                         $keys = json_encode(['inline_keyboard'=>[
                         [
                             ['text'=>"خرید از درگاه ترون 💞",'callback_data'=>'deltach'],
@@ -567,7 +567,7 @@ $backgroundImage = imagecreatefromjpeg($bgPath);
                         $stmt->bind_param("s", $uuid);
                         $stmt->execute();
                         $stmt->close();
-                        sendMessage("پرداخت شما با تکسید آیدی $hash_id تأیید شد. $volume گیگ به حجم سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,null,$user_id);
+                        sendMessage("پرداخت شما با تکسید آیدی $hash_id تأیید شد. $volume گیگ به حجم سرویس شما اضافه شد\n🔖 کد پیگیری: <code>$trackingCode</code>",null,"HTML",$user_id);
                         $keys = json_encode(['inline_keyboard'=>[
                         [
                             ['text'=>"خرید از درگاه ترون 💞",'callback_data'=>'deltach'],
