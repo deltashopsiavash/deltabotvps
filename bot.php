@@ -845,7 +845,7 @@ GOTOSTART:
 $specialReservationHash='';
 $reservationData=(string)($data ?? '');
 $reservationStep=(string)($userInfo['step'] ?? '');
-if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithWeSwap|havePaiedWeSwap|payPhotoReceipt|payTextReceipt)(.+)$/',$reservationData,$reservationMatch)){
+if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithUsdt|payWithWeSwap|havePaiedWeSwap|payPhotoReceipt|payTextReceipt)(.+)$/',$reservationData,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
 }elseif(preg_match('/^(?:payWithCartToCart|payWithTronWallet)(.+)$/',$reservationStep,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
@@ -872,6 +872,24 @@ if($specialReservationHash!==''){
             $reservationMessage="⌛️ ۵ دقیقه شما تمام شد و خرید شما لغو شد.\n\nاز صفحه پیشنهاد امروز دوباره فاکتور بسازید.";
             if(isset($update->callback_query)) alert($reservationMessage,true); else sendMessage($reservationMessage,$removeKeyboard);
             exit();
+        }
+    }
+}
+
+// A cancelled pending order must never be provisioned from an old admin button.
+// Multiple admins may still have old copies of the receipt message, so enforce this
+// at the payment state level before any approval handler runs.
+if(preg_match('/^(?:accept|approvePayment|accCustom|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew)(.+)$/',(string)($data??''),$cancelGuardMatch)
+   && ($from_id == $admin || ($userInfo['isAdmin']??false) == true)){
+    $cancelGuardHash=(string)$cancelGuardMatch[1];
+    $stmt=$connection->prepare("SELECT `state`,`tracking_code` FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    if($stmt){
+        $stmt->bind_param('s',$cancelGuardHash); $stmt->execute(); $cancelGuardPay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+        if($cancelGuardPay && (string)($cancelGuardPay['state']??'')==='cancelled_by_user'){
+            $tracking=trim((string)($cancelGuardPay['tracking_code']??'')) ?: deltaEnsurePayTrackingCode($cancelGuardHash);
+            editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شده توسط کاربر ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE));
+            alert("این سفارش توسط کاربر لغو شده است".($tracking!==''?" | کد: ".$tracking:''),true);
+            exit;
         }
     }
 }
@@ -946,7 +964,8 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $price = number_format((int)$payInfo['price']);
     $payType = (string)$payInfo['type'];
     $receiptText = trim((string)$text);
-    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg = "📩 رسید متنی / پیامک واریزی\n\n" . deltaUserShortInfo($uid) . "\n\n💰 مبلغ تراکنش: {$price} تومان\n🧾 نوع تراکنش: <code>" . htmlspecialchars($payType, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n🔖 کد پیگیری: <code>" . htmlspecialchars($trackingCode,ENT_QUOTES,'UTF-8') . "</code>\n\n📝 متن ارسال‌شده کاربر:\n<code>" . htmlspecialchars($receiptText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
     if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_\d+_\d+$/',$payType)){
         $keyboard = getReceiptAdminKeyboard('approvePgRenew' . $hash, 'decPgRenew' . $hash, $uid);
     }elseif(strpos($originStep, 'increaseWalletWithCartToCart') === 0){
@@ -967,6 +986,19 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $res = sendToAdmins($msg, $keyboard, 'HTML');
     // message_id cannot be reliably collected from sendToAdmins for all admins; keep state have_sent.
     if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
+    $receiptNow=time();
+    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent', `payment_method`='card_to_card', `receipt_submitted_at`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('is', $receiptNow, $hash);
+    $stmt->execute();
+    $stmt->close();
+    sendMessage(($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.') . "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>", $removeKeyboard, 'HTML');
+    sendMessage($mainValues['reached_main_menu'], getMainKeys());
+    setUser();
+    exit;
+}
+
+// Legacy lines below are intentionally bypassed by the exit above.
+if(false){
     $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
     $stmt->bind_param('s', $hash);
     $stmt->execute();
@@ -974,6 +1006,173 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     sendMessage($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.', $removeKeyboard);
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
     setUser();
+    exit;
+}
+}
+
+// ---------------- Manual USDT BEP20 payment ----------------
+if(preg_match('/^payWithUsdt(.+)$/',(string)($data??''),$m)){
+    $hash=(string)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (int)($pay['user_id']??0)!=(int)$from_id){ alert('فاکتور پیدا نشد',true); exit; }
+    if((int)($pay['special_offer_id']??0)>0){ alert('پیشنهاد امروز فقط با موجودی کیف پول قابل پرداخت است',true); exit; }
+    if((string)($pay['state']??'')!=='pending'){ alert('این فاکتور دیگر قابل پرداخت نیست',true); exit; }
+    if(($botState['usdtBep20State']??'off')!=='on'){ alert('درگاه پرداخت ارزی خاموش است',true); exit; }
+    $wallet=trim((string)($paymentKeys['usdtBep20Wallet']??''));
+    if($wallet===''){ alert('آدرس کیف پول تتر هنوز توسط مدیریت تنظیم نشده است',true); exit; }
+    $rate=deltaFetchUsdtTomanRate();
+    if($rate<=0){
+        alert('دریافت نرخ لحظه‌ای تتر ممکن نشد؛ چند لحظه بعد دوباره تلاش کنید.',true);
+        exit;
+    }
+    $toman=(int)($pay['price']??0);
+    $amount=deltaUsdtAmountForToman($toman,$rate);
+    $amountText=number_format($amount,4,'.','');
+    $expires=time()+1800;
+    $tracking=deltaEnsurePayTrackingCode($hash);
+    $stmt=$connection->prepare("UPDATE `pays` SET `payment_method`='usdt_bep20',`usdt_rate`=?,`usdt_amount`=?,`usdt_expires_at`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('idis',$rate,$amount,$expires,$hash); $stmt->execute(); $stmt->close();
+    setUser('payWithUsdt'.$hash);
+    $safeWallet=htmlspecialchars($wallet,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    $msg="✅ پرداخت ارزی شما آماده‌ست♡\n\n"
+        ."💰 مبلغ: <b>".number_format($toman)." تومان</b>\n"
+        ."🪙 ارز پرداخت: <b>USDT BEP20</b>\n"
+        ."💲 مبلغ قابل پرداخت: <b>{$amountText} USDT</b>\n\n"
+        ."⚠️ کارمزد صرافی بر عهده شماست؛ واریزی خالص شما باید عدد بالا باشد. لطفاً مبلغ فاکتور را دقیقاً و به‌صورت کامل به آدرس کیف پول واریز کنید.\n\n"
+        ."📋 آدرس پرداخت:\n<code>{$safeWallet}</code>\n\n"
+        ."⚠️ بعد از واریز تا ثبت و نشستن ارز صبر کنید.\n\n"
+        ."📸 بعد از نشستن ارز، از صفحه تأیید اسکرین‌شات بگیرید و <b>هش تراکنش را در کپشن عکس</b> ارسال نمایید.\n\n"
+        ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
+        ."📊 نرخ تبدیل: <b>".number_format($rate)." تومان</b> (نرخ لحظه‌ای تتر)\n\n"
+        ."⚠️ توجه:\n"
+        ."💳 پرداخت فقط با USDT روی شبکه BSC (BEP20) انجام شود.\n"
+        ."📌 مبلغ باید دقیقاً مطابق فاکتور واریز شود.\n"
+        ."❌ در صورت واریز مبلغ اشتباه یا ارسال از شبکه دیگر، پرداخت خودکار تأیید نمی‌شود و بررسی آن با مدیریت خواهد بود.\n\n"
+        ."⏰ این نرخ و فاکتور ارزی فقط تا 30 دقیقه معتبر است.";
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'📋 کپی مبلغ USDT','copy_text'=>['text'=>$amountText]],['text'=>'📋 کپی آدرس','copy_text'=>['text'=>$wallet]]],
+        [['text'=>'❌ لغو و بازگشت','callback_data'=>'mainMenu']]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,$msg,$keys,'HTML');
+    exit;
+}
+if(preg_match('/^payWithUsdt(.+)$/',(string)($userInfo['step']??''),$m) && $text != ($buttonValues['cancel']??'')){
+    $hash=(string)$m[1];
+    if(!isset($update->message->photo)){ sendMessage("❌ لطفاً اسکرین‌شات رسید را به‌صورت عکس بفرستید و هش تراکنش را در کپشن عکس بنویسید."); exit; }
+    $txText=trim((string)($caption??''));
+    if(!preg_match('/0x[a-fA-F0-9]{64}/',$txText,$txm)){
+        sendMessage("❌ هش تراکنش BEP20 در کپشن پیدا نشد.\n\nعکس را دوباره بفرستید و هش تراکنش مثل <code>0x...</code> را در کپشن قرار دهید.",null,'HTML');
+        exit;
+    }
+    $txHash=$txm[0];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (int)($pay['user_id']??0)!=(int)$from_id){ sendMessage("❌ فاکتور پیدا نشد",$removeKeyboard); setUser(); exit; }
+    if((string)($pay['state']??'')!=='pending'){ sendMessage("این فاکتور قبلاً ارسال یا پردازش شده است.",$removeKeyboard); setUser(); exit; }
+    $tracking=deltaEnsurePayTrackingCode($hash);
+    $uid=(int)$pay['user_id']; $rate=(int)($pay['usdt_rate']??0); $amount=(float)($pay['usdt_amount']??0);
+    $amountText=number_format($amount,4,'.','');
+    $expired=((int)($pay['usdt_expires_at']??0)>0 && time()>(int)$pay['usdt_expires_at']);
+    $photos=$update->message->photo; $lastPhoto=is_array($photos)?end($photos):end($photos);
+    $photoId=$lastPhoto->file_id??$fileid??'';
+    $msg="🪙 <b>رسید پرداخت ارزی USDT BEP20</b>\n\n"
+        .deltaUserShortInfo($uid)."\n\n"
+        ."🔖 کد پیگیری: <code>{$tracking}</code>\n"
+        ."🧾 نوع فاکتور: <code>".htmlspecialchars((string)($pay['type']??''),ENT_QUOTES,'UTF-8')."</code>\n"
+        ."💰 مبلغ فاکتور: <b>".number_format((int)$pay['price'])." تومان</b>\n"
+        ."📊 نرخ تتر هنگام ساخت فاکتور: <b>".number_format($rate)." تومان</b>\n"
+        ."💲 مبلغ فاکتور ارزی: <b>{$amountText} USDT</b>\n"
+        ."🔗 شبکه: <b>BSC (BEP20)</b>\n"
+        ."🧬 هش تراکنش:\n<code>".htmlspecialchars($txHash,ENT_QUOTES,'UTF-8')."</code>\n"
+        .($expired?"\n⚠️ <b>رسید بعد از پایان مهلت ۳۰ دقیقه‌ای ارسال شده و نیاز به بررسی دقیق دارد.</b>":"");
+    $keyboard=deltaReceiptAdminKeyboardForPay($pay,$uid);
+    $res=sendPhotoToAdmins($photoId,$msg,$keyboard,'HTML');
+    $msgId=(is_object($res)&&isset($res->result->message_id))?(int)$res->result->message_id:0;
+    $receiptNow=time(); $adminChat=(int)$admin;
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent',`payment_method`='usdt_bep20',`usdt_tx_hash`=?,`receipt_submitted_at`=?,`message_id`=?,`chat_id`=? WHERE `hash_id`=? AND `state`='pending'");
+    $stmt->bind_param('siiis',$txHash,$receiptNow,$msgId,$adminChat,$hash); $stmt->execute(); $stmt->close();
+    sendMessage("✅ رسید ارزی شما ثبت شد و برای مدیریت ارسال شد.\nلطفاً برای ثبت سفارش صبر کنید.\n\n🔖 کد پیگیری: <code>{$tracking}</code>",$removeKeyboard,'HTML');
+    sendMessage($mainValues['reached_main_menu'],getMainKeys());
+    setUser();
+    exit;
+}
+
+// ---------------- Customer pending orders ----------------
+if($data==="pendingOrders"){
+    if(($botState['pendingOrdersState']??'off')!=='on'){ alert('این بخش غیرفعال است',true); exit; }
+    $stmt=$connection->prepare("SELECT `id`,`hash_id`,`price`,`type`,`request_date` FROM `pays` WHERE `user_id`=? AND `state`='have_sent' ORDER BY `id` DESC LIMIT 30");
+    $stmt->bind_param('i',$from_id); $stmt->execute(); $res=$stmt->get_result(); $stmt->close();
+    $rows=[];
+    while($p=$res->fetch_assoc()){
+        $tracking=deltaEnsurePayTrackingCode($p['hash_id']);
+        $rows[]=[['text'=>'⏳ سفارش :'.$tracking,'callback_data'=>'pendingOrder'.(int)$p['id']]];
+    }
+    if(!$rows) $rows[]=[['text'=>'✅ سفارش در حال انتظاری ندارید','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'mainMenu']];
+    smartSendOrEdit($message_id,"⏳ سفارش‌های در حال انتظار\n\nفقط سفارش‌هایی که رسیدشان ارسال شده و هنوز توسط مدیریت تأیید یا رد نشده‌اند اینجا نمایش داده می‌شوند.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+if(preg_match('/^pendingOrder(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر در حالت انتظار نیست',true); $data='pendingOrders'; }
+    else{
+        $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+        $type=htmlspecialchars((string)($pay['type']??''),ENT_QUOTES,'UTF-8');
+        $txt="⏳ <b>سفارش در حال انتظار</b>\n\n🔖 کد پیگیری: <code>{$tracking}</code>\n🧾 نوع سفارش: <code>{$type}</code>\n💰 مبلغ: <b>".number_format((int)$pay['price'])." تومان</b>\n\nرسید شما ثبت شده و منتظر بررسی مدیریت است.";
+        $keys=json_encode(['inline_keyboard'=>[
+            [['text'=>'❌ لغو سفارش','callback_data'=>'pendingCancelAsk'.$pid],['text'=>'🔔 ارسال مجدد','callback_data'=>'pendingResend'.$pid]],
+            [['text'=>$buttonValues['back_button'],'callback_data'=>'pendingOrders']]
+        ]],JSON_UNESCAPED_UNICODE);
+        smartSendOrEdit($message_id,$txt,$keys,'HTML'); exit;
+    }
+}
+if(preg_match('/^pendingCancelAsk(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'✅ بله، لغو سفارش','callback_data'=>'pendingCancelYes'.$pid]],
+        [['text'=>'↩️ خیر','callback_data'=>'pendingOrder'.$pid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"⚠️ آیا از لغو این سفارش مطمئن هستید؟\nپس از لغو، دکمه تأیید مدیر برای این سفارش قابل استفاده نخواهد بود.",$keys);
+    exit;
+}
+if(preg_match('/^pendingCancelYes(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر قابل لغو نیست',true); exit; }
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='cancelled_by_user' WHERE `id`=? AND `user_id`=? AND `state`='have_sent'");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $changed=$stmt->affected_rows>0; $stmt->close();
+    if(!$changed){ alert('وضعیت سفارش تغییر کرده است',true); exit; }
+    $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+    if(!empty($pay['message_id']) && !empty($pay['chat_id'])){
+        editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شده توسط کاربر ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),(int)$pay['message_id'],$pay['chat_id']);
+    }
+    sendToAdmins("❌ سفارش <code>{$tracking}</code> توسط کاربر لغو شد.\n👤 آیدی کاربر: <code>{$from_id}</code>",null,'HTML');
+    alert('✅ سفارش لغو شد',true);
+    $rows=[[['text'=>$buttonValues['back_button'],'callback_data'=>'pendingOrders']]];
+    smartSendOrEdit($message_id,"❌ سفارش <code>{$tracking}</code> لغو شد.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE),'HTML');
+    exit;
+}
+if(preg_match('/^pendingResend(\d+)$/',(string)$data,$m)){
+    $pid=(int)$m[1];
+    $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `id`=? AND `user_id`=? LIMIT 1");
+    $stmt->bind_param('ii',$pid,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if(!$pay || (string)($pay['state']??'')!=='have_sent'){ alert('این سفارش دیگر در انتظار نیست',true); exit; }
+    $last=(int)($pay['pending_remind_at']??0);
+    if($last>0 && time()-$last<3600){
+        $remain=(int)ceil((3600-(time()-$last))/60);
+        alert("ارسال مجدد هر یک ساعت یک‌بار ممکن است. حدود {$remain} دقیقه دیگر دوباره امتحان کنید.",true);
+        exit;
+    }
+    $now=time();
+    $stmt=$connection->prepare("UPDATE `pays` SET `pending_remind_at`=? WHERE `id`=? AND `state`='have_sent'");
+    $stmt->bind_param('ii',$now,$pid); $stmt->execute(); $stmt->close();
+    $tracking=deltaEnsurePayTrackingCode($pay['hash_id']);
+    sendToAdmins("🔔 سفارش <code>{$tracking}</code> در حال انتظار است؛ جهت تأیید آن اقدام نمایید.\n\n👤 آیدی کاربر: <code>{$from_id}</code>\n💰 مبلغ: <b>".number_format((int)$pay['price'])." تومان</b>",null,'HTML');
+    alert('✅ یادآوری برای مدیریت ارسال شد',true);
     exit;
 }
 
