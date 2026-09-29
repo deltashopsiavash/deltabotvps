@@ -9470,6 +9470,7 @@ if(preg_match('/^approvePgRenew(.+)$/', $data, $m) && ($from_id == $admin || $us
     $hash=$m[1];
     $stmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1"); $stmt->bind_param('s',$hash); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$pay){ alert('فاکتور پیدا نشد'); exit; }
+    if(($pay['state'] ?? '')==='cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit; }
     if(!in_array((string)($pay['state']??''),['pending','have_sent','send'],true)){alert('این رسید قبلاً پردازش شده است.',true);exit;}
     $type=$pay['type']; $days=0; $volume=0; $oid=0; $fullReset=false; $fullPlanId=0;
     if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$type,$mm)){ $oid=(int)$mm[1]; $pid=(int)$mm[2]; $fullReset=true; $fullPlanId=$pid; $stmt=$connection->prepare("SELECT `days`,`volume` FROM `server_plans` WHERE `id`=? LIMIT 1"); $stmt->bind_param('i',$pid); $stmt->execute(); $pl=$stmt->get_result()->fetch_assoc(); $stmt->close(); $days=(int)($pl['days']??0); $volume=(float)($pl['volume']??0); }
@@ -13812,6 +13813,8 @@ if(preg_match('/decRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $userI
     
     $uid = $payInfo['user_id'];
     $oid = $payInfo['plan_id'];
+    $stmt=$connection->prepare("UPDATE pays SET state='declined' WHERE hash_id=? AND state IN ('have_sent','need_admin','pending')");
+    $stmt->bind_param('s',$match[1]); $stmt->execute(); $stmt->close();
     
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `id` = ?");
     $stmt->bind_param("i", $oid);
@@ -15058,6 +15061,8 @@ if(preg_match('/decIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin || 
     
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
+    $stmt=$connection->prepare("UPDATE pays SET state='declined' WHERE hash_id=? AND state IN ('have_sent','need_admin','pending')");
+    $stmt->bind_param('s',$match[1]); $stmt->execute(); $stmt->close();
 
 
     preg_match('/^INCREASE_VOLUME_(\d+)_(\d+)/',$payType, $increaseInfo);
@@ -15101,6 +15106,8 @@ if(preg_match('/decIncreaseDay(.*)/',$data,$match) && ($from_id == $admin || $us
     
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
+    $stmt=$connection->prepare("UPDATE pays SET state='declined' WHERE hash_id=? AND state IN ('have_sent','need_admin','pending')");
+    $stmt->bind_param('s',$match[1]); $stmt->execute(); $stmt->close();
 
 
     preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo);
