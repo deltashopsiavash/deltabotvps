@@ -5117,6 +5117,7 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     $stmt->bind_param("siii", $hash_id, $from_id, $text, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     
     $keyboard = array();
@@ -5125,13 +5126,14 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     if($botState['zarinpal'] == "on") $keyboard[] = [['text' => $buttonValues['zarinpal_gateway'],  'url' => $botUrl . "pay/?zarinpal&hash_id=" . $hash_id]];
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)',  'callback_data' => "payWithUsdt" . $hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
 
     
 	$keys = json_encode(['inline_keyboard'=>$keyboard]);
-    sendMessage("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n\nلطفا روش پرداخت را انتخاب کنید",$keys);
+    sendMessage("اطلاعات شارژ:\nمبلغ ". number_format($text) . " تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>\n\nلطفا روش پرداخت را انتخاب کنید",$keys,"HTML");
     setUser();
 }
 if(preg_match('/increaseWalletWithCartToCart(?<hashId>.*)/',$data, $match)) {
@@ -7144,6 +7146,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $rowId = $stmt->insert_id;
         $stmt->close();
     }
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     
     if(!empty($freeVolumeQuota)){
@@ -7155,6 +7158,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
         if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
         if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payCustomWithWallet$hash_id"]];
+        if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
         if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
     }
 
@@ -7162,7 +7166,9 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
     $keyboard[] = [['text' => '🔁 تغییر پلن', 'callback_data' => "selectCategory{$call_id}_{$sid}_{$match['buyType']}"]];
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     $price = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
-    sendMessage(str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']),json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    $invoiceMsg = str_replace(['VOLUME', 'DAYS', 'PLAN-NAME', 'PRICE', 'DESCRIPTION'], [$volume, $days, $name, $price, $desc], $mainValues['buy_subscription_detail']);
+    $invoiceMsg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
+    sendMessage($invoiceMsg,json_encode(['inline_keyboard'=>$keyboard]), "HTML");
     setUser();
 }
 if(preg_match('/^haveDiscount(.+?)_(.*)/',$data,$match)){
@@ -7576,6 +7582,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
             if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
             if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
+            if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
             if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
         }
         
@@ -7651,6 +7658,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
 	    $keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     }
     $priceC = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
+    $trackingCode = !empty($hash_id) ? deltaEnsurePayTrackingCode($hash_id) : '';
     if($invoiceOfferId>0){
         $msg=specialOfferBuildInvoiceMessage($specialInvoice,(int)($userInfo['wallet'] ?? 0));
     }elseif(isset($accountCount)){
@@ -7679,6 +7687,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $mainValues['buy_subscription_detail']
         );
     }
+    if($trackingCode!=='') $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
@@ -9579,7 +9588,8 @@ if(preg_match('/^pgRenewBuyFull_(\d+)_(\d+)$/', $data, $m)){
     if(!$plan){ alert('پلن تمدید کلی معتبر نیست'); exit; }
     $hash=pgRenewCreatePay($from_id, 'PG_RENEW_FULL_'.$oid.'_'.$pid, (int)$plan['price']);
     $vlabel=((float)$plan['volume']>0)?rtrim(rtrim(number_format((float)$plan['volume'],2,'.',''),'0'),'.').' گیگ':'نامحدود';
-    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
     smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
 }
@@ -9593,7 +9603,8 @@ if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     $kind=$plan['kind']; $type = $kind=='volume' ? 'PG_RENEW_VOLUME_' : 'PG_RENEW_DAY_';
     $hash=pgRenewCreatePay($from_id, $type.$oid.'_'.$pid, (int)$plan['price']);
     $unit=$kind=='volume'?'گیگ':'روز';
-    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان";
+    $trackingCode=deltaEnsurePayTrackingCode($hash);
+    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
     smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price'])); exit;
 }
@@ -11789,6 +11800,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     $stmt->execute();
     $rowId = $stmt->insert_id;
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     
     if($botState['cartToCartState'] == "on") $keyboard[] = [['text' => $buttonValues['cart_to_cart'],  'callback_data' => "payWithCartToCart$hash_id"]];
@@ -11797,6 +11809,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
 	$keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
@@ -11812,6 +11825,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
         [$name, number_format($basePrice).' تومان', number_format($price).' تومان', $desc, number_format($currentWallet), number_format($walletAfter), ($respd['volume']??0), ($respd['days']??0), number_format($discountAmount), $discountPercent],
         $mainValues['buy_subscription_detail']
     );
+    $msg .= "\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>";
     sendMessage($msg, json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/sConfigUpdate(\d+)/', $data,$match)){
@@ -13867,6 +13881,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $rowId = $stmt->insert_id;
         $stmt->close();
     }else $price = $afterDiscount;
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     if($price == 0) $price = "رایگان";
     else $price .= " تومان";
@@ -13877,6 +13892,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "پرداخت با موجودی مبلغ $price",  'callback_data' => "payRenewWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     if(!preg_match('/^discountRenew/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountRenew_" . $match[1] . "_" . $rowId]];
@@ -13885,9 +13901,9 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
 
 
 
-    sendMessage("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :",json_encode([
+    sendMessage("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode([
             'inline_keyboard' => $keyboard
-        ]));
+        ]),"HTML");
 }
 if(preg_match('/payRenewWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -14760,6 +14776,7 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     $stmt->bind_param("sisii", $hash_id, $from_id,$type, $planprice, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
 
     
     $keyboard = array();
@@ -14769,10 +14786,11 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => $buttonValues['pay_with_wallet'],  'callback_data' => "payIncraseDayWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode(['inline_keyboard' => $keyboard]),"HTML");
 }
 if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$data,$match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -15127,6 +15145,7 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     $stmt->bind_param("sisii", $hash_id, $from_id,$type, $planprice, $time);
     $stmt->execute();
     $stmt->close();
+    $trackingCode = deltaEnsurePayTrackingCode($hash_id);
     
     $keyboard = array();
     
@@ -15140,10 +15159,11 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     if($botState['nextpay'] == "on") $keyboard[] = [['text' => $buttonValues['nextpay_gateway'],  'url' => $botUrl . "pay/?nextpay&hash_id=" . $hash_id]];
     if($botState['weSwapState'] == "on") $keyboard[] = [['text' => $buttonValues['weswap_gateway'],  'callback_data' => "payWithWeSwap" . $hash_id]];
     if($botState['walletState'] == "on") $keyboard[] = [['text' => "💰پرداخت با موجودی  " . $planprice,  'callback_data' => "payIncraseWithWallet$hash_id"]];
+    if(($botState['usdtBep20State']??'off') == "on") $keyboard[] = [['text' => '🪙 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt".$hash_id]];
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
-    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :",json_encode(['inline_keyboard' => $keyboard]));
+    smartSendOrEdit($message_id, "لطفا با یکی از روش های زیر پرداخت خود را تکمیل کنید :\n\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode(['inline_keyboard' => $keyboard]),"HTML");
 } 
 if(preg_match('/payIncreaseWithCartToCart(.*)/',$data, $match)) {
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
