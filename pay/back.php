@@ -178,6 +178,11 @@ $payInfo = $stmt->get_result();
 $stmt->close();
 
 $payParam = $payInfo->fetch_assoc();
+if(!$payParam){
+    showForm("فاکتور پرداخت پیدا نشد","خطا!");
+    return;
+}
+$trackingCode = deltaEnsurePayTrackingCode((string)($payParam['hash_id'] ?? ''));
 $rowId = $payParam['id'];
 $amount = $payParam['price'];
 $user_id = $payParam['user_id'];
@@ -209,25 +214,26 @@ if(preg_match('/^PG_RENEW_(FULL|VOLUME|DAY)_(\d+)_(\d+)$/',$payType,$pgm)){
     $renew=pgRenewApply($oid,$rDays,$rVolume,$fullReset,$fullPlanId);
     if(!is_object($renew)||empty($renew->success)){
         // Money is already captured by the gateway; refund to bot wallet if panel action fails.
-        $stmt=$connection->prepare("UPDATE `pays` SET `state`='renew_failed_refunded' WHERE `id`=?");$stmt->bind_param('i',$payRowId);$stmt->execute();$stmt->close();
+        $approvedAt=time(); $stmt=$connection->prepare("UPDATE `pays` SET `state`='renew_failed_refunded',`payment_method`=?,`approved_at`=? WHERE `id`=?");$stmt->bind_param('sii',$gateType,$approvedAt,$payRowId);$stmt->execute();$stmt->close();
         $stmt=$connection->prepare("UPDATE `users` SET `wallet`=`wallet`+? WHERE `userid`=?");$stmt->bind_param('ii',$amount,$user_id);$stmt->execute();$stmt->close();
         sendMessage("⚠️ پرداخت تمدید انجام شد اما پنل پاسخ موفق نداد؛ مبلغ ".number_format($amount)." تومان به کیف پول شما برگشت داده شد.",null,null,$user_id);
-        sendToAdmins("⚠️ تمدید پاسارگارد در درگاه ناموفق بود و مبلغ به کیف پول برگشت داده شد. کاربر: {$user_id} | فاکتور: {$payRowId}",null,null);
+        sendToAdmins("⚠️ تمدید پاسارگارد در درگاه ناموفق بود و مبلغ به کیف پول برگشت داده شد.\nکاربر: <code>{$user_id}</code>\n🔖 کد پیگیری: <code>{$trackingCode}</code>\nفاکتور داخلی: {$payRowId}",null,"HTML");
         showForm("پرداخت انجام شد اما تمدید پنل ناموفق بود؛ مبلغ به کیف پول ربات شما برگشت داده شد.","تمدید پاسارگارد",false);
         return;
     }
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid' WHERE `id`=?");$stmt->bind_param('i',$payRowId);$stmt->execute();$stmt->close();
+    $approvedAt=time(); $stmt=$connection->prepare("UPDATE `pays` SET `state`='paid',`payment_method`=?,`approved_at`=? WHERE `id`=?");$stmt->bind_param('sii',$gateType,$approvedAt,$payRowId);$stmt->execute();$stmt->close();
     $mode=$fullReset?'تمدید کلی (ریست کامل)':'تمدید';
-    sendMessage("✅ {$mode} پاسارگارد با موفقیت انجام شد.",null,null,$user_id);
-    sendToAdmins("✅ {$mode} پاسارگارد از طریق درگاه انجام شد. کاربر: {$user_id} | مبلغ: ".number_format($amount)." تومان",null,null);
+    sendMessage("✅ {$mode} پاسارگارد با موفقیت انجام شد.\n🔖 کد پیگیری: <code>{$trackingCode}</code>",null,"HTML",$user_id);
+    sendToAdmins("✅ {$mode} پاسارگارد از طریق درگاه انجام شد.\n👤 کاربر: <code>{$user_id}</code>\n💰 مبلغ: <b>".number_format($amount)." تومان</b>\n🔖 کد پیگیری: <code>{$trackingCode}</code>",null,"HTML");
     showForm("تمدید سرویس با موفقیت انجام شد.","تمدید پاسارگارد",false);
     return;
 }
 
 if($gateType == "zarinpal" || $gateType == "nextpay") $payDescription = "خرید اشتراک";
 
-$stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =?");
-$stmt->bind_param("i", $payRowId);
+$approvedAt=time();
+$stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid', `payment_method`=?, `approved_at`=? WHERE `id` =?");
+$stmt->bind_param("sii", $gateType, $approvedAt, $payRowId);
 $stmt->execute();
 $stmt->close();
 
@@ -545,6 +551,7 @@ sendToAdmins("
 🔮 نام سرویس: $remark
 🔋حجم سرویس: $volume گیگ
 ⏰ مدت سرویس: $days روز
+🔖 کد پیگیری: <code>$trackingCode</code>
 ⁮⁮ 
 ", $keys, "html");
 }
@@ -554,8 +561,8 @@ elseif($payType == "INCREASE_WALLET"){
     $stmt->execute(); 
     $stmt->close(); 
     showForm("پرداخت شما با موفقیت انجام شد، مبلغ ". number_format($amount) . " تومان به کیف پول شما اضافه شد",$payDescription, true);
-    sendMessage("✅ مبلغ " . number_format($amount). " تومان به حساب شما اضافه شد",null,null,$user_id);
-    sendToAdmins("✅ مبلغ " . number_format($amount) . " تومان به کیف پول کاربر $user_id توسط درگاه اضافه شد", null, null);                
+    sendMessage("✅ مبلغ " . number_format($amount). " تومان به حساب شما اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",null,"HTML",$user_id);
+    sendToAdmins("✅ مبلغ " . number_format($amount) . " تومان به کیف پول کاربر <code>$user_id</code> توسط درگاه اضافه شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>", null, "HTML");                
 }
 elseif($payType == "RENEW_ACCOUNT"){
     $oid = $plan_id;
@@ -637,6 +644,7 @@ sendToAdmins("
 🔖 نام کاربری: $username
 💰مبلغ پرداختی: $amount تومان
 🔮 نام سرویس: $remark
+🔖 کد پیگیری: <code>$trackingCode</code>
 ⁮⁮ ⁮⁮
 ", $keys, "html");
 exit;
@@ -713,6 +721,7 @@ sendToAdmins("
 🔖 نام کاربری: $username
 💰مبلغ پرداختی: $amount تومان
 🔮 نام سرویس: $remark
+🔖 کد پیگیری: <code>$trackingCode</code>
 ⁮⁮ ⁮⁮
 ", $keys, "html");
 exit;
@@ -789,6 +798,7 @@ sendToAdmins("
 🔖 نام کاربری: $username
 💰مبلغ پرداختی: $amount تومان
 🔮 نام سرویس: $remark
+🔖 کد پیگیری: <code>$trackingCode</code>
 ⁮⁮ ⁮⁮
 ", $keys, "html");
 exit;
@@ -852,10 +862,11 @@ elseif($payType == "RENEW_SCONFIG"){
 	$stmt->bind_param("iiisii", $user_id, $server_id, $inbound_id, $remark, $price, $time);
 	$stmt->execute();
 	$stmt->close();
-    sendMessage("✅سرویس $remark با موفقیت تمدید شد",null,null,$user_id);
+    sendMessage("✅سرویس $remark با موفقیت تمدید شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",null,"HTML",$user_id);
+    sendToAdmins("✅ تمدید سرویس از طریق درگاه انجام شد.\n👤 کاربر: <code>{$user_id}</code>\n🔮 سرویس: <code>".htmlspecialchars((string)$remark,ENT_QUOTES,'UTF-8')."</code>\n💰 مبلغ: <b>".number_format($amount)." تومان</b>\n🔖 کد پیگیری: <code>{$trackingCode}</code>",null,"HTML");
 
 }
-sendMessage("پرداخت شما با موفقیت انجام شد",json_encode(['inline_keyboard'=>[[['text'=>"صفحه اصلی 🏘",'callback_data'=>"mainMenu"]]]]),null,$user_id);
+sendMessage("پرداخت شما با موفقیت انجام شد\n🔖 کد پیگیری: <code>{$trackingCode}</code>",json_encode(['inline_keyboard'=>[[['text'=>"صفحه اصلی 🏘",'callback_data'=>"mainMenu"]]]]),"HTML",$user_id);
 }
 
 function showForm($msg, $type = "", $state = false){
