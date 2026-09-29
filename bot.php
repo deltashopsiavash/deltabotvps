@@ -4893,9 +4893,10 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
 
     
 
-        sendMessage($mainValues['order_increase_sent'],$removeKeyboard);
+        sendMessage(deltaAppendTracking($mainValues['order_increase_sent'],$match[1]),$removeKeyboard,"HTML");
         sendMessage($mainValues['reached_main_menu'],getMainKeys());
         $msg = str_replace(['PRICE', 'USERNAME', 'NAME', 'USER-ID'],[$price, $username, $name, $from_id], $mainValues['increase_wallet_request_message']);
+        $msg = deltaAppendTracking($msg,$match[1]);
         
         $keyboard = getPaymentAdminKeyboard($match[1], $from_id);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
@@ -5710,7 +5711,7 @@ if(preg_match('/havePaiedWeSwap(.*)/',$data,$match)) {
         $stmt->close();
         
         sendMessage("افزایش حساب شما با موفقیت تأیید شد\n✅ مبلغ " . number_format($price). " تومان به حساب شما اضافه شد");
-        sendToAdmins("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $from_id توسط درگاه ارزی ریالی اضافه شد");                
+        sendToAdmins(deltaAppendTracking("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $from_id توسط درگاه ارزی ریالی اضافه شد",$payInfo['hash_id'] ?? ''),null,"HTML");                
     }
     elseif($payType == "BUY_SUB"){
     $uid = $from_id;
@@ -9459,7 +9460,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $fileid = $lastPhoto->file_id ?? '';
     sendMessage($mainValues['renew_order_sent'] ?? 'رسید ارسال شد', $removeKeyboard); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
-    $res=sendPhotoToAdmins($fileid, "🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان", $keys, 'HTML');
+    $res=sendPhotoToAdmins($fileid, deltaAppendTracking("🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان",$hash), $keys, 'HTML');
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
     if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
@@ -13702,6 +13703,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         
         $msg = str_replace(['TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],['کارت به کارت', $from_id, $username, $first_name, $price, $remark, $volume, $days], $mainValues['renew_account_request_message']);
     
+        $msg = deltaAppendTracking($msg,$hash_id);
         $keyboard = getReceiptAdminKeyboard("approveRenewAcc$hash_id", "decRenewAcc$hash_id", $uid);
     
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
@@ -14578,6 +14580,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         // notify admin   
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'زمان', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
     
+        $msg = deltaAppendTracking($msg,$match[1]);
         $keyboard = getReceiptAdminKeyboard("approveIncreaseDay{$match[1]}", "decIncreaseDay{$match[1]}", $from_id);
 
 
@@ -14952,6 +14955,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
 
         $msg = str_replace(['INCREASE', 'TYPE', "USER-ID", "USERNAME", "NAME", "PRICE", "REMARK"],[$volume, 'حجم', $from_id, $username, $first_name, $price, $remark], $mainValues['increase_account_request_message']);
 
+        $msg = deltaAppendTracking($msg,$match[1]);
          $keyboard = getReceiptAdminKeyboard("approveIncreaseVolume{$match[1]}", "decIncreaseVolume{$match[1]}", $from_id);
 
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
