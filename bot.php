@@ -4947,6 +4947,7 @@ if(preg_match('/^approvePayment(.*)/',$data,$match) && ($from_id == $admin || $u
     $keys = json_encode(['inline_keyboard'=>array_values($markup)],488);
 
     editKeys($keys);
+    sendToAdmins("✅ شارژ حساب با تأیید دستی انجام شد\n".deltaOrderDetails($payInfo),null,'HTML');
 }
 if(preg_match('/^decPayment(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     unset($markup[count($markup)-1]);
@@ -8064,7 +8065,7 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     define('IMAGE_HEIGHT',540);
 
     (function_exists('npvSendManualLockRequestOrNormal') ? npvSendManualLockRequestOrNormal($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu", $file_detail ?? [], $payInfo['description'] ?? '', $serverInfo ?? []) : xuiSendOrderDeliveryPhoto($uid, $protocol, $remark, $volume, $days, $botState, $serverType, $vraylink, $botUrl, $uniqid, $subLink, "mainMenu"));
-    sendMessage(deltaAppendTracking('✅ کانفیگ و براش ارسال کردم',$match[1]), getMainKeys(),"HTML");
+    sendMessage(deltaTrackingLine($match[1]),null,'HTML',$uid);
     
     $agentBought = $payInfo['agent_bought'];
 	$stmt = $connection->prepare("INSERT INTO `orders_list` 
@@ -8074,6 +8075,7 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     $stmt->execute();
     $order = $stmt->get_result();
     $stmt->close();
+    sendToAdmins(deltaDeliveryReportText($match[1],$uid,$remark,$volume,$days,$price),null,'HTML');
 
 
     unset($markup[count($markup)-1]);
@@ -8806,8 +8808,8 @@ if(preg_match('/^accept(.+)$/',$data, $match) and $text != $buttonValues['cancel
     	$stmt->bind_param("iiisii", $uid, $server_id, $inbound_id, $remark, $price, $time);
     	$stmt->execute();
     	$stmt->close();
-        sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['renewed_config_to_user']), getMainKeys(),null,null);
         sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),null,"HTML",$uid);
+        sendToAdmins("🔁 تمدید سرویس با تأیید دستی انجام شد\n".deltaOrderDetails($payInfo),null,'HTML');
     }else{
         $accountCount = xuiResolvePayAccountCount($payInfo);
         $eachPrice = $price / $accountCount;
@@ -8863,6 +8865,7 @@ if(preg_match('/^accept(.+)$/',$data, $match) and $text != $buttonValues['cancel
         include_once 'phpqrcode/qrlib.php';
         define('IMAGE_WIDTH',540);
         define('IMAGE_HEIGHT',540);
+        $deliveryRemarks=[];
         for($i = $provisionedCount + 1; $i <= $accountCount; $i++){
             $uniqid = generateRandomString(42,$protocol); 
         
@@ -8961,8 +8964,10 @@ if(preg_match('/^accept(.+)$/',$data, $match) and $text != $buttonValues['cancel
             $stmt->execute();
             $order = $stmt->get_result();
             $stmt->close();
+            $deliveryRemarks[]=$remark;
         }
-            sendMessage(deltaAppendTracking(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']),$payProvisionHash), getMainKeys(), 'HTML',$uid);
+        sendMessage(deltaTrackingLine($payProvisionHash),null,'HTML',$uid);
+        sendToAdmins(deltaDeliveryReportText($payProvisionHash,$uid,$deliveryRemarks?:[$remark??''],$volume,$days,$price),null,'HTML');
         if($inbound_id == 0) {
             $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
             $stmt->bind_param("ii", $remainingCount, $server_id);
@@ -13815,8 +13820,8 @@ if(preg_match('/approveRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $u
 	$stmt->bind_param("iiisii", $uid, $server_id, $inbound_id, $remark, $price, $time);
 	$stmt->execute();
 	$stmt->close();
-    sendMessage(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['renewed_config_to_user']), getMainKeys(),null,null);
     sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$match[1]),null,"HTML",$uid);
+    sendToAdmins("🔁 تمدید سرویس با تأیید دستی انجام شد\n".deltaOrderDetails($payInfo),null,'HTML');
     exit;
 }
 if(preg_match('/decRenewAcc(.*)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
@@ -14701,6 +14706,7 @@ if(preg_match('/approveIncreaseDay(.*)/',$data,$match) && ($from_id == $admin ||
     
         editKeys($keys);
         sendMessage(deltaAppendTracking("✅$volume روز به مدت زمان سرویس شما اضافه شد",$match[1]),null,"HTML",$uid);
+        sendToAdmins("✅ افزایش مدت سرویس با تأیید دستی انجام شد\n".deltaOrderDetails($payParam),null,'HTML');
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;
@@ -15067,6 +15073,7 @@ if(preg_match('/approveIncreaseVolume(.*)/',$data,$match) && ($from_id == $admin
     
         editKeys($keys);
         sendMessage(deltaAppendTracking("✅$volume گیگ به حجم سرویس شما اضافه شد",$match[1]),null,"HTML",$uid);
+        sendToAdmins("✅ افزایش حجم سرویس با تأیید دستی انجام شد\n".deltaOrderDetails($payParam),null,'HTML');
     }else {
         alert("مشکل فنی در ارتباط با سرور. لطفا سلامت سرور را بررسی کنید",true);
         exit;

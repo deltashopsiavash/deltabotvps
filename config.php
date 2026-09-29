@@ -6623,12 +6623,8 @@ function xuiBuildOrderDeliveryText($protocol, $remark, $volume, $days, $botState
 }
 function xuiBuildQrBackgroundImage($file){
     $bid = (int)($GLOBALS['currentBotInstanceId'] ?? 0);
-    $bgPath = 'settings/qrcodes/qr_main.jpg';
-    if($bid > 0){
-        $cand = 'settings/qrcodes/qr_rb' . $bid . '.jpg';
-        if(file_exists($cand)) $bgPath = $cand;
-    }
-    if(!file_exists($bgPath)) $bgPath = 'settings/QRCode.jpg';
+    // Cron starts in settings/, webhook requests start in the project root.
+    $bgPath = deltaQrBackgroundPath($bid);
     $backgroundImage = @imagecreatefromjpeg($bgPath);
     $qrImage = @imagecreatefrompng($file);
     if(!$backgroundImage || !$qrImage) return false;

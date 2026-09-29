@@ -160,6 +160,18 @@ if(!function_exists('deltaUsdtPayText')){
             "⏰ این فاکتور ارزی تا 30 دقیقه معتبر است.";
     }
 }
+if(!function_exists('deltaQrBackgroundPath')){
+    function deltaQrBackgroundPath($botInstanceId=0){
+        $base=__DIR__ . '/settings/';
+        $main=$base.'qrcodes/qr_main.jpg';
+        $botInstanceId=(int)$botInstanceId;
+        if($botInstanceId>0){
+            $custom=$base.'qrcodes/qr_rb'.$botInstanceId.'.jpg';
+            if(is_file($custom)) return $custom;
+        }
+        return is_file($main)?$main:$base.'QRCode.jpg';
+    }
+}
 if(!function_exists('deltaPendingOrdersKeyboard')){
     function deltaPendingOrdersKeyboard($uid){
         global $connection,$buttonValues;
@@ -243,6 +255,17 @@ if(!function_exists('deltaOrderDetails')){
     function deltaOrderStateLabel($state){
         $labels=['pending'=>'فاکتور ساخته شده؛ منتظر پرداخت','have_sent'=>'رسید ارسال شده؛ منتظر تأیید','need_admin'=>'در انتظار بررسی مدیر','approved'=>'تأیید و سرویس تحویل شده','paid'=>'تأیید خودکار شده','paid_with_wallet'=>'پرداخت با موجودی و تحویل شده','declined'=>'رد شده','rejected'=>'رد شده','cancelled_by_user'=>'لغو شده توسط کاربر','processing_receipt'=>'در حال پردازش رسید','processing_quota'=>'در حال پردازش تمدید','paid_with_quota'=>'تمدید با سهمیه انجام شده','0'=>'در انتظار درگاه','1'=>'پرداخت درگاه تأیید شده'];
         return $labels[(string)$state]??htmlspecialchars((string)$state,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    }
+    function deltaDeliveryReportText($hash,$uid,$remarks,$volume,$days,$price){
+        $remarks=is_array($remarks)?$remarks:[$remarks];
+        $text="✅ کانفیگ را برای کاربر ارسال کردم\n👤 آیدی عددی کاربر: <code>".(int)$uid."</code>\n";
+        foreach($remarks as $remark){
+            $text.='🔮 ریمارک: '.htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+        }
+        $text.='🔋 حجم سرویس: '.htmlspecialchars((string)$volume,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')." گیگ\n";
+        $text.='⏰ مدت زمان سرویس: '.htmlspecialchars((string)$days,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')." روز\n";
+        $text.='💰 مبلغ: '.number_format((int)$price)." تومان";
+        return deltaAppendTracking($text,$hash);
     }
 }
 if(!function_exists('deltaFeatureHandleRequest')){
