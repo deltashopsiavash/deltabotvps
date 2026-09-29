@@ -3522,9 +3522,14 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
 }
 if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     if($data!="botSettings"){
-        if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
-        else $newValue = $botState[$match[1]]=="on"?"off":"on";
+        if($match[1] == "cartToCartAutoAcceptType") $newValue = ($botState[$match[1]] ?? "0") == "0"?"1":(($botState[$match[1]] ?? "0") == "1"?"2":0);
+        else $newValue = ($botState[$match[1]] ?? "off")=="on"?"off":"on";
         setSettings($match[1], $newValue);
+        // Never let enabling auto-approval sweep old receipts. Only receipts submitted
+        // from this activation point onward are eligible.
+        if($match[1] === "cartToCartAutoAcceptState" && $newValue === "on"){
+            setSettings("cartToCartAutoAcceptSince", (string)time());
+        }
     }
     smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
 }
@@ -3822,6 +3827,9 @@ if(preg_match('/^changePaymentKeys(\w+)/',$data,$match) && ($from_id == $admin |
             break;
         case "tronwallet":
             $gate = "آدرس والت ترون";
+            break;
+        case "usdtBep20Wallet":
+            $gate = "آدرس کیف پول USDT روی شبکه BEP20";
             break;
     }
     sendMessage("🔘|لطفا $gate را وارد کنید", $cancelKey);
@@ -4458,14 +4466,101 @@ if(preg_match('/^uBuyLimitSetPanel(\d+)/',$userInfo['step'],$match) && ($from_id
     sendMessage("✅ ذخیره شد",$removeKeyboard);
     sendMessage(renderUserInfoTitle($uid), getUserInfoKeys($uid), "HTML");
 }
-if(preg_match('/^uAuto(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^uForceAutoAsk(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $uid=(int)$match[1];
-    $type="USER_NO_AUTOAPPROVE_" . $uid;
-    $val = getSettingValue($type,"0");
-    $newVal = ($val=="1")?"0":"1";
-    upsertSettingValue($type, $newVal);
-    alert($newVal=="1"?"✅ استثنا شد":"❌ برداشته شد");
-    refreshUserInfoPanel($uid, $message_id);
+    $enabled=(int)getSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0")>0;
+    $txt=$enabled
+        ? "⚡ این کاربر در حال حاضر در لیست تأیید خودکار دائمی است.\n\nآیا می‌خواهید این استثنا لغو شود؟"
+        : "⚡ آیا می‌خواهید این کاربر همیشه خودکار رسیدش تأیید شود؟\n\nحتی اگر تأیید خودکار عمومی خاموش باشد، رسیدهای جدید این کاربر به‌صورت خودکار تأیید می‌شوند. رسیدهای قدیمی شامل این حالت نمی‌شوند.";
+    $keys=json_encode(['inline_keyboard'=>[
+        $enabled
+            ? [['text'=>'✅ بله، لغو شود','callback_data'=>'uForceAutoNo'.$uid],['text'=>'❌ خیر','callback_data'=>'uRefresh'.$uid]]
+            : [['text'=>'✅ آره','callback_data'=>'uForceAutoYes'.$uid],['text'=>'❌ نه','callback_data'=>'uRefresh'.$uid]],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'uRefresh'.$uid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,$txt,$keys);
+    exit;
+}
+if(preg_match('/^uForceAutoYes(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    // Store the activation timestamp, not just 1. This protects old receipts.
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,(string)time());
+    alert("✅ تأیید خودکار دائمی برای این کاربر فعال شد");
+    refreshUserInfoPanel($uid,$message_id);
+    exit;
+}
+if(preg_match('/^uForceAutoNo(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0");
+    alert("✅ استثنای تأیید خودکار لغو شد");
+    refreshUserInfoPanel($uid,$message_id);
+    exit;
+}
+if($data==="resetAutoApproveQueueAsk" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $keys=json_encode(['inline_keyboard'=>[
+        [['text'=>'✅ بله، از همین لحظه','callback_data'=>'resetAutoApproveQueueYes']],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"♻️ با این کار هیچ رسید قدیمی به‌صورت خودکار تأیید نمی‌شود.\n\nاز این لحظه به بعد فقط رسیدهای جدید وارد صف تأیید خودکار خواهند شد.\n\nانجام شود؟",$keys);
+    exit;
+}
+if($data==="resetAutoApproveQueueYes" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    setSettings("cartToCartAutoAcceptSince",(string)time());
+    alert("✅ صف تأیید خودکار ریست شد؛ رسیدهای قبلی نادیده گرفته می‌شوند",true);
+    smartSendOrEdit($message_id,$mainValues['change_bot_settings_message'],getBotSettingKeys());
+    exit;
+}
+if($data==="autoApproveExceptions" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $rows=[];
+    $res=$connection->query("SELECT `type`,`value` FROM `setting` WHERE `type` LIKE 'USER_FORCE_AUTOAPPROVE_%' AND CAST(`value` AS UNSIGNED)>0 ORDER BY `id` DESC");
+    if($res){
+        while($r=$res->fetch_assoc()){
+            if(!preg_match('/USER_FORCE_AUTOAPPROVE_(\d+)/',(string)$r['type'],$mm)) continue;
+            $uid=(int)$mm[1];
+            $name='';
+            $stmt=$connection->prepare("SELECT `name`,`username` FROM `users` WHERE `userid`=? LIMIT 1");
+            if($stmt){ $stmt->bind_param('i',$uid); $stmt->execute(); $u=$stmt->get_result()->fetch_assoc(); $stmt->close(); $name=trim((string)($u['username']??$u['name']??'')); }
+            $label='👤 '.$uid.($name!==''?' | '.$name:'');
+            $rows[]=[['text'=>$label,'callback_data'=>'receiptUserInfo_'.$uid],['text'=>'❌ لغو','callback_data'=>'removeForceAuto'.$uid]];
+        }
+    }
+    if(!$rows) $rows[]=[['text'=>'هیچ کاربری استثنا نشده','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']];
+    smartSendOrEdit($message_id,"👥 کاربرهای استثنا شده تأیید خودکار\n\nاین کاربران حتی با خاموش بودن تأیید خودکار عمومی، فقط برای رسیدهای جدید خودشان به‌صورت خودکار تأیید می‌شوند.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+if(preg_match('/^removeForceAuto(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    upsertSettingValue("USER_FORCE_AUTOAPPROVE_".(int)$match[1],"0");
+    alert("✅ از لیست استثناها حذف شد");
+    $data="autoApproveExceptions";
+    $rows=[];
+    $res=$connection->query("SELECT `type`,`value` FROM `setting` WHERE `type` LIKE 'USER_FORCE_AUTOAPPROVE_%' AND CAST(`value` AS UNSIGNED)>0 ORDER BY `id` DESC");
+    if($res){
+        while($r=$res->fetch_assoc()){
+            if(!preg_match('/USER_FORCE_AUTOAPPROVE_(\d+)/',(string)$r['type'],$mm)) continue;
+            $uid=(int)$mm[1];
+            $rows[]=[['text'=>'👤 '.$uid,'callback_data'=>'receiptUserInfo_'.$uid],['text'=>'❌ لغو','callback_data'=>'removeForceAuto'.$uid]];
+        }
+    }
+    if(!$rows) $rows[]=[['text'=>'هیچ کاربری استثنا نشده','callback_data'=>'deltach']];
+    $rows[]=[['text'=>$buttonValues['back_button'],'callback_data'=>'botSettings']];
+    smartSendOrEdit($message_id,"👥 کاربرهای استثنا شده تأیید خودکار",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE));
+    exit;
+}
+
+// Legacy callback kept safe: it now opens the new force-auto confirmation instead of
+// enabling the old inverse (NO_AUTOAPPROVE) behavior.
+if(preg_match('/^uAuto(\d+)$/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $uid=(int)$match[1];
+    $enabled=(int)getSettingValue("USER_FORCE_AUTOAPPROVE_".$uid,"0")>0;
+    $keys=json_encode(['inline_keyboard'=>[
+        $enabled
+            ? [['text'=>'✅ لغو استثنا','callback_data'=>'uForceAutoNo'.$uid]]
+            : [['text'=>'✅ آره، همیشه خودکار','callback_data'=>'uForceAutoYes'.$uid]],
+        [['text'=>$buttonValues['back_button'],'callback_data'=>'uRefresh'.$uid]]
+    ]],JSON_UNESCAPED_UNICODE);
+    smartSendOrEdit($message_id,"آیا می‌خواهید این کاربر همیشه خودکار رسیدش تأیید شود؟",$keys);
+    exit;
 }
 
 
@@ -6697,8 +6792,8 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $rowId = $match[1];
 
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -6994,8 +7089,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         $rowId = $match[3];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -13474,8 +13569,8 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $rowId = $match[2];
         
         $time = time();
-        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ?");
-        $stmt->bind_param("s", $text);
+        $stmt = $connection->prepare("SELECT * FROM `discounts` WHERE (`expire_date` > $time OR `expire_date` = 0) AND (`expire_count` > 0 OR `expire_count` = -1) AND `hash_id` = ? AND (`target_user_id`=0 OR `target_user_id`=?)");
+        $stmt->bind_param("si", $text, $from_id);
         $stmt->execute();
         $list = $stmt->get_result();
         $stmt->close();
@@ -16083,6 +16178,78 @@ if(preg_match('/^addDiscountCanUse(.*)/',$userInfo['step'],$match) && $text != $
         sendMessage("مدیریت کد های تخفیف",getDiscountCodeKeys());
     }else sendMessage("🔘|لطفا فقط عدد بفرستید");
 }
+if($data=="addPrivateDiscountCode" && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    delMessage();
+    setUser('', 'temp');
+    setUser('privateDiscountUser');
+    sendMessage("👤 آیدی عددی کاربری که این کد فقط برای او قابل استفاده باشد را ارسال کنید.",$cancelKey);
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountUser" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!ctype_digit(trim((string)$text)) || (int)$text<=0){ sendMessage("❌ فقط آیدی عددی معتبر ارسال کنید."); exit; }
+    $target=(int)$text;
+    $stmt=$connection->prepare("SELECT `userid` FROM `users` WHERE `userid`=? LIMIT 1");
+    $stmt->bind_param('i',$target); $stmt->execute(); $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+    if(!$exists){ sendMessage("❌ این آیدی در کاربران ربات پیدا نشد. دوباره آیدی عددی را بفرستید."); exit; }
+    setUser(json_encode(['target_user_id'=>$target],JSON_UNESCAPED_UNICODE),'temp');
+    setUser('privateDiscountText');
+    sendMessage("🎟 متن کد تخفیف اختصاصی را خودتان وارد کنید.\n\nمثال: <code>DELTA20</code>\nفاصله مجاز نیست؛ حروف، عدد، _ و - قابل استفاده است.",$cancelKey,'HTML');
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountText" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $code=trim((string)$text);
+    if(!preg_match('/^[\p{L}\p{N}_-]{2,64}$/u',$code)){ sendMessage("❌ کد باید ۲ تا ۶۴ کاراکتر و بدون فاصله باشد."); exit; }
+    $stmt=$connection->prepare("SELECT `id` FROM `discounts` WHERE `hash_id`=? LIMIT 1");
+    $stmt->bind_param('s',$code); $stmt->execute(); $exists=$stmt->get_result()->num_rows>0; $stmt->close();
+    if($exists){ sendMessage("❌ این کد قبلاً ساخته شده؛ یک کد دیگر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['hash_id']=$code;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp');
+    setUser('privateDiscountAmount');
+    sendMessage("🔘 مقدار تخفیف را وارد کنید.\nبرای درصد علامت % را کنار عدد بگذارید؛ در غیر این صورت مبلغ به تومان است.",$cancelKey);
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountAmount" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    $raw=trim((string)$text); $type=strpos($raw,'%')!==false?'percent':'amount'; $raw=trim(str_replace('%','',$raw));
+    if(!is_numeric($raw) || (float)$raw<0){ sendMessage("❌ فقط عدد یا درصد معتبر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['type']=$type; $draft['amount']=(int)$raw;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountDate');
+    sendMessage("🔘 مدت زمان این تخفیف را به روز وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountDate" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['date']=(int)$text>0 ? time()+((int)$text*86400) : 0;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountCount');
+    sendMessage("🔘 تعداد استفاده کل این کد را وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountCount" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $draft['count']=(int)$text>0?(int)$text:-1;
+    setUser(json_encode($draft,JSON_UNESCAPED_UNICODE),'temp'); setUser('privateDiscountCanUse');
+    sendMessage("🔘 تعداد دفعاتی که همین کاربر می‌تواند از کد استفاده کند را وارد کنید.\nبرای نامحدود بودن 0 بفرستید.");
+    exit;
+}
+if(($userInfo['step']??'')==="privateDiscountCanUse" && $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if(!is_numeric($text) || (int)$text<0){ sendMessage("❌ فقط عدد 0 یا بیشتر بفرستید."); exit; }
+    $draft=json_decode((string)($userInfo['temp']??''),true)?:[];
+    $canUse=(int)$text>0?(int)$text:-1;
+    $target=(int)($draft['target_user_id']??0); $code=(string)($draft['hash_id']??'');
+    if($target<=0 || $code===''){ sendMessage("❌ اطلاعات ساخت کد ناقص شد؛ دوباره از مدیریت تخفیف شروع کنید.",$removeKeyboard); setUser(); setUser('','temp'); exit; }
+    $stmt=$connection->prepare("INSERT INTO `discounts` (`hash_id`,`type`,`amount`,`expire_date`,`expire_count`,`can_use`,`target_user_id`) VALUES (?,?,?,?,?,?,?)");
+    $amount=(int)($draft['amount']??0); $date=(int)($draft['date']??0); $count=(int)($draft['count']??-1); $type=(string)($draft['type']??'amount');
+    $stmt->bind_param("ssiiiii",$code,$type,$amount,$date,$count,$canUse,$target);
+    $stmt->execute(); $stmt->close();
+    sendMessage("✅ کد اختصاصی <code>".htmlspecialchars($code,ENT_QUOTES,'UTF-8')."</code> فقط برای کاربر <code>{$target}</code> ساخته شد.",$removeKeyboard,"HTML");
+    setUser(); setUser('','temp');
+    sendMessage("مدیریت کد های تخفیف",getDiscountCodeKeys());
+    exit;
+}
+
 if(preg_match('/^delDiscount(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $stmt = $connection->prepare("DELETE FROM `discounts` WHERE `id` = ?");
     $stmt->bind_param("i", $match[1]);
