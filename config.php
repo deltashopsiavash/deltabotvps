@@ -3339,6 +3339,7 @@ function getAdminKeys(){
     // Fast config lookup by remark
     $rows[] = [
         ['text'=>'🔎 جستجوی کانفیگ','callback_data'=>'adminSearchConfig'],
+        ['text'=>'🔖 جستجوی کد پیگیری','callback_data'=>'deltaTrackSearch'],
     ];
 
     $rows[] = [
@@ -5119,7 +5120,7 @@ function getUserInfoKeys($userId, $backCallback = "managePanel"){
                 ['text'=>(($userInfos['pg_expiry_alerts'] ?? 1) ? '⚠️ گزارش پایان ۳روزه: روشن' : '🔇 گزارش پایان ۳روزه: خاموش'),'callback_data'=>"uPgExpiryToggle" . $userId]
                 ],
             [
-                ['text'=>(function_exists('deltaForceAutoApprove') && deltaForceAutoApprove($userId) ? '✅ استثنای تأیید خودکار: فعال' : '⚙️ استثنا کردن تأیید خودکار'),'callback_data'=>"deltaForceAutoAsk_" . $userId]
+                ['text'=>(function_exists('deltaAutoApprovePolicy') ? (['always'=>'✅ تأیید خودکار: همیشه','never'=>'❌ تأیید خودکار: هرگز','normal'=>'⚙️ تأیید خودکار: عادی'][deltaAutoApprovePolicy($userId)]) : '⚙️ استثنا کردن تأیید خودکار'),'callback_data'=>"deltaForceAutoAsk_" . $userId]
                 ],
             [
                 ['text'=>$buttonValues['back_button'],'callback_data'=>$backCallback]
@@ -8287,12 +8288,17 @@ function addInboundAccount($server_id, $client_id, $inbound_id, $expiryTime, $re
     curl_setopt($curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
     curl_setopt($curl, CURLOPT_POST, 1);
-    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 3);
-    curl_setopt($curl, CURLOPT_TIMEOUT, 3);
+    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($curl, CURLOPT_TIMEOUT, 15);
     curl_setopt($curl, CURLOPT_POSTFIELDS, http_build_query($postFields));
     curl_setopt($curl, CURLOPT_HEADER, 1);
     $response = curl_exec($curl);
 
+    if($response === false){
+        error_log('Panel inbound login failed for server '.(int)$server_id.': '.curl_error($curl));
+        curl_close($curl);
+        return null;
+    }
     $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
     $header = substr($response, 0, $header_size);
     $body = substr($response, $header_size);
@@ -8304,9 +8310,9 @@ function addInboundAccount($server_id, $client_id, $inbound_id, $expiryTime, $re
     }
 
     $loginResponse = json_decode($body,true);
-    if(!$loginResponse['success']){
+    if(!is_array($loginResponse) || empty($loginResponse['success']) || !$cookies){
         curl_close($curl);
-        return $loginResponse;
+        return null;
     }
 
     $cookieHeader = 'Cookie: ' . array_keys($cookies)[0] . "=" . $cookies[array_keys($cookies)[0]];
@@ -10972,12 +10978,17 @@ function getJson($server_id){
     curl_setopt($curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
     curl_setopt($curl, CURLOPT_POST, 1);
-    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 3);
-    curl_setopt($curl, CURLOPT_TIMEOUT, 3);
+    curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($curl, CURLOPT_TIMEOUT, 15);
     curl_setopt($curl, CURLOPT_POSTFIELDS, http_build_query($postFields));
     curl_setopt($curl, CURLOPT_HEADER, 1);
     $response = curl_exec($curl);
 
+    if($response === false){
+        error_log('Panel inbound list login failed for server '.(int)$server_id.': '.curl_error($curl));
+        curl_close($curl);
+        return null;
+    }
     $header_size = curl_getinfo($curl, CURLINFO_HEADER_SIZE);
     $header = substr($response, 0, $header_size);
     $body = substr($response, $header_size);
@@ -10989,9 +11000,9 @@ function getJson($server_id){
     }
 
     $loginResponse = json_decode($body,true);
-    if(!$loginResponse['success']){
+    if(!is_array($loginResponse) || empty($loginResponse['success']) || !$cookies){
         curl_close($curl);
-        return $loginResponse;
+        return null;
     }
 
     $cookieHeader = 'Cookie: ' . array_keys($cookies)[0] . "=" . $cookies[array_keys($cookies)[0]];

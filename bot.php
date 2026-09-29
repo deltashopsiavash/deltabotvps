@@ -4469,11 +4469,9 @@ if(preg_match('/^uBuyLimitSetPanel(\d+)/',$userInfo['step'],$match) && ($from_id
 }
 if(preg_match('/^uAuto(\d+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $uid=(int)$match[1];
-    $type="USER_NO_AUTOAPPROVE_" . $uid;
-    $val = getSettingValue($type,"0");
-    $newVal = ($val=="1")?"0":"1";
-    upsertSettingValue($type, $newVal);
-    alert($newVal=="1"?"✅ استثنا شد":"❌ برداشته شد");
+    $newPolicy = deltaAutoApprovePolicy($uid)==='never'?'normal':'never';
+    deltaSetAutoApprovePolicy($uid,$newPolicy);
+    alert($newPolicy==='never'?"✅ تأیید خودکار این کاربر بسته شد":"✅ کاربر به حالت عادی برگشت");
     refreshUserInfoPanel($uid, $message_id);
 }
 
@@ -8321,7 +8319,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
         $panelUrl = $serverConfig['panel_url'];
         $stmt->close();
 
-        include 'phpqrcode/qrlib.php';
+        include_once 'phpqrcode/qrlib.php';
         $msg = $message_id;
 
         $agent_bought = $payInfo['agent_bought'];
@@ -8362,8 +8360,8 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
             if($inbound_id == 0){    
                 if($serverType == "marzban" || $serverType == "pasarguard"){
                     $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
-                    if(!$response->success){
-                        if($response->msg == "User already exists"){
+                    if(is_object($response) && empty($response->success)){
+                        if(($response->msg??'') == "User already exists"){
                             $remark .= rand(1111,99999);
                             $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
                         }
@@ -8371,17 +8369,17 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
                 }
                 else{
                     $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid); 
-                    if(!$response->success){
-                        if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
-                        elseif(strstr($response->msg, "Port already exists")) $port = rand(1111,65000);
+                    if(is_object($response) && empty($response->success)){
+                        if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
+                        elseif(strstr($response->msg??'', "Port already exists")) $port = rand(1111,65000);
 
                         $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid);
                     }
                 }
             }else {
                 $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid); 
-                if(!$response->success){
-                    if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
+                if(is_object($response) && empty($response->success)){
+                    if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
 
                     $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid);
                 } 
@@ -8725,7 +8723,7 @@ if(preg_match('/^agencyApprove(\d+)_(\d+)/',$userInfo['step'],$match) && $text !
         sendMessage($mainValues['agency_request_approved'], null,null,$match[1]);
     }else sendMessage($mainValues['send_only_number']);
 }
-if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+if(preg_match('/^accept(.+)$/',$data, $match) and $text != $buttonValues['cancel'] && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser();
     
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id` = ?");
@@ -8735,7 +8733,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     $stmt->close();
     
     if(($payInfo['state'] ?? '') === 'cancelled_by_user'){ alert('این سفارش توسط کاربر لغو شده و قابل تأیید نیست.',true); editKeys(json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو شده توسط کاربر','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE)); exit(); }
-    if($payInfo['state'] == "approved") exit();
+    if(!$payInfo || $payInfo['state'] == "approved") exit();
 
     $payProvisionHash = (string)$match[1];
     $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'approved' WHERE `hash_id` = ? AND `state` IN ('have_sent','need_admin')");
@@ -8762,12 +8760,13 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     $file_detail = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    $days = $file_detail['days'];
+    if(!$file_detail){ $rollbackReceiptProvision(); alert('پلن این سفارش پیدا نشد؛ سفارش برای بررسی باقی ماند.',true); exit; }
+    $days = (int)$payInfo['day']>0 ? (int)$payInfo['day'] : $file_detail['days'];
     $date = time();
     $expire_microdate = floor(microtime(true) * 1000) + (864000 * $days * 100);
     $expire_date = $date + (86400 * $days);
     $type = $file_detail['type'];
-    $volume = $file_detail['volume'];
+    $volume = (int)$payInfo['volume']>0 && $payInfo['type']==='BUY_SUB' ? (int)$payInfo['volume'] : $file_detail['volume'];
     $protocol = $file_detail['protocol'];
     $price = $payInfo['price'];
     $server_id = $file_detail['server_id'];
@@ -8824,7 +8823,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
         }
         $remainingCount = max(0, $accountCount - $provisionedCount);
         
-        if($acount == 0 and $inbound_id != 0 && $remainingCount > 0){
+        if($inbound_id != 0 && (int)$acount < $remainingCount){
             $rollbackReceiptProvision();
             alert($mainValues['out_of_connection_capacity']);
             exit;
@@ -8861,7 +8860,7 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
     
     
         alert($mainValues['sending_config_to_user']);
-        include 'phpqrcode/qrlib.php';
+        include_once 'phpqrcode/qrlib.php';
         define('IMAGE_WIDTH',540);
         define('IMAGE_HEIGHT',540);
         for($i = $provisionedCount + 1; $i <= $accountCount; $i++){
@@ -8896,8 +8895,8 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
             if($inbound_id == 0){   
                 if($serverType == "marzban" || $serverType == "pasarguard"){
                     $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
-                    if(!$response->success){
-                        if($response->msg == "User already exists"){
+                    if(is_object($response) && empty($response->success)){
+                        if(($response->msg??'') == "User already exists"){
                             $remark .= rand(1111,99999);
                             $response = addMarzbanUser($server_id, $remark, $volume, $days, $fid);
                         }
@@ -8905,35 +8904,35 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
                 }
                 else{
                     $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid); 
-                    if(!$response->success){
-                        if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
-                        elseif(strstr($response->msg, "Port already exists")) $port = rand(1111,65000);
+                    if(is_object($response) && empty($response->success)){
+                        if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
+                        elseif(strstr($response->msg??'', "Port already exists")) $port = rand(1111,65000);
 
                         $response = addUser($server_id, $uniqid, $protocol, $port, $expire_microdate, $remark, $volume, $netType, 'none', $rahgozar, $fid);
                     }
                 }
             }else {
                 $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid); 
-                if(!$response->success){
-                    if(strstr($response->msg, "Duplicate email")) $remark .= RandomString();
+                if(is_object($response) && empty($response->success)){
+                    if(strstr($response->msg??'', "Duplicate email")) $remark .= RandomString();
 
                     $response = addInboundAccount($server_id, $uniqid, $inbound_id, $expire_microdate, $remark, $volume, $limitip, null, $fid);
                 } 
             }
             if(is_null($response)){
                 $rollbackReceiptProvision();
-                sendMessage('❌ | 🥺 گلم ، اتصال به سرور برقرار نیست لطفا مدیر رو در جریان بزار ...');
+                sendMessage("⏳ اتصال به سرور برقرار نشد؛ سفارش شما برای بررسی باقی مانده است.\n".deltaTrackingLine($payProvisionHash),null,'HTML',$uid);
                 exit;
             }
         	if($response == "inbound not Found"){
                 $rollbackReceiptProvision();
-                sendMessage("❌ | 🥺 سطر (inbound) با آیدی $inbound_id تو این سرور وجود نداره ، مدیر رو در جریان بزار ...");
+                sendMessage("⏳ انباند $inbound_id در سرور پیدا نشد؛ سفارش شما برای بررسی باقی مانده است.\n".deltaTrackingLine($payProvisionHash),null,'HTML',$uid);
         		exit;
         	}
-        	if(!$response->success){
+            if(!is_object($response) || empty($response->success)){
                 $rollbackReceiptProvision();
-                sendMessage('❌ | 😮 وای خطا داد لطفا سریع به مدیر بگو ...');
-                sendToAdmins("خطای سرور {$serverInfo['title']}:\n\n" . ($response->msg), null, null);
+                sendMessage("⏳ تحویل سرویس نیاز به بررسی مدیر دارد.\n".deltaTrackingLine($payProvisionHash),null,'HTML',$uid);
+                sendToAdmins("خطای سرور {$serverInfo['title']}:\n\n" . ($response->msg??'پاسخ نامعتبر') . "\n" . deltaTrackingLine($payProvisionHash), null, 'HTML');
                 exit;
             }
                 
@@ -8963,15 +8962,15 @@ if(preg_match('/accept(.*)/',$data, $match) and $text != $buttonValues['cancel']
             $order = $stmt->get_result();
             $stmt->close();
         }
-            sendMessage(deltaAppendTracking(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']),$payProvisionHash), getMainKeys(), 'HTML');
+            sendMessage(deltaAppendTracking(str_replace(["REMARK", "VOLUME", "DAYS"],[$remark, $volume, $days], $mainValues['sent_config_to_user']),$payProvisionHash), getMainKeys(), 'HTML',$uid);
         if($inbound_id == 0) {
             $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
-            $stmt->bind_param("ii", $accountCount, $server_id);
+            $stmt->bind_param("ii", $remainingCount, $server_id);
             $stmt->execute();
             $stmt->close();
         }else{
             $stmt = $connection->prepare("UPDATE `server_plans` SET `acount` = `acount` - ? WHERE id=?");
-            $stmt->bind_param("ii", $accountCount, $fid);
+            $stmt->bind_param("ii", $remainingCount, $fid);
             $stmt->execute();
             $stmt->close();
         }
@@ -9032,8 +9031,9 @@ if(preg_match('/^declineOffer(.+)_(\d+)$/',$data,$match) && ($from_id == $admin 
 }
 if(preg_match('/^declineOfferReason\|([^|]+)\|(\d+)\|(\d+)$/',$userInfo['step'] ?? '',$match) && ($from_id == $admin || $userInfo['isAdmin'] == true) && $text != $buttonValues['cancel']){
     $hash=$match[1]; $uid=(int)$match[2]; $receiptMessageId=(int)$match[3];
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='declined' WHERE `hash_id`=? AND `state`='have_sent'");
-    $stmt->bind_param('s',$hash); $stmt->execute(); $stmt->close();
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='declined' WHERE `hash_id`=? AND `state` IN ('have_sent','need_admin')");
+    $stmt->bind_param('s',$hash); $stmt->execute(); $changed=$stmt->affected_rows; $stmt->close();
+    if($changed!==1){ alert('این سفارش قبلاً بررسی یا لغو شده است.',true); setUser(); exit; }
     editKeys(json_encode(['inline_keyboard'=>[[['text'=>'لغو شد ❌','callback_data'=>'deltach']]]],JSON_UNESCAPED_UNICODE),$receiptMessageId);
     sendMessage((string)$text,null,null,$uid);
     sendMessage('رسید رد شد و موجودی رزروشده آزاد شد.',$removeKeyboard);
