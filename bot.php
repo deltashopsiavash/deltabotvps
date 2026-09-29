@@ -8462,6 +8462,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
     else{$msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                 [$serverTitle, 'کیف پول', $from_id, $username, $first_name, $price, $remark,$volume, $days], $mainValues['buy_new_account_request']);}
 
+    $msg = deltaAppendTracking($msg,$payInfo['hash_id'] ?? '');
     sendToAdmins($msg, $keys, "html");
 }
 if(preg_match('/payWithCartToCart(.*)/',$data,$match)) {
@@ -9146,7 +9147,8 @@ if(!function_exists('pgRenewBuildAdminReport')){
                "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
                "➕ روز افزوده: <b>{$days} روز</b>\n".
                "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
-               "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>";
+               "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>\n".
+               (function_exists('deltaTrackingLine') && !empty($pay['hash_id']) ? deltaTrackingLine($pay['hash_id']) : '');
     }
 }
 
