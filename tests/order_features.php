@@ -42,6 +42,15 @@ expectFeature(deltaParseUsdtRate(['status'=>'ok','stats'=>['usdt-rls'=>['bestSel
 expectFeature(deltaParseUsdtRate(['status'=>'ok','lastUpdate'=>time()*1000,'asks'=>[['2436420','2']]],'nobitex-book')===243642, 'Nobitex order book can quote USDT');
 expectFeature(deltaParseUsdtRate(['success'=>true,'result'=>['symbols'=>['USDTTMN'=>['stats'=>['askPrice'=>'243642.50']]]]],'wallex')===243643, 'Wallex toman rate can back up Nobitex');
 expectFeature(deltaParseUsdtRate(['status'=>'fail','stats'=>['usdt-rls'=>['bestSell'=>'2436420']]],'nobitex-stats')===0, 'Invalid exchange responses cannot set rates');
+$projectQr=deltaQrBackgroundPath(0);
+$originalDirectory=getcwd();
+chdir(__DIR__ . '/../settings');
+$cronQr=deltaQrBackgroundPath(0);
+chdir($originalDirectory);
+expectFeature($projectQr===$cronQr && is_file($cronQr), 'Webhook and cron must use the same QR background');
+$deliveryReport=deltaDeliveryReportText('known-invoice',123456,'plan<one>',50,30,45000);
+expectFeature(strpos($deliveryReport,'plan&lt;one&gt;')!==false, 'Admin delivery report must escape service names');
+expectFeature(strpos($deliveryReport,deltaTrackingCode('known-invoice'))!==false, 'Admin delivery report must contain tracking code');
 $code = deltaTrackingCode('known-invoice');
 expectFeature((bool)preg_match('/^[1-9][0-9]{7}$/', $code), 'Tracking code must be eight digits');
 expectFeature($code === deltaTrackingCode('known-invoice'), 'Tracking code must be stable');

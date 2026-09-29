@@ -161,45 +161,44 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         $stmt->close();
         if(!$claimed) continue;
 
-        if(!empty($rewaredChannel)){
-            $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
-            $mode = $forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی';
-            $nm = trim((string)($userinfo['name'] ?? ''));
-            $un = trim((string)($userinfo['username'] ?? ''));
-            $detail='';
-            if($payType==='BUY_SUB' || $payType==='RENEW_SCONFIG'){
-                $pid=(int)$payInfo['plan_id'];
-                $planStmt=$connection->prepare('SELECT title,volume,days FROM server_plans WHERE id=? LIMIT 1');
-                $planStmt->bind_param('i',$pid); $planStmt->execute(); $plan=$planStmt->get_result()->fetch_assoc(); $planStmt->close();
-                if($plan){
-                    $detail.='📦 پلن: '.htmlspecialchars((string)$plan['title'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
-                    $detail.='🔋 حجم: '.($payType==='BUY_SUB' && (int)$payInfo['volume']>0 ? $payInfo['volume'] : $plan['volume'])." گیگ\n";
-                    $detail.='⏰ مدت: '.($payType==='BUY_SUB' && (int)$payInfo['day']>0 ? $payInfo['day'] : $plan['days'])." روز\n";
-                }
-                if($payType==='RENEW_SCONFIG'){
-                    $conf=json_decode((string)$payInfo['description'],true);
-                    $detail.='🔮 سرویس: '.htmlspecialchars((string)($conf['remark']??'-'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
-                }
-            }elseif($payType==='RENEW_ACCOUNT' || preg_match('/^(?:INCREASE_(?:DAY|VOLUME)|PG_RENEW_(?:FULL|VOLUME|DAY))_(\d+)_/',$payType,$orderMatch)){
-                $oid=$payType==='RENEW_ACCOUNT'?(int)$payInfo['plan_id']:(int)$orderMatch[1];
-                $orderStmt=$connection->prepare('SELECT remark FROM orders_list WHERE id=? LIMIT 1');
-                $orderStmt->bind_param('i',$oid); $orderStmt->execute(); $order=$orderStmt->get_result()->fetch_assoc(); $orderStmt->close();
-                if($order) $detail.='🔮 سرویس: '.htmlspecialchars((string)$order['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+        $autoReport=null;
+        unset($remark);
+        $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
+        $mode = $forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی';
+        $nm = trim((string)($userinfo['name'] ?? ''));
+        $un = trim((string)($userinfo['username'] ?? ''));
+        $detail='';
+        if($payType==='BUY_SUB' || $payType==='RENEW_SCONFIG'){
+            $pid=(int)$payInfo['plan_id'];
+            $planStmt=$connection->prepare('SELECT title,volume,days FROM server_plans WHERE id=? LIMIT 1');
+            $planStmt->bind_param('i',$pid); $planStmt->execute(); $plan=$planStmt->get_result()->fetch_assoc(); $planStmt->close();
+            if($plan){
+                $detail.='📦 پلن: '.htmlspecialchars((string)$plan['title'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+                $detail.='🔋 حجم: '.($payType==='BUY_SUB' && (int)$payInfo['volume']>0 ? $payInfo['volume'] : $plan['volume'])." گیگ\n";
+                $detail.='⏰ مدت: '.($payType==='BUY_SUB' && (int)$payInfo['day']>0 ? $payInfo['day'] : $plan['days'])." روز\n";
             }
-            $autoReport = "🤖 گزارش تأیید خودکار رسید\n\n".
-                "👤 آیدی عددی: <code>{$user_id}</code>\n".
-                "👨‍💼 نام: ".htmlspecialchars($nm,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
-                "⚡️ نام کاربری: ".htmlspecialchars($un,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
-                "🧾 نوع تراکنش: <code>".htmlspecialchars((string)$payType,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n".
-                $detail.
-                "💰 مبلغ: ".number_format((int)$price)." تومان\n".
-                "🔖 کد پیگیری: <code>{$track}</code>\n".
-                "⚙️ روش تأیید: {$mode}\n".
-                "📌 وضعیت: رسید پذیرفته شد و سفارش در حال پردازش است\n".
-                "🕒 زمان: ".date('Y-m-d H:i:s');
-            sendMessage($autoReport,null,'HTML',$rewaredChannel);
+            if($payType==='RENEW_SCONFIG'){
+                $conf=json_decode((string)$payInfo['description'],true);
+                $detail.='🔮 سرویس: '.htmlspecialchars((string)($conf['remark']??'-'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
+            }
+        }elseif($payType==='RENEW_ACCOUNT' || preg_match('/^(?:INCREASE_(?:DAY|VOLUME)|PG_RENEW_(?:FULL|VOLUME|DAY))_(\d+)_/',$payType,$orderMatch)){
+            $oid=$payType==='RENEW_ACCOUNT'?(int)$payInfo['plan_id']:(int)$orderMatch[1];
+            $orderStmt=$connection->prepare('SELECT remark FROM orders_list WHERE id=? LIMIT 1');
+            $orderStmt->bind_param('i',$oid); $orderStmt->execute(); $order=$orderStmt->get_result()->fetch_assoc(); $orderStmt->close();
+            if($order) $detail.='🔮 سرویس: '.htmlspecialchars((string)$order['remark'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n";
         }
-        
+        $autoReport = "🤖 گزارش تأیید خودکار رسید\n\n".
+            "👤 آیدی عددی: <code>{$user_id}</code>\n".
+            "👨‍💼 نام: ".htmlspecialchars($nm,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
+            "⚡️ نام کاربری: ".htmlspecialchars($un,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n".
+            "🧾 نوع تراکنش: <code>".htmlspecialchars((string)$payType,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n".
+            $detail.
+            "💰 مبلغ: ".number_format((int)$price)." تومان\n".
+            "🔖 کد پیگیری: <code>{$track}</code>\n".
+            "⚙️ روش تأیید: {$mode}\n".
+            "📌 وضعیت: تأیید شد و سفارش انجام شد\n".
+            "🕒 زمان: ".date('Y-m-d H:i:s');
+
         if($payType == "INCREASE_WALLET"){
             $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
             $stmt->bind_param("ii", $price, $user_id);
@@ -676,6 +675,17 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         }
         
 
-        editKeys(json_encode(['inline_keyboard'=>[[['text'=>"خودکار تأیید شد",'callback_data'=>"deltach"]]]]), $payInfo['message_id'], $payInfo['chat_id']);
+        if($payType==='BUY_SUB' && !empty($remark)) $autoReport.="\n🔮 ریمارک سرویس: ".htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        sendToAdmins($autoReport,null,'HTML');
+        if(trim((string)$rewaredChannel)!=='' && !in_array((int)$rewaredChannel,getAllAdminIds(),true)){
+            sendMessage($autoReport,null,'HTML',$rewaredChannel);
+        }
+        if((int)($payInfo['message_id']??0)>0 && !empty($payInfo['chat_id'])){
+            $approvedKeys=json_encode(['inline_keyboard'=>[
+                [['text'=>'✅ خودکار تأیید شد','callback_data'=>'deltach']],
+                [['text'=>'👤 مشخصات کاربر','callback_data'=>'receiptUserInfo_'.(int)$user_id]]
+            ]],JSON_UNESCAPED_UNICODE);
+            editKeys($approvedKeys,(int)$payInfo['message_id'],(int)$payInfo['chat_id']);
+        }
     }
 }
