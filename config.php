@@ -574,10 +574,16 @@ function getAllAdminIds(){
     $ids = array_values(array_unique(array_filter($ids)));
     return $ids;
 }
-function sendToAdmins($txt, $key = null, $parse = "MarkDown", $msg = null){
+function sendToAdmins($txt, $key = null, $parse = "MarkDown", $msg = null, $receiptHash = null){
+    $firstRes = null;
     foreach(getAllAdminIds() as $aid){
-        sendMessage($txt, $key, $parse, $aid, $msg);
+        $res = sendMessage($txt, $key, $parse, $aid, $msg);
+        if($firstRes === null || (empty($firstRes->ok) && !empty($res->ok))) $firstRes = $res;
+        if($receiptHash !== null && function_exists('deltaRememberReceiptAdminMessage')){
+            deltaRememberReceiptAdminMessage($receiptHash, $aid, $res);
+        }
     }
+    return $firstRes;
 }
 
 
@@ -1983,11 +1989,14 @@ function getReceiptAdminKeyboard($approveCallback, $declineCallback, $uid){
     ]], 448);
 }
 
-function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown"){
+function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown", $receiptHash = null){
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
         $res = sendPhoto($photo, $caption, $keyboard, $parse, $aid);
         if($firstRes === null) $firstRes = $res;
+        if($receiptHash !== null && function_exists('deltaRememberReceiptAdminMessage')){
+            deltaRememberReceiptAdminMessage($receiptHash, $aid, $res);
+        }
     }
     return $firstRes;
 }
@@ -12169,6 +12178,69 @@ function pgRenewApply($orderId,$days,$volume,$fullReset=false,$fullPlanId=0){
     $stmt=$connection->prepare("UPDATE `orders_list` SET `expire_date`=?,`notif`=0,`expired_warned_at`=0,`delete_after`=0 WHERE `id`=?");
     $stmt->bind_param('ii',$newExpire,$orderId);$stmt->execute();$stmt->close();
     return (object)['success'=>true,'order'=>$order,'full_reset'=>false];
+}
+
+// Both webhook approvals and settings/rewardReport.php use this report.
+function pgRenewBuildAdminReport($pay, $orderId, $days, $volume, $renewedById){
+    global $connection;
+    $orderId = (int)$orderId;
+    $renewedById = (int)$renewedById;
+    $days = (int)$days;
+    $volume = (float)$volume;
+    $price = isset($pay['price']) ? (int)$pay['price'] : 0;
+    $payType = $pay['type'] ?? '';
+    $serviceName = 'نامشخص';
+    $serviceOwner = $renewedById;
+    if($orderId > 0){
+        $stmt=$connection->prepare("SELECT `remark`,`userid` FROM `orders_list` WHERE `id`=? LIMIT 1");
+        $stmt->bind_param('i',$orderId);
+        $stmt->execute();
+        $ord=$stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if($ord){
+            $serviceName = $ord['remark'] ?: $serviceName;
+            $serviceOwner = (int)($ord['userid'] ?? $serviceOwner);
+        }
+    }
+    $renewTitle = 'تمدید';
+    if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$payType,$mm)){
+        $pid=(int)$mm[2];
+        $stmt=$connection->prepare("SELECT `title` FROM `server_plans` WHERE `id`=? LIMIT 1");
+        $stmt->bind_param('i',$pid);
+        $stmt->execute();
+        $pl=$stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $renewTitle = 'تمدید کلی' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
+    } elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$payType,$mm)){
+        $pid=(int)$mm[2];
+        $stmt=$connection->prepare("SELECT `title` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
+        $stmt->bind_param('i',$pid);
+        $stmt->execute();
+        $pl=$stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $renewTitle = 'تمدید حجم' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
+    } elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$payType,$mm)){
+        $pid=(int)$mm[2];
+        $stmt=$connection->prepare("SELECT `title` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
+        $stmt->bind_param('i',$pid);
+        $stmt->execute();
+        $pl=$stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $renewTitle = 'تمدید تاریخ' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
+    }
+    $safeService = htmlspecialchars((string)$serviceName, ENT_QUOTES, 'UTF-8');
+    $safeTitle = htmlspecialchars((string)$renewTitle, ENT_QUOTES, 'UTF-8');
+    $volText = rtrim(rtrim(number_format($volume, 2, '.', ''), '0'), '.');
+    if($volText === '') $volText = '0';
+    return "🔁 <b>گزارش تمدید سرویس</b>\n\n".
+           "👤 آیدی عددی کاربر: <code>{$serviceOwner}</code>\n".
+           "🧾 نوع تمدید: <b>{$safeTitle}</b>\n".
+           "🔮 نام سرویس: <code>{$safeService}</code>\n".
+           "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
+           "➕ روز افزوده: <b>{$days} روز</b>\n".
+           "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
+           "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>\n".
+           (function_exists('deltaTrackingLine') && !empty($pay['hash_id']) ? deltaTrackingLine($pay['hash_id']) : '');
 }
 
 

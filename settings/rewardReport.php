@@ -165,6 +165,7 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         unset($remark);
         $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
         $mode = $forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی';
+        $receiptKind = getSettingValue('RECEIPT_KIND_'.sha1((string)$payInfo['hash_id']),'photo')==='text'?'متنی / پیامک':'تصویری';
         $nm = trim((string)($userinfo['name'] ?? ''));
         $un = trim((string)($userinfo['username'] ?? ''));
         $detail='';
@@ -196,6 +197,7 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             "💰 مبلغ: ".number_format((int)$price)." تومان\n".
             "🔖 کد پیگیری: <code>{$track}</code>\n".
             "⚙️ روش تأیید: {$mode}\n".
+            "📨 نوع رسید: {$receiptKind}\n".
             "📌 وضعیت: تأیید شد و سفارش انجام شد\n".
             "🕒 زمان: ".date('Y-m-d H:i:s');
 
@@ -459,16 +461,14 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                     $response = editInboundTraffic($server_id, $uuid, $volume, $days, "renew");
             }
             
-            if(is_null($response)){
-        		sendMessage('پرداخت شما با موفقیت انجام شد ولی مشکل فنی در اتصال به سرور. لطفا به مدیریت اطلاع بدید، مبلغ ' . number_format($price) . " تومان به کیف پول شما اضافه شد",null,null,$user_id);
-        		
-                $stmt = $connection->prepare("UPDATE `users` SET `wallet` = `wallet` + ? WHERE `userid` = ?");
-                $stmt->bind_param("ii", $price, $user_id);
-                $stmt->execute();
-                $stmt->close();
-
-                sendMessage("✅ مبلغ " . number_format($price) . " تومان به کیف پول کاربر $user_id اضافه شد، میخواست کانفیگش رو تمدید کنه، ولی اتصال به سرور برقرار نبود",null,null,$admin);
-            	exit;
+            if(!is_object($response) || empty($response->success)){
+                $stmt=$connection->prepare("UPDATE pays SET state='have_sent' WHERE id=? AND state='paid'");
+                $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
+                upsertSettingValue('AUTOAPPROVE_FAILED_'.$rowId,'1');
+                $track=deltaTrackingCode($payInfo['hash_id']);
+                sendMessage("⏳ رسید شما ثبت شد، اما تمدید سرویس نیاز به بررسی مدیر دارد.\n🔖 کد پیگیری: <code>{$track}</code>",null,'HTML',$user_id);
+                sendToAdmins("⚠️ تمدید خودکار سرویس <code>{$track}</code> انجام نشد؛ رسید برای بررسی دستی باقی ماند.\n👤 کاربر: <code>{$user_id}</code>\n".deltaOrderDetails($payInfo),null,'HTML');
+                continue;
             }
             $stmt = $connection->prepare("UPDATE `orders_list` SET `expire_date` = ?, `notif` = 0 WHERE `id` = ?");
             $newExpire = $time + $days * 86400;
@@ -480,7 +480,8 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
             $stmt->execute();
             $stmt->close();
         
-            sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$payInfo['hash_id']),getMainKeys(), 'HTML', $user_id);
+            sendMessage(deltaAppendTracking("✅ سرویس ".htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')." با موفقیت تمدید شد\n➕ حجم: {$volume} گیگ\n➕ مدت: {$days} روز",$payInfo['hash_id']),null,'HTML',$user_id);
+            $autoReport.="\n➕ حجم تمدید: {$volume} گیگ\n➕ مدت تمدید: {$days} روز";
         }
         elseif(preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo)){
             $orderId = $increaseInfo[1];
@@ -623,9 +624,11 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                 $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
                 upsertSettingValue('AUTOAPPROVE_FAILED_'.$rowId,'1');
                 sendToAdmins('⚠️ تمدید خودکار پاسارگارد برای کد '.deltaTrackingCode($payInfo['hash_id']).' ناموفق بود؛ رسید برای بررسی دستی باقی ماند.',null,'HTML');
+                sendMessage(deltaAppendTracking('⏳ تمدید سرویس نیاز به بررسی مدیر دارد؛ نتیجه به شما اطلاع داده می‌شود.',$payInfo['hash_id']),null,'HTML',$user_id);
                 continue;
             }
-            sendToAdmins(pgRenewBuildAdminReport($payInfo,$oid,$days,$volume,$user_id),null,'HTML');
+            $autoReport=pgRenewBuildAdminReport($payInfo,$oid,$days,$volume,$user_id).
+                "\n🤖 تأیید خودکار انجام شد\n⚙️ روش تأیید: {$mode}\n📨 نوع رسید: {$receiptKind}";
             sendMessage(deltaAppendTracking("✅ سرویس شما با موفقیت تمدید شد\n➕ حجم: $volume گیگ\n➕ روز: $days روز",$payInfo['hash_id']),null,'HTML',$user_id);
         }
         elseif($payType == "RENEW_SCONFIG"){
@@ -664,6 +667,7 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
                 $stmt->bind_param('i',$rowId); $stmt->execute(); $stmt->close();
                 upsertSettingValue('AUTOAPPROVE_FAILED_'.$rowId,'1');
                 sendToAdmins('⚠️ تمدید خودکار برای کد '.deltaTrackingCode($payInfo['hash_id']).' ناموفق بود؛ رسید برای بررسی دستی باقی ماند.',null,'HTML');
+                sendMessage(deltaAppendTracking('⏳ تمدید سرویس نیاز به بررسی مدیر دارد؛ نتیجه به شما اطلاع داده می‌شود.',$payInfo['hash_id']),null,'HTML',$user_id);
                 continue;
 	        }
         	$stmt = $connection->prepare("INSERT INTO `increase_order` VALUES (NULL, ?, ?, ?, ?, ?, ?);");
@@ -671,7 +675,8 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         	$stmt->execute();
         	$stmt->close();
 
-            sendMessage(deltaAppendTracking("✅سرویس $remark با موفقیت تمدید شد",$payInfo['hash_id']),null,'HTML',$user_id);
+            sendMessage(deltaAppendTracking("✅ سرویس ".htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')." با موفقیت تمدید شد\n➕ حجم: {$volume} گیگ\n➕ مدت: {$days} روز",$payInfo['hash_id']),null,'HTML',$user_id);
+            $autoReport.="\n➕ حجم تمدید: {$volume} گیگ\n➕ مدت تمدید: {$days} روز";
         }
         
 
@@ -680,12 +685,6 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         if(trim((string)$rewaredChannel)!=='' && !in_array((int)$rewaredChannel,getAllAdminIds(),true)){
             sendMessage($autoReport,null,'HTML',$rewaredChannel);
         }
-        if((int)($payInfo['message_id']??0)>0 && !empty($payInfo['chat_id'])){
-            $approvedKeys=json_encode(['inline_keyboard'=>[
-                [['text'=>'✅ خودکار تأیید شد','callback_data'=>'deltach']],
-                [['text'=>'👤 مشخصات کاربر','callback_data'=>'receiptUserInfo_'.(int)$user_id]]
-            ]],JSON_UNESCAPED_UNICODE);
-            editKeys($approvedKeys,(int)$payInfo['message_id'],(int)$payInfo['chat_id']);
-        }
+        deltaSyncAutoApprovedReceiptMessages($payInfo);
     }
 }

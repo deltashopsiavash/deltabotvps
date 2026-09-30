@@ -878,6 +878,23 @@ if($specialReservationHash!==''){
 }
 
 // ---------------- Receipt helper actions + text receipt fallback (added)
+// A receipt may finish in the cron worker before an administrator presses its
+// original button. Refresh legacy/untracked messages on that first click too.
+if(($from_id == $admin || ($userInfo['isAdmin'] ?? false) == true)
+    && preg_match('/^(?:approvePayment|accCustom|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew|accept)(.+)$/', (string)$data, $approvedReceiptMatch)){
+    $receiptHash=$approvedReceiptMatch[1];
+    $stmt=$connection->prepare('SELECT user_id,state FROM pays WHERE hash_id=? LIMIT 1');
+    $stmt->bind_param('s',$receiptHash); $stmt->execute();
+    $approvedReceipt=$stmt->get_result()->fetch_assoc(); $stmt->close();
+    if($approvedReceipt && in_array($approvedReceipt['state'],['paid','approved'],true)){
+        $wasAutomatic=$approvedReceipt['state']==='paid';
+        $doneKeys=$wasAutomatic ? deltaAutoApprovedReceiptKeyboard($approvedReceipt['user_id'])
+            : json_encode(['inline_keyboard'=>[[['text'=>'✅ تأیید شد','callback_data'=>'deltach']],[['text'=>'👤 مشخصات کاربر','callback_data'=>'receiptUserInfo_'.(int)$approvedReceipt['user_id']]]]],JSON_UNESCAPED_UNICODE);
+        editKeys($doneKeys);
+        alert('این رسید قبلاً تأیید شده است.',true);
+        exit;
+    }
+}
 if(preg_match('/^receiptUserInfo_(\d+)$/', $data, $match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     $uid = (int)$match[1];
     $keys = getUserInfoKeys($uid);
@@ -965,13 +982,17 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     }else{
         $keyboard = getReceiptAdminKeyboard('accept' . $hash, 'deltaRejectPay_' . $hash . '_' . $uid, $uid);
     }
-    $res = sendToAdmins($msg, $keyboard, 'HTML');
-    // message_id cannot be reliably collected from sendToAdmins for all admins; keep state have_sent.
+    $res = sendToAdmins($msg, $keyboard, 'HTML', null, $hash);
+    if(empty($res->ok)){
+        sendMessage('ارسال رسید به مدیریت ناموفق بود؛ لطفاً دوباره تلاش کنید.');
+        exit;
+    }
     if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
     $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
     $stmt->bind_param('s', $hash);
     $stmt->execute();
     $stmt->close();
+    upsertSettingValue('RECEIPT_KIND_'.sha1($hash),'text');
     if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
     sendMessage(deltaAppendTracking($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.',$hash), $removeKeyboard, 'HTML');
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
@@ -4903,7 +4924,7 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $msg = deltaAppendTracking($msg,$match[1]);
         
         $keyboard = getPaymentAdminKeyboard($match[1], $from_id);
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         
         $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
@@ -7895,7 +7916,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
         if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
         $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "deltaRejectPay_" . $match[1] . "_" . $uid, $uid);
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         
         $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
@@ -8591,7 +8612,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
 
         $keyboard = getReceiptAdminKeyboard("accept" . $match[1], "declineOffer" . $match[1] . "_" . $uid, $uid);
         setUser('', 'temp');
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         
         if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
@@ -9102,70 +9123,7 @@ if($data== "usersNewTicket"){
     }
 }
 // ---------- PasarGuard renewal management and user renewal ----------
-
-if(!function_exists('pgRenewBuildAdminReport')){
-    function pgRenewBuildAdminReport($pay, $orderId, $days, $volume, $renewedById){
-        global $connection;
-        $orderId = (int)$orderId;
-        $renewedById = (int)$renewedById;
-        $days = (int)$days;
-        $volume = (float)$volume;
-        $price = isset($pay['price']) ? (int)$pay['price'] : 0;
-        $payType = $pay['type'] ?? '';
-        $serviceName = 'نامشخص';
-        $serviceOwner = $renewedById;
-        if($orderId > 0){
-            $stmt=$connection->prepare("SELECT `remark`,`userid` FROM `orders_list` WHERE `id`=? LIMIT 1");
-            $stmt->bind_param('i',$orderId);
-            $stmt->execute();
-            $ord=$stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            if($ord){
-                $serviceName = $ord['remark'] ?: $serviceName;
-                $serviceOwner = (int)($ord['userid'] ?? $serviceOwner);
-            }
-        }
-        $renewTitle = 'تمدید';
-        if(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/',$payType,$mm)){
-            $pid=(int)$mm[2];
-            $stmt=$connection->prepare("SELECT `title` FROM `server_plans` WHERE `id`=? LIMIT 1");
-            $stmt->bind_param('i',$pid);
-            $stmt->execute();
-            $pl=$stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $renewTitle = 'تمدید کلی' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
-        } elseif(preg_match('/^PG_RENEW_VOLUME_(\d+)_(\d+)$/',$payType,$mm)){
-            $pid=(int)$mm[2];
-            $stmt=$connection->prepare("SELECT `title` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
-            $stmt->bind_param('i',$pid);
-            $stmt->execute();
-            $pl=$stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $renewTitle = 'تمدید حجم' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
-        } elseif(preg_match('/^PG_RENEW_DAY_(\d+)_(\d+)$/',$payType,$mm)){
-            $pid=(int)$mm[2];
-            $stmt=$connection->prepare("SELECT `title` FROM `pg_renew_plans` WHERE `id`=? LIMIT 1");
-            $stmt->bind_param('i',$pid);
-            $stmt->execute();
-            $pl=$stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $renewTitle = 'تمدید تاریخ' . (!empty($pl['title']) ? ' - '.$pl['title'] : '');
-        }
-        $safeService = htmlspecialchars((string)$serviceName, ENT_QUOTES, 'UTF-8');
-        $safeTitle = htmlspecialchars((string)$renewTitle, ENT_QUOTES, 'UTF-8');
-        $volText = rtrim(rtrim(number_format($volume, 2, '.', ''), '0'), '.');
-        if($volText === '') $volText = '0';
-        return "🔁 <b>گزارش تمدید سرویس</b>\n\n".
-               "👤 آیدی عددی کاربر: <code>{$serviceOwner}</code>\n".
-               "🧾 نوع تمدید: <b>{$safeTitle}</b>\n".
-               "🔮 نام سرویس: <code>{$safeService}</code>\n".
-               "➕ حجم افزوده: <b>{$volText} گیگ</b>\n".
-               "➕ روز افزوده: <b>{$days} روز</b>\n".
-               "💰 مبلغ: <b>".number_format($price)." تومان</b>\n".
-               "🕒 زمان: <code>".date('Y-m-d H:i:s')."</code>\n".
-               (function_exists('deltaTrackingLine') && !empty($pay['hash_id']) ? deltaTrackingLine($pay['hash_id']) : '');
-    }
-}
+// pgRenewBuildAdminReport lives in config.php so the cron worker can use it too.
 
 if($data == 'pgRenewManage' and ($from_id == $admin || $userInfo['isAdmin'] == true)){
     smartSendOrEdit($message_id, "🔁 مدیریت تمدید پاسارگارد", pgRenewMainKeyboard());
@@ -9473,7 +9431,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $fileid = $lastPhoto->file_id ?? '';
     sendMessage(deltaAppendTracking($mainValues['renew_order_sent'] ?? 'رسید ارسال شد',$hash), $removeKeyboard, 'HTML'); sendMessage($mainValues['reached_main_menu'], getMainKeys()); setUser();
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
-    $res=sendPhotoToAdmins($fileid, deltaAppendTracking("🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان",$hash), $keys, 'HTML');
+    $res=sendPhotoToAdmins($fileid, deltaAppendTracking("🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان",$hash), $keys, 'HTML', $hash);
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
     $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
     if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
@@ -13726,7 +13684,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $msg = deltaAppendTracking($msg,$hash_id);
         $keyboard = getReceiptAdminKeyboard("approveRenewAcc$hash_id", "decRenewAcc$hash_id", $uid);
     
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         setUser();
         
@@ -14609,7 +14567,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $keyboard = getReceiptAdminKeyboard("approveIncreaseDay{$match[1]}", "decIncreaseDay{$match[1]}", $from_id);
 
 
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         setUser();
         
@@ -14988,7 +14946,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $msg = deltaAppendTracking($msg,$match[1]);
          $keyboard = getReceiptAdminKeyboard("approveIncreaseVolume{$match[1]}", "decIncreaseVolume{$match[1]}", $from_id);
 
-        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML");
+        $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         setUser();
         
