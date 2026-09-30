@@ -8,6 +8,10 @@ require __DIR__ . '/../delta_order_features.php';
 function expectFeature($condition, $message){
     if(!$condition){ fwrite(STDERR, $message . PHP_EOL); exit(1); }
 }
+function editKeys($keys,$messageId,$chatId){
+    global $editedReceiptMessages;
+    $editedReceiptMessages[]=['chat'=>$chatId,'message'=>$messageId,'keyboard'=>json_decode($keys,true)];
+}
 
 expectFeature(deltaUsdtAmount(45000, 243642) === '0.1847', 'USDT amount must round up to four decimals');
 expectFeature(deltaUsdtAmount(1, 243642) === '0.0001', 'Small amounts must not round down to zero');
@@ -21,6 +25,16 @@ deltaMarkReceiptSubmitted('receipt-new', $old);
 expectFeature(deltaReceiptHasSubmissionMarker('receipt-new'), 'New receipt needs a submission marker');
 expectFeature(!deltaReceiptHasSubmissionMarker('receipt-old'), 'Old receipt must not be marked');
 expectFeature(deltaReceiptSubmittedAt('receipt-new') === $old, 'Receipt marker must preserve submission time');
+$fakeAdminReply=(object)['ok'=>true,'result'=>(object)['message_id'=>321]];
+expectFeature(deltaRememberReceiptAdminMessage('receipt-new',111,$fakeAdminReply), 'Text receipt message should be stored for the first admin');
+$fakeAdminReply->result->message_id=654;
+expectFeature(deltaRememberReceiptAdminMessage('receipt-new',222,$fakeAdminReply), 'Text receipt message should be stored for a second admin');
+expectFeature(deltaReceiptAdminMessageTargets(['hash_id'=>'receipt-new','chat_id'=>111,'message_id'=>321])===[[111,321],[222,654]], 'Every administrator needs the right message id');
+$editedReceiptMessages=[];
+deltaSyncAutoApprovedReceiptMessages(['hash_id'=>'receipt-new','chat_id'=>111,'message_id'=>321,'user_id'=>123456]);
+expectFeature(count($editedReceiptMessages)===2, 'Auto approval should refresh both admin receipt buttons');
+expectFeature($editedReceiptMessages[1]['keyboard']['inline_keyboard'][0][0]['text']==='✅ خودکار تأیید شد', 'Receipt must show its final approval state');
+expectFeature($editedReceiptMessages[1]['keyboard']['inline_keyboard'][1][0]['callback_data']==='receiptUserInfo_123456', 'Auto-approved receipt keeps user details button');
 deltaSetForceAutoApprove(6166906522, true);
 expectFeature(deltaForceAutoApprove(6166906522), 'Forced approval should work independently');
 deltaSetForceAutoApprove(6166906522, false);

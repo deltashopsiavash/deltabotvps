@@ -82,6 +82,40 @@ if(!function_exists('deltaForceAutoApprove')){
         return (int)getSettingValue(deltaReceiptMarkerKey($hash),'0')>0;
     }
 }
+if(!function_exists('deltaRememberReceiptAdminMessage')){
+    function deltaReceiptAdminMessagesKey($hash){ return 'RECEIPT_ADMIN_MSG_'.sha1((string)$hash); }
+    function deltaRememberReceiptAdminMessage($hash,$adminId,$response){
+        $messageId=(int)($response->result->message_id??0);
+        if(empty($response->ok) || $messageId<=0 || (int)$adminId===0) return false;
+        $key=deltaReceiptAdminMessagesKey($hash);
+        $messages=json_decode((string)getSettingValue($key,'{}'),true);
+        if(!is_array($messages)) $messages=[];
+        $messages[(string)(int)$adminId]=$messageId;
+        return upsertSettingValue($key,json_encode($messages,JSON_UNESCAPED_UNICODE));
+    }
+    function deltaReceiptAdminMessageTargets($pay){
+        $messages=json_decode((string)getSettingValue(deltaReceiptAdminMessagesKey($pay['hash_id']??''),'{}'),true);
+        if(!is_array($messages)) $messages=[];
+        $chatId=(int)($pay['chat_id']??0);
+        $messageId=(int)($pay['message_id']??0);
+        if($chatId!==0 && $messageId>0 && !isset($messages[(string)$chatId])) $messages[(string)$chatId]=$messageId;
+        $targets=[];
+        foreach($messages as $chat=>$message){
+            if((int)$chat!==0 && (int)$message>0) $targets[]=[(int)$chat,(int)$message];
+        }
+        return $targets;
+    }
+    function deltaAutoApprovedReceiptKeyboard($uid){
+        return json_encode(['inline_keyboard'=>[
+            [['text'=>'✅ خودکار تأیید شد','callback_data'=>'deltach']],
+            [['text'=>'👤 مشخصات کاربر','callback_data'=>'receiptUserInfo_'.(int)$uid]]
+        ]],JSON_UNESCAPED_UNICODE);
+    }
+    function deltaSyncAutoApprovedReceiptMessages($pay){
+        $keys=deltaAutoApprovedReceiptKeyboard($pay['user_id']??0);
+        foreach(deltaReceiptAdminMessageTargets($pay) as [$chat,$message]) editKeys($keys,$message,$chat);
+    }
+}
 if(!function_exists('deltaUsdtRateToman')){
     function deltaParseUsdtRate($j,$source){
         if(!is_array($j)) return 0;
@@ -403,7 +437,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $uname=htmlspecialchars((string)($userInfo['username']??''),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
             $msg="💵 رسید پرداخت ارزی (USDT BEP20)\n\n👤 آیدی: <code>{$from_id}</code>\n👨‍💼 نام: {$name}\n⚡️ نام کاربری: {$uname}\n💰 مبلغ سرویس: ".number_format((int)$pay['price'])." تومان\n📊 نرخ تتر: ".number_format($rate)." تومان\n💲 مبلغ فاکتور: {$usdt} USDT\n🧾 نوع سفارش: <code>".htmlspecialchars((string)$pay['type'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n📋 آدرس مقصد: <code>".htmlspecialchars((string)$meta['wallet'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n🧾 هش تراکنش:\n<code>{$tx}</code>\n".deltaTrackingLine($hash);
             [$ok,$no]=deltaReceiptCallbacks($pay); $kb=getReceiptAdminKeyboard($ok,$no,$from_id);
-            $res=sendPhotoToAdmins($fileid,$msg,$kb,'HTML');
+            $res=sendPhotoToAdmins($fileid,$msg,$kb,'HTML',$hash);
             if(empty($res->ok)){ sendMessage('ارسال رسید به مدیریت ناموفق بود؛ لطفاً دوباره تلاش کنید.'); exit; }
             $mid=(int)($res->result->message_id??0);
             $stmt=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE hash_id=? AND user_id=? AND state='pending'"); $stmt->bind_param('iisi',$mid,$admin,$hash,$from_id); $stmt->execute(); $stmt->close();
