@@ -12447,7 +12447,9 @@ function npvCreateLockedSubFile($subLink, $publicKey, $remark, &$error = ''){
     $headerLen = unpack('N', substr($head, 5, 4))[1];
     $header = $headerLen >= 198 && $headerLen < 65536 ? @file_get_contents($outPath, false, null, 9, $headerLen) : false;
     $recipientCount = is_string($header) && strlen($header) >= 53 ? unpack('n', substr($header, 51, 2))[1] : 0;
-    $recordsEnd = 53 + 141 * $recipientCount;
+    // v6 stores N recipient records (32-byte fingerprint + 93-byte wrap)
+    // followed by one global 16-byte recipient-binding salt.
+    $recordsEnd = 53 + (125 * $recipientCount) + 16;
     $fingerprint = hash('sha256', npvDecodePublicKey($publicKey), true);
     $recipientFound = false;
     if(is_string($header) && $recipientCount > 0 && $recipientCount <= 1024){
