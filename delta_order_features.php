@@ -304,7 +304,7 @@ if(!function_exists('deltaOrderDetails')){
 }
 if(!function_exists('deltaFeatureHandleRequest')){
     function deltaFeatureHandleRequest(){
-        global $connection,$data,$text,$from_id,$admin,$userInfo,$message_id,$buttonValues,$cancelKey,$removeKeyboard,$update,$fileid,$paymentKeys,$botState;
+        global $connection,$data,$text,$from_id,$admin,$userInfo,$message_id,$buttonValues,$cancelKey,$removeKeyboard,$update,$fileid,$paymentKeys,$botState,$mainValues;
         $data=isset($data)?(string)$data:'';
         $text=isset($text)?$text:'';
         $isAdmin=((int)$from_id===(int)$admin)||!empty($userInfo['isAdmin']);
@@ -403,6 +403,40 @@ if(!function_exists('deltaFeatureHandleRequest')){
             setUser(); sendMessage('✅ آدرس کیف پول USDT ذخیره شد.',$removeKeyboard); sendMessage('تنظیمات درگاه و کانال',getGateWaysKeys()); exit;
         }
 
+        if(preg_match('/^deltaUsdtCancel_(.+)$/',(string)$data,$m)){
+            $hash=$m[1];
+            $stmt=$connection->prepare('SELECT state FROM pays WHERE hash_id=? AND user_id=? LIMIT 1');
+            $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
+            if(!$pay){ alert('این فاکتور پیدا نشد.',true); exit; }
+            if((string)$pay['state']!=='pending'){
+                alert('این سفارش دیگر در مرحله پرداخت نیست. اگر رسید فرستاده‌اید، آن را از سفارش‌های در حال انتظار پیگیری کنید.',true);
+                exit;
+            }
+            $stmt=$connection->prepare("UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND state='pending'");
+            $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $changed=$stmt->affected_rows; $stmt->close();
+            if($changed!==1){ alert('وضعیت سفارش تغییر کرده است؛ دوباره بررسی کنید.',true); exit; }
+            if(($userInfo['step']??'')==='deltaUsdtReceipt_'.$hash){ setUser(); $userInfo['step']='none'; }
+            smartSendOrEdit($message_id,"✅ فاکتور ارزی لغو شد.\n\n".deltaTrackingLine($hash),json_encode(['inline_keyboard'=>[[['text'=>'🏠 صفحه اصلی','callback_data'=>'mainMenu']]]],JSON_UNESCAPED_UNICODE),'HTML');
+            exit;
+        }
+        if(preg_match('/^deltaUsdtReceipt_(.+)$/',(string)($userInfo['step']??''),$m)){
+            $cancelText=trim((string)$text);
+            $isCancelText=$cancelText!=='' && ($cancelText===($buttonValues['cancel']??'') ||
+                (mb_strpos($cancelText,'منصرف')!==false && mb_strpos($cancelText,'بیخیال')!==false));
+            $isStart=(bool)preg_match('/^\/start(?:\s|$)/i',$cancelText);
+            if($isCancelText || $isStart || $data==='mainMenu'){
+                $hash=$m[1];
+                $stmt=$connection->prepare("UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND state='pending'");
+                $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $changed=$stmt->affected_rows; $stmt->close();
+                setUser(); $userInfo['step']='none';
+                if($changed===1) sendMessage('✅ فاکتور ارزی شما لغو شد.',$removeKeyboard);
+                if($data==='mainMenu') return; // The normal menu callback will render the main menu.
+                if($isStart) return; // The normal /start handler will render the main menu.
+                if($changed!==1) sendMessage('از مرحله ارسال رسید خارج شدید؛ وضعیت سفارش تغییر کرده است.',$removeKeyboard);
+                sendMessage($mainValues['start_message'],getMainKeys());
+                exit;
+            }
+        }
         if(preg_match('/^payWithUsdt(.+)$/',(string)$data,$m)){
             $hash=$m[1];
             $stmt=$connection->prepare("SELECT * FROM pays WHERE hash_id=? AND user_id=? LIMIT 1"); $stmt->bind_param('si',$hash,$from_id); $stmt->execute(); $pay=$stmt->get_result()->fetch_assoc(); $stmt->close();
@@ -414,7 +448,7 @@ if(!function_exists('deltaFeatureHandleRequest')){
             $txt=deltaUsdtPayText($pay,$quote);
             upsertSettingValue('USDT_INVOICE_'.$hash,json_encode($quote,JSON_UNESCAPED_UNICODE));
             setUser('deltaUsdtReceipt_'.$hash);
-            smartSendOrEdit($message_id,$txt,json_encode(['inline_keyboard'=>[[['text'=>'↩️ بازگشت','callback_data'=>'mainMenu']]]],JSON_UNESCAPED_UNICODE),'HTML');
+            smartSendOrEdit($message_id,$txt,json_encode(['inline_keyboard'=>[[['text'=>'❌ لغو سفارش','callback_data'=>'deltaUsdtCancel_'.$hash]]]],JSON_UNESCAPED_UNICODE),'HTML');
             exit;
         }
         if(preg_match('/^deltaUsdtReceipt_(.+)$/',(string)($userInfo['step']??''),$m)){
