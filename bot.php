@@ -7002,22 +7002,40 @@ if(($userInfo['step'] ?? 'none') === 'none' && isset($text) && is_string($text) 
     }
 }
 
-if(preg_match('/^npvDeviceForPlan(\d+)_(\d+)_(\w+)_([^\s]*)$/', $userInfo['step'], $npvMatch) && $text != $buttonValues['cancel']){
-    $deviceIdInput = trim((string)$text);
-    if(!function_exists('npvIsValidDeviceId') || !npvIsValidDeviceId($deviceIdInput)){
-        sendMessage('⚠️خطا⚠️Device ID نامعتبر\nباید حداقل بالای 20 حروف و عدد باشه🔱\nجهت گرفتن Device ID ایدی حتما حتما باید از برنامه NapsternetV اقدام کنید از خودتون چیزی نباید بزنید❌', $cancelKey);
+if(preg_match('/^npvPublicKeyForPlan(\d+)_(\d+)_(\w+)_([^\s]*)$/', $userInfo['step'], $npvMatch) && $text != $buttonValues['cancel']){
+    $publicKeyInput = trim((string)$text);
+    if(!function_exists('npvIsValidPublicKey') || !npvIsValidPublicKey($publicKeyInput)){
+        sendMessage('⚠️ Public Key نامعتبر است. از داخل NPV Tunnel به More ← My Public Key بروید، روی Public Key بزنید و همان متن کپی‌شده را ارسال کنید.', $cancelKey);
         exit();
     }
     // مهم: setUser مقدار $userInfo را در همین اجرای فعلی رفرش نمی‌کند؛
-    // پس برای اینکه دوباره Device ID پرسیده نشود، همین مقدار را موقتاً نگه می‌داریم.
-    $npvJustReceivedDeviceId = $deviceIdInput;
-    $npvTemp='__NPV_DEVICE_ID__=' . $deviceIdInput;
+    // پس برای اینکه دوباره Public Key پرسیده نشود، همین مقدار را موقتاً نگه می‌داریم.
+    $npvJustReceivedPublicKey = $publicKeyInput;
+    $npvTemp='__NPV_PUBLIC_KEY__=' . $publicKeyInput;
     $offerMarkerId=specialOfferIdFromTemp($userInfo['temp'] ?? '');
     if($offerMarkerId>0) $npvTemp.="\n__SPECIAL_OFFER_ID__=".$offerMarkerId;
     setUser($npvTemp, 'temp');
     if(is_array($userInfo)) $userInfo['temp']=$npvTemp;
     setUser();
     $data = 'selectPlan' . $npvMatch[1] . '_' . $npvMatch[2] . '_' . $npvMatch[3];
+    $text = '';
+}
+if(preg_match('/^npvPublicKeyForOrder(\d+)$/', $userInfo['step'], $npvOrderMatch) && $text != $buttonValues['cancel']){
+    $publicKeyInput = trim((string)$text);
+    if(!function_exists('npvIsValidPublicKey') || !npvIsValidPublicKey($publicKeyInput)){
+        sendMessage('⚠️ Public Key نامعتبر است. از More ← My Public Key در NPV Tunnel کپی و ارسال کنید.', $cancelKey);
+        exit();
+    }
+    $npvOrderIdForKey = (int)$npvOrderMatch[1];
+    $stmt = $connection->prepare("SELECT `remark` FROM `orders_list` WHERE `id`=? AND `userid`=? AND `status`=1 LIMIT 1");
+    $stmt->bind_param('ii', $npvOrderIdForKey, $from_id);
+    $stmt->execute();
+    $npvKeyOrder = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if(!$npvKeyOrder){ setUser(); sendMessage('⚠️ سفارش پیدا نشد.'); exit(); }
+    npvSavePublicKeyForRemark((string)$npvKeyOrder['remark'], $publicKeyInput);
+    setUser();
+    $data = 'sendNpvOrderFile' . $npvOrderIdForKey;
     $text = '';
 }
 if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match) || 
@@ -7166,24 +7184,20 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             setUser();
             exit();
         }
-        $savedDeviceForNpv = isset($npvJustReceivedDeviceId) ? trim((string)$npvJustReceivedDeviceId) : '';
-        if($savedDeviceForNpv === '' && preg_match('/__NPV_DEVICE_ID__=([^\r\n]+)/u', (string)($userInfo['temp'] ?? ''), $dm)) $savedDeviceForNpv = trim($dm[1]);
-        if($savedDeviceForNpv === ''){
+        $savedPublicKeyForNpv = isset($npvJustReceivedPublicKey) ? trim((string)$npvJustReceivedPublicKey) : '';
+        if($savedPublicKeyForNpv === '' && preg_match('/__NPV_PUBLIC_KEY__=([^\r\n]+)/u', (string)($userInfo['temp'] ?? ''), $dm)) $savedPublicKeyForNpv = trim($dm[1]);
+        if($savedPublicKeyForNpv === ''){
             $remarkEncodedForNpv = rawurlencode((string)$remark);
             sendMessage("🔐 این پلن نامحدود فقط و فقط مخصوص برنامه  NapsternetV است و حتما باید اخرین نسخه برنامه روی گوشیتون نصب باشه .
 
 📱مخصوص ایفون و اندروید میباشد برای ویندوز نمیشه❌
 
-⚠️لطفاً Device ID برنامه NapsternetV را ارسال کنید تا سفارش روی همان دستگاه قفل شود
+⚠️ لطفاً Public Key برنامه NPV Tunnel را ارسال کنید تا فایل مخصوص همان برنامه آماده شود.
 
-💠جهت دریافت Device ID کافیه وارد برنامه NapsternetV یا همان (NPV) بشید و به قسمت more در پایین صفحه برید و از اون قسمت بزنید روی  Device ID خودش خودکار کپی میشه و اینجا ارسال کنید
+💠 در برنامه به More ← My Public Key بروید، روی Public Key بزنید تا کپی شود و آن را اینجا بفرستید.
 
-
-
-چرا Device ID میخواد ربات؟
-
-برای این که Device ID هر گوشی توی برنامه متفاوت است و با این کد میتوان اشتراک رو قفل کرد جهت تک کاربره شدن اشتراک و هیچ سود و یا خطرات دیگری ندارد این کد فقط صرفا جهت قفل اشتراک روی همان دستگاه است✅", $cancelKey, 'HTML');
-            setUser('npvDeviceForPlan' . $id . '_' . $call_id . '_' . ($match['buyType'] ?? 'none') . '_' . $remarkEncodedForNpv);
+🔐 فقط Public Key را بفرستید؛ Private Key را برای هیچ‌کس ارسال نکنید.", $cancelKey, 'HTML');
+            setUser('npvPublicKeyForPlan' . $id . '_' . $call_id . '_' . ($match['buyType'] ?? 'none') . '_' . $remarkEncodedForNpv);
             exit();
         }
         if(isset($npvMatch[4])) $remark = rawurldecode((string)$npvMatch[4]);
@@ -7261,9 +7275,9 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
     }
     $payDescription = $remark;
     if(function_exists('npvPlanIsLockedPasarguard') && npvPlanIsLockedPasarguard($respd)){
-        $npvDeviceIdForPay = isset($npvJustReceivedDeviceId) ? trim((string)$npvJustReceivedDeviceId) : '';
-        if($npvDeviceIdForPay === '' && preg_match('/__NPV_DEVICE_ID__=([^\r\n]+)/u', (string)($userInfo['temp'] ?? ''), $dm)) $npvDeviceIdForPay = trim($dm[1]);
-        $payDescription = function_exists('npvBuildPayDescription') ? npvBuildPayDescription($remark, $npvDeviceIdForPay) : $remark;
+        $npvPublicKeyForPay = isset($npvJustReceivedPublicKey) ? trim((string)$npvJustReceivedPublicKey) : '';
+        if($npvPublicKeyForPay === '' && preg_match('/__NPV_PUBLIC_KEY__=([^\r\n]+)/u', (string)($userInfo['temp'] ?? ''), $dm)) $npvPublicKeyForPay = trim($dm[1]);
+        $payDescription = function_exists('npvBuildPayDescription') ? npvBuildPayDescription($remark, $npvPublicKeyForPay) : $remark;
     }
     if(($price == 0 or ($from_id == $admin)) && !$specialOffer){
         if(!empty($freeVolumeQuota)){
@@ -7913,8 +7927,8 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $te
         $msg = str_replace(['TYPE', 'USER-ID', 'USERNAME', 'NAME', 'PRICE', 'REMARK', 'VOLUME', 'DAYS'],
                             ["کارت به کارت", $from_id, $username, $first_name, $fileprice, $remark,$volume, $days], $mainValues['buy_custom_account_request']);
         $msg = deltaAppendTracking($msg,$match[1]);
-        $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
-        if($receiptDeviceId !== '') $msg .= "\n\n🔐 Device ID ثبت‌شده:\n<code>" . htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+        $receiptPublicKey = function_exists('npvExtractPublicKeyFromPayDescription') ? npvExtractPublicKeyFromPayDescription($payInfo['description'] ?? '') : '';
+        if($receiptPublicKey !== '') $msg .= "\n\n🔑 Public Key ثبت‌شده:\n<code>" . htmlspecialchars($receiptPublicKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
         $keyboard = getReceiptAdminKeyboard("accCustom" . $match[1], "deltaRejectPay_" . $match[1] . "_" . $uid, $uid);
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
@@ -8601,13 +8615,13 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         if($payInfo['agent_count'] != 0) $msg = str_replace(['ACCOUNT-COUNT', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK"],[$payInfo['agent_count'], 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename], $mainValues['buy_new_much_account_request']);
         else $msg = str_replace(['SERVERNAME', 'TYPE', 'USER-ID', "USERNAME", "NAME", "PRICE", "REMARK", "VOLUME", "DAYS"],[$serverTitle, 'کارت به کارت', $from_id, $username, $name, $fileprice, $filename, $volume, $days], $mainValues['buy_new_account_request']);
         $msg = deltaAppendTracking($msg,$match[1]);
-        $receiptDeviceId = function_exists('npvExtractDeviceIdFromPayDescription') ? npvExtractDeviceIdFromPayDescription($payInfo['description'] ?? '') : '';
-        if($receiptDeviceId !== ''){
-            $safeDeviceId = htmlspecialchars($receiptDeviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $receiptPublicKey = function_exists('npvExtractPublicKeyFromPayDescription') ? npvExtractPublicKeyFromPayDescription($payInfo['description'] ?? '') : '';
+        if($receiptPublicKey !== ''){
+            $safePublicKey = htmlspecialchars($receiptPublicKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             $msg .= "
 
-🔐 Device ID ثبت‌شده:
-<code>{$safeDeviceId}</code>";
+🔑 Public Key ثبت‌شده:
+<code>{$safePublicKey}</code>";
         }
 
         $keyboard = getReceiptAdminKeyboard("accept" . $match[1], "declineOffer" . $match[1] . "_" . $uid, $uid);
@@ -12985,9 +12999,10 @@ if(preg_match('/^sendNpvOrderFile(\d+)$/', $data, $match) && ($botState['sellSta
     $expire = jdate('Y-m-d H:i', (int)$order['expire_date']);
     $caption = function_exists('npvBuildDeliveryCaption') ? npvBuildDeliveryCaption($safeRemark, $expire) : ('✅ سفارش نامحدود شما آماده شد.');
 
-    $deviceId = function_exists('npvGetSavedDeviceIdForRemark') ? npvGetSavedDeviceIdForRemark($remarkRaw) : '';
-    if($deviceId === ''){
-        sendMessage('⚠️ Device ID این سرویس روی ربات پیدا نشد. لطفاً به پشتیبانی پیام بدهید.');
+    $publicKey = function_exists('npvGetSavedPublicKeyForRemark') ? npvGetSavedPublicKeyForRemark($remarkRaw) : '';
+    if($publicKey === ''){
+        sendMessage('🔑 برای دریافت فایل سازگار با نسخهٔ جدید NPV Tunnel، از More ← My Public Key روی Public Key بزنید و آن را اینجا ارسال کنید. Private Key را ارسال نکنید.', $cancelKey);
+        setUser('npvPublicKeyForOrder' . $oid);
         exit;
     }
 
@@ -13002,16 +13017,17 @@ if(preg_match('/^sendNpvOrderFile(\d+)$/', $data, $match) && ($botState['sellSta
     }
 
     $genError = '';
-    $filePath = function_exists('npvCreateLockedSubFile') ? npvCreateLockedSubFile($subLink, $deviceId, $remarkRaw, $genError) : false;
+    $filePath = function_exists('npvCreateLockedSubFile') ? npvCreateLockedSubFile($subLink, $publicKey, $remarkRaw, $genError) : false;
     if(!$filePath || !file_exists($filePath)){
-        sendMessage('⚠️ ساخت فایل انجام نشد. لطفاً به پشتیبانی پیام بدهید.' . ($genError ? "\n<code>" . htmlspecialchars($genError, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>" : ''), null, 'HTML');
+        sendMessage('⚠️ ساخت فایل خودکار انجام نشد. درخواست شما به مدیر اطلاع داده شد؛ لطفاً منتظر آماده شدن فایل باشید.');
+        sendToAdmins('🔐 درخواست بازسازی فایل NPVS برای سفارش <code>' . $oid . '</code>، کاربر <code>' . (int)$from_id . '</code>، سرویس <code>' . $safeRemark . '</code>، Public Key: <code>' . htmlspecialchars($publicKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>، لینک: <code>' . htmlspecialchars($subLink, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>، خطا: <code>' . htmlspecialchars($genError, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code>', null, 'HTML');
         exit;
     }
 
-    if(function_exists('npvSendLockedSubDocument')) npvSendLockedSubDocument($from_id, $filePath, $caption);
-    else sendDocument($filePath, $caption, null, 'HTML', $from_id);
+    $sent = function_exists('npvSendLockedSubDocument') ? npvSendLockedSubDocument($from_id, $filePath, $caption) : sendDocument($filePath, $caption, null, 'HTML', $from_id);
     if(function_exists('npvDeleteTempLockedFile')) npvDeleteTempLockedFile($filePath);
-    alert('فایل مجدد ارسال شد ✅');
+    if($sent && (!is_object($sent) || !isset($sent->ok) || $sent->ok)) alert('فایل مجدد ارسال شد ✅');
+    else sendMessage('⚠️ ارسال فایل انجام نشد. لطفاً به پشتیبانی پیام بدهید.');
     exit;
 }
 if($data=="cantEditGrpc"){

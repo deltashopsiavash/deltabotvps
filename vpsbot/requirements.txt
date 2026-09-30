@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 hcloud==2.13.0
 pytz==2025.2
 requests==2.32.3
+cryptography>=41,<47

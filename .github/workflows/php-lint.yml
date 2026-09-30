@@ -26,3 +26,8 @@ jobs:
           php -l settings/rewardReport.php
           php -l tests/order_features.php
           php tests/order_features.php
+          bash -n update.sh
+      - name: Test NPVS v6 public-key generator
+        run: |
+          python3 -m pip install --disable-pip-version-check 'cryptography>=41,<47'
+          python3 tests/test_npvs_public_key.py

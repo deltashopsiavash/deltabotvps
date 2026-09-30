@@ -1,0 +1,6 @@
+# NPV runtime-only data (contains creator private identity or per-user keys)
+settings/npvs_creator_key.pem
+settings/npv_public_keys/
+settings/npvs_tmp/
+settings/npv_devices/
+settings/npvtsub_tmp/

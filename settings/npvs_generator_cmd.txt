@@ -1,0 +1,4 @@
+# سازندهٔ نسخهٔ ۶ همراه ربات به طور پیش‌فرض فعال است.
+# برای استفاده از محیط Python دلخواه، دستور را در یک خط بدون # بنویسید:
+# /path/to/python {root}/tools/npvs_public_key.py --sub {sub} --public-key {public_key} --out {out} --name {name}
+# cryptography باید در همان محیط Python نصب باشد.
