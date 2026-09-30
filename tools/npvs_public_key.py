@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import hashes, serialization
