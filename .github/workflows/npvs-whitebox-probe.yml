@@ -1,0 +1,50 @@
+name: Temporary NPVS whitebox probe
+
+on:
+  push:
+    branches:
+      - fix/npvs-v6-final
+    paths:
+      - .github/workflows/npvs-whitebox-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone Pantegnos
+        run: git clone --depth 1 https://github.com/FrontierTM/Pantegnos.git /tmp/Pantegnos
+
+      - name: Add probe test
+        shell: bash
+        run: |
+          cat > /tmp/Pantegnos/internal/modules/impl/zz_npvs_probe_test.go <<'EOF'
+          package impl
+
+          import (
+              "encoding/hex"
+              "testing"
+          )
+
+          func TestNPVSWhiteboxProbe(t *testing.T) {
+              salts := []string{
+                  "52a9676382796381143f6ee03a4b516c",
+                  "f280af0af51c72a1569ab953ca62a07a",
+                  "882dbdf0b86c980bb27d70a60729cefc",
+                  "4610c8adbe5e532704263a2f4c0853c0",
+              }
+              for _, s := range salts {
+                  raw, err := hex.DecodeString(s)
+                  if err != nil { t.Fatal(err) }
+                  a, err := npvGen2A16(raw)
+                  if err != nil { t.Fatal(err) }
+                  t.Logf("NPVS_A16 %s %x", s, a)
+              }
+          }
+          EOF
+
+      - name: Run probe
+        working-directory: /tmp/Pantegnos
+        run: go test -run TestNPVSWhiteboxProbe -v ./internal/modules/impl
