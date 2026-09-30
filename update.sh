@@ -31,6 +31,21 @@ do
 				# Preserve DB if using default path
 				[ -f "$VPSBOT_DIR/vpsbot.sqlite3" ] && cp -f "$VPSBOT_DIR/vpsbot.sqlite3" "$VPSBOT_BACKUP_DIR/vpsbot.sqlite3"
 			fi
+
+			# Preserve NPV runtime identity/data across the destructive repo refresh.
+			NPV_BACKUP_DIR="/root/confdelta/npv_update_backup"
+			rm -rf "$NPV_BACKUP_DIR"
+			mkdir -p "$NPV_BACKUP_DIR"
+			NPV_SETTINGS="/var/www/html/deltabotvps/settings"
+			if [ -f "$NPV_SETTINGS/npvs_creator_key.pem" ]; then
+				cp -p "$NPV_SETTINGS/npvs_creator_key.pem" "$NPV_BACKUP_DIR/npvs_creator_key.pem"
+			fi
+			for npv_dir in npv_public_keys npv_devices; do
+				if [ -d "$NPV_SETTINGS/$npv_dir" ]; then
+					cp -a "$NPV_SETTINGS/$npv_dir" "$NPV_BACKUP_DIR/$npv_dir"
+				fi
+			done
+
 			mv /var/www/html/deltabotvps/baseInfo.php /root/
 			sudo apt-get install -y git
 			sudo apt-get install -y wget
@@ -43,6 +58,20 @@ do
 			echo -e "\n\e[92mWait a few seconds ...\033[0m\n"
 			sleep 3
 			git clone https://github.com/deltashopsiavash/deltabotvps.git /var/www/html/deltabotvps
+
+			# Restore NPV creator identity and per-service public keys before fixing ownership.
+			mkdir -p /var/www/html/deltabotvps/settings
+			if [ -f "$NPV_BACKUP_DIR/npvs_creator_key.pem" ]; then
+				cp -p "$NPV_BACKUP_DIR/npvs_creator_key.pem" /var/www/html/deltabotvps/settings/npvs_creator_key.pem
+				chmod 600 /var/www/html/deltabotvps/settings/npvs_creator_key.pem
+			fi
+			for npv_dir in npv_public_keys npv_devices; do
+				if [ -d "$NPV_BACKUP_DIR/$npv_dir" ]; then
+					rm -rf "/var/www/html/deltabotvps/settings/$npv_dir"
+					cp -a "$NPV_BACKUP_DIR/$npv_dir" "/var/www/html/deltabotvps/settings/$npv_dir"
+				fi
+			done
+
 			# Restore the one-minute income report and receipt approval worker on
 			# existing installations; old HTTP entries could be missing or overlap.
 			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
