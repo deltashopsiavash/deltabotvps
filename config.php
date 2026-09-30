@@ -123,6 +123,20 @@ function npvIsValidDeviceId($deviceId){
     return $chars >= 6;
 }
 
+function npvDecodePublicKey($publicKey){
+    $publicKey = trim((string)$publicKey);
+    // NPV v6 exposes a compressed P-256 point (33 bytes), copied as 44
+    // base64url characters. Hex is accepted for administrator tooling too.
+    if(preg_match('/^[a-fA-F0-9]{66}$/D', $publicKey)) $decoded = hex2bin($publicKey);
+    elseif(preg_match('/^[A-Za-z0-9+\/_-]{44}$/D', $publicKey)) $decoded = base64_decode(strtr($publicKey, '-_', '+/'), true);
+    else return false;
+    if($decoded === false || strlen($decoded) !== 33 || (ord($decoded[0]) !== 2 && ord($decoded[0]) !== 3)) return false;
+    return $decoded;
+}
+function npvIsValidPublicKey($publicKey){
+    return npvDecodePublicKey($publicKey) !== false;
+}
+
 function notifyUserQuotaIfLow($userId, $force=false){
     $userId = (int)$userId;
     if($userId <= 0 || !function_exists('sendMessage')) return;
@@ -12244,7 +12258,7 @@ function pgRenewBuildAdminReport($pay, $orderId, $days, $volume, $renewedById){
 }
 
 
-// ---------- NPVTSUB manual Device-ID lock helpers (v1 safe) ----------
+// ---------- NPV Tunnel recipient-key delivery ----------
 function npvPlanIsLockedPasarguard($plan){
     if(!is_array($plan)) return false;
     $type = strtolower(trim((string)($plan['type'] ?? '')));
@@ -12254,10 +12268,16 @@ function npvPlanIsLockedPasarguard($plan){
     if($type === 'pasarguard' && (float)($plan['volume'] ?? 0) <= 0 && (mb_strpos($title, 'نامحدود') !== false || stripos($title, 'unlimited') !== false)) return true;
     return false;
 }
-function npvBuildPayDescription($remark, $deviceId){
-    return "__NPV_DEVICE_ID__=" . trim((string)$deviceId) . "\n__NPV_REMARK__=" . trim((string)$remark);
+function npvBuildPayDescription($remark, $publicKey){
+    return "__NPV_PUBLIC_KEY__=" . trim((string)$publicKey) . "\n__NPV_REMARK__=" . trim((string)$remark);
+}
+function npvExtractPublicKeyFromPayDescription($description){
+    if(preg_match('/__NPV_PUBLIC_KEY__=([^\r\n]+)/u', (string)$description, $m)) return trim($m[1]);
+    return '';
 }
 function npvExtractDeviceIdFromPayDescription($description){
+    // Read-only compatibility for historical orders; never feed this ID into
+    // the new recipient-key generator.
     $description = (string)$description;
     if(preg_match('/__NPV_DEVICE_ID__=([^\r\n]+)/u', $description, $m)) return trim($m[1]);
     return '';
@@ -12265,7 +12285,7 @@ function npvExtractDeviceIdFromPayDescription($description){
 function npvExtractRemarkFromPayDescription($description){
     $description = (string)$description;
     if(preg_match('/__NPV_REMARK__=([^\r\n]*)/u', $description, $m)) return trim($m[1]);
-    if(strpos($description, '__NPV_DEVICE_ID__=') !== false) return '';
+    if(strpos($description, '__NPV_DEVICE_ID__=') !== false || strpos($description, '__NPV_PUBLIC_KEY__=') !== false) return '';
     return trim($description);
 }
 function npvSafeFilename($name){
@@ -12279,33 +12299,32 @@ function npvSafeFilename($name){
     return $name;
 }
 function npvEnsureOutputDir(){
-    // Method 1: فایل‌های npvtsub فقط موقت ساخته می‌شوند و بعد از ارسال حذف می‌شوند.
-    $dir = __DIR__ . '/settings/npvtsub_tmp';
+    $dir = __DIR__ . '/settings/npvs_tmp';
     if(!is_dir($dir)) @mkdir($dir, 0755, true);
     return $dir;
 }
-function npvEnsureDeviceDir(){
-    // فقط Device ID برای ساخت مجدد فایل در «سرویس‌های من» نگهداری می‌شود، نه خود فایل.
-    $dir = __DIR__ . '/settings/npv_devices';
+function npvEnsurePublicKeyDir(){
+    // Only the public key is retained for regenerating a file; never store a private key.
+    $dir = __DIR__ . '/settings/npv_public_keys';
     if(!is_dir($dir)) @mkdir($dir, 0755, true);
     return $dir;
 }
-function npvDeviceMapPath($remark){
-    return npvEnsureDeviceDir() . '/' . sha1((string)$remark) . '.txt';
+function npvPublicKeyMapPath($remark){
+    return npvEnsurePublicKeyDir() . '/' . sha1((string)$remark) . '.txt';
 }
-function npvSaveDeviceIdForRemark($remark, $deviceId){
-    $deviceId = trim((string)$deviceId);
-    if($deviceId === '') return false;
-    return @file_put_contents(npvDeviceMapPath($remark), $deviceId, LOCK_EX) !== false;
+function npvSavePublicKeyForRemark($remark, $publicKey){
+    $publicKey = trim((string)$publicKey);
+    if(!npvIsValidPublicKey($publicKey)) return false;
+    return @file_put_contents(npvPublicKeyMapPath($remark), $publicKey, LOCK_EX) !== false;
 }
-function npvGetSavedDeviceIdForRemark($remark){
-    $path = npvDeviceMapPath($remark);
+function npvGetSavedPublicKeyForRemark($remark){
+    $path = npvPublicKeyMapPath($remark);
     if(!file_exists($path)) return '';
     return trim((string)@file_get_contents($path));
 }
 function npvCleanupTempFiles($maxAgeSeconds = 3600){
     $dir = npvEnsureOutputDir();
-    foreach((array)glob($dir . '/*.npvtsub') as $f){
+    foreach((array)glob($dir . '/*.npvs') as $f){
         if(is_file($f) && (time() - @filemtime($f)) > $maxAgeSeconds) @unlink($f);
     }
 }
@@ -12317,20 +12336,21 @@ function npvDeleteTempLockedFile($filePath){
     if($tmpDir && $real && strpos($real, $tmpDir . DIRECTORY_SEPARATOR) === 0) @unlink($real);
 }
 function npvGetGeneratorCommand(){
-    // اول ابزار داخلی خود ربات را استفاده کن؛ پس دیگر لازم نیست دستی چیزی در settings ست شود.
-    $bundled = __DIR__ . '/tools/npvtsub-maker';
-    if(file_exists($bundled) && is_file($bundled)){
-        @chmod($bundled, 0755);
-        return escapeshellarg($bundled) . ' --sub {sub} --device {device} --out {out} --name {name}';
-    }
-
-    // اگر ابزار داخلی نبود، همچنان از دستور دستی پشتیبانی می‌شود.
-    $cmdFile = __DIR__ . '/settings/npvtsub_generator_cmd.txt';
+    // Administrators may use a dedicated Python environment, while the bundled
+    // NPVS v6 generator is the default. Never use the obsolete NPVTSUB1 binary.
+    $cmdFile = __DIR__ . '/settings/npvs_generator_cmd.txt';
     if(file_exists($cmdFile)){
-        $cmd = trim((string)file_get_contents($cmdFile));
-        if($cmd !== '' && strpos($cmd, '#') !== 0) return $cmd;
+        foreach(preg_split('/\r\n|\r|\n/', (string)file_get_contents($cmdFile)) as $line){
+            $cmd = trim($line);
+            if($cmd === '' || strpos($cmd, '#') === 0) continue;
+            foreach(['{sub}', '{public_key}', '{out}', '{name}'] as $placeholder){
+                if(strpos($cmd, $placeholder) === false) return '';
+            }
+            return $cmd;
+        }
     }
-    return '';
+    $python = is_executable('/opt/vpsbot/venv/bin/python') ? '/opt/vpsbot/venv/bin/python' : 'python3';
+    return escapeshellarg($python) . ' {root}/tools/npvs_public_key.py --sub {sub} --public-key {public_key} --out {out} --name {name}';
 }
 function npvFindExistingLockedFile($remark){
     // در روش ۱ فایل آماده روی سرور نگهداری نمی‌شود.
@@ -12341,7 +12361,7 @@ function npvBuildDeliveryCaption($safeRemark, $expireText = ''){
     return "✅ سفارش نامحدود شما آماده شد.
 
 " .
-        "📱 فایل مخصوص NapsternetV روی Device ID شما قفل شده است و جز دستگاه شما روی هیچ دستگاه دیگری کار نمیکند.
+        "📱 فایل مخصوص Public Key برنامه NPV Tunnel شما ساخته شده است.
 
 " .
         "1️⃣حتما حتما وی پی ان خود را خاموش کنید 
@@ -12350,7 +12370,7 @@ function npvBuildDeliveryCaption($safeRemark, $expireText = ''){
         "3️⃣اخرین نسخه برنامه روی گوشی نصب باشه
 
 " .
-        "2️⃣سپس جهت افزودن فایل به برنامه کافیه فایل رو دانلود کنید و توی مدیر فایل سیو کنید سپس وارد برنامه NapsternetV بشید و از گزینه پایین روی گزینه subs بزنید سپس روی گزینه + بالا بزنید و سپس گزینه from sub file بزنید و از مدیر فایل فایل ارسال شده ربات که ذخیره کردید را انتخاب کنید و به برنامه اضافه کنید 
+        "2️⃣ فایل را دانلود و از بخش افزودن فایل در برنامه NPV Tunnel وارد کنید.
 
 " .
         "⚠️توجه کنید با دانلود فایل از اینجا و کلیک روی فایل و انتخاب برنامه فایل به برنامه اضافه نمیشه باید حتما فایل رو سیو کنید و از طریق افزودن فایل طبق اموزش شماره 2 بالا پیش برید⚠️
@@ -12363,27 +12383,47 @@ function npvBuildDeliveryCaption($safeRemark, $expireText = ''){
         "تاریخ پایان اشتراک:
 <code>{$expireText}</code>";
 }
-function npvCreateLockedSubFile($subLink, $deviceId, $remark, &$error = ''){
+function npvVerifyV6Signature($fileContents, $header){
+    if(!function_exists('openssl_verify') || strlen($fileContents) < 64 || strlen($header) < 50) return false;
+    $point = substr($header, 17, 33);
+    if(strlen($point) !== 33 || (ord($point[0]) !== 2 && ord($point[0]) !== 3)) return false;
+    // SubjectPublicKeyInfo for a compressed P-256 point.
+    $spki = hex2bin('3039301306072a8648ce3d020106082a8648ce3d030107032200') . $point;
+    $pem = "-----BEGIN PUBLIC KEY-----\n" . chunk_split(base64_encode($spki), 64, "\n") . "-----END PUBLIC KEY-----\n";
+    $signature = substr($fileContents, -64);
+    $parts = [];
+    foreach([substr($signature, 0, 32), substr($signature, 32, 32)] as $part){
+        $part = ltrim($part, "\x00");
+        if($part === '') $part = "\x00";
+        if(ord($part[0]) >= 128) $part = "\x00" . $part;
+        $parts[] = "\x02" . chr(strlen($part)) . $part;
+    }
+    $sequence = implode('', $parts);
+    $der = "\x30" . chr(strlen($sequence)) . $sequence;
+    return openssl_verify(substr($fileContents, 0, -64), $der, $pem, OPENSSL_ALGO_SHA256) === 1;
+}
+function npvCreateLockedSubFile($subLink, $publicKey, $remark, &$error = ''){
     $subLink = trim((string)$subLink);
-    $deviceId = trim((string)$deviceId);
+    $publicKey = trim((string)$publicKey);
     $remark = trim((string)$remark);
     if($subLink === ''){ $error = 'subscription link is empty'; return false; }
-    if($deviceId === ''){ $error = 'device id is empty'; return false; }
+    if(!npvIsValidPublicKey($publicKey)){ $error = 'recipient public key is missing or invalid'; return false; }
 
     $outDir = npvEnsureOutputDir();
     npvCleanupTempFiles();
-    $fileName = npvSafeFilename($remark) . '-' . time() . '-' . substr(sha1($deviceId . $subLink . mt_rand()), 0, 8) . '.npvtsub';
+    $fileName = npvSafeFilename($remark) . '-' . time() . '-' . bin2hex(random_bytes(4)) . '.npvs';
     $outPath = $outDir . '/' . $fileName;
 
     $cmdTemplate = npvGetGeneratorCommand();
     if($cmdTemplate === ''){
-        $error = 'npvtsub generator command not configured';
+        $error = 'NPVS public-key generator is not configured';
         return false;
     }
 
     $replacements = [
+        '{root}' => escapeshellarg(__DIR__),
         '{sub}' => escapeshellarg($subLink),
-        '{device}' => escapeshellarg($deviceId),
+        '{public_key}' => escapeshellarg($publicKey),
         '{out}' => escapeshellarg($outPath),
         '{name}' => escapeshellarg($remark),
     ];
@@ -12391,13 +12431,48 @@ function npvCreateLockedSubFile($subLink, $deviceId, $remark, &$error = ''){
     $output = [];
     $code = 0;
     @exec($cmd . ' 2>&1', $output, $code);
-    if($code !== 0 || !file_exists($outPath) || filesize($outPath) < 20){
+    if($code !== 0 || !file_exists($outPath) || filesize($outPath) < 89){
+        if(file_exists($outPath)) @unlink($outPath);
         $error = 'generator failed: ' . implode("\n", array_slice($output, -8));
         return false;
     }
     $head = @file_get_contents($outPath, false, null, 0, 16);
-    if(strpos((string)$head, 'NPVTSUB1') !== 0){
-        $error = 'generated file is not NPVTSUB1';
+    if(substr((string)$head, 0, 5) !== "NPVS\x06" || strlen((string)$head) < 9){
+        @unlink($outPath);
+        $error = 'generated file is not a current NPVS v6 container';
+        return false;
+    }
+    // Compact NPVS v6: method 0 selects recipient wraps. Each wrap has a
+    // SHA-256 fingerprint of the recipient's compressed public key.
+    $headerLen = unpack('N', substr($head, 5, 4))[1];
+    $header = $headerLen >= 198 && $headerLen < 65536 ? @file_get_contents($outPath, false, null, 9, $headerLen) : false;
+    $recipientCount = is_string($header) && strlen($header) >= 53 ? unpack('n', substr($header, 51, 2))[1] : 0;
+    $recordsEnd = 53 + 141 * $recipientCount;
+    $fingerprint = hash('sha256', npvDecodePublicKey($publicKey), true);
+    $recipientFound = false;
+    if(is_string($header) && $recipientCount > 0 && $recipientCount <= 1024){
+        for($i = 0; $i < $recipientCount; $i++){
+            if(hash_equals($fingerprint, substr($header, 53 + 141 * $i, 32))) $recipientFound = true;
+        }
+    }
+    $metadataLen = is_string($header) && $recordsEnd + 4 <= strlen($header) ? unpack('N', substr($header, $recordsEnd, 4))[1] : 0;
+    if($header === false || strlen($header) !== $headerLen || ord($header[0]) !== 1 || ord($header[50]) !== 0 || !$recipientFound || $metadataLen < 16 || $recordsEnd + 4 + $metadataLen !== $headerLen){
+        @unlink($outPath);
+        $error = 'generated NPVS file has no recipient public-key lock';
+        return false;
+    }
+    $bodyOffset = 9 + $headerLen;
+    $bodyPrefix = @file_get_contents($outPath, false, null, $bodyOffset, 16);
+    $bodyLen = is_string($bodyPrefix) && strlen($bodyPrefix) === 16 ? unpack('N', substr($bodyPrefix, 12, 4))[1] : 0;
+    if($bodyLen < 32 || filesize($outPath) !== $bodyOffset + 16 + $bodyLen + 64){
+        @unlink($outPath);
+        $error = 'generated NPVS file has an invalid body or signature length';
+        return false;
+    }
+    $contents = @file_get_contents($outPath);
+    if($contents === false || !npvVerifyV6Signature($contents, $header)){
+        @unlink($outPath);
+        $error = 'generated NPVS file has an invalid creator signature';
         return false;
     }
     return $outPath;
@@ -12407,8 +12482,7 @@ function npvSendLockedSubDocument($chatId, $filePath, $caption = ''){
     $filePath = (string)$filePath;
     if(!file_exists($filePath)) return false;
     $base = basename($filePath);
-    // filename must end exactly with .npvtsub; otherwise Npv Tunnel may try NPVT importer and show Invalid NPVT file signature.
-    if(!preg_match('/\.npvtsub$/i', $base)) $base .= '.npvtsub';
+    if(!preg_match('/\.npvs$/i', $base)) $base .= '.npvs';
     $doc = new CURLFile(realpath($filePath), 'application/octet-stream', $base);
     return bot('sendDocument', [
         'chat_id' => $chatId,
@@ -12423,40 +12497,43 @@ function npvSendManualLockRequestOrNormal($chatId, $protocol, $remark, $volume, 
         return xuiSendOrderDeliveryPhoto($chatId, $protocol, $remark, $volume, $days, $botState, $serverType, $configLinks, $botUrl, $uniqid, $subLink, $backCallback);
     }
 
-    $deviceId = npvExtractDeviceIdFromPayDescription($payDescription);
+    $publicKey = npvExtractPublicKeyFromPayDescription($payDescription);
     $safeRemark = htmlspecialchars((string)$remark, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    $safeDevice = htmlspecialchars((string)$deviceId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $safePublicKey = htmlspecialchars((string)$publicKey, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $safeSub = htmlspecialchars((string)$subLink, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $safeUser = htmlspecialchars((string)$chatId, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $serverTitle = is_array($serverInfo) ? ($serverInfo['title'] ?? $serverInfo['remark'] ?? '') : '';
     $safeServer = htmlspecialchars((string)$serverTitle, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
     $genError = '';
-    $lockedFile = npvCreateLockedSubFile($subLink, $deviceId, $remark, $genError);
+    $lockedFile = npvCreateLockedSubFile($subLink, $publicKey, $remark, $genError);
     if($lockedFile !== false){
         $expireText = '';
         if(is_numeric($days) && (int)$days > 0){
             $expireText = jdate('Y-m-d H:i', time() + ((int)$days * 86400));
         }
         $caption = function_exists('npvBuildDeliveryCaption') ? npvBuildDeliveryCaption($safeRemark, $expireText) : ("✅ سفارش نامحدود شما آماده شد.\n\nنام اشتراک: <code>{$safeRemark}</code>");
-        // Send with explicit filename and MIME so Android/Npv Tunnel recognizes it as .npvtsub, not .npvt
-        if(function_exists('npvSendLockedSubDocument')) npvSendLockedSubDocument($chatId, $lockedFile, $caption);
-        else sendDocument($lockedFile, $caption, null, 'HTML', $chatId);
-        if(function_exists('npvSaveDeviceIdForRemark')) npvSaveDeviceIdForRemark($remark, $deviceId);
+        $sent = function_exists('npvSendLockedSubDocument') ? npvSendLockedSubDocument($chatId, $lockedFile, $caption) : sendDocument($lockedFile, $caption, null, 'HTML', $chatId);
         if(function_exists('npvDeleteTempLockedFile')) npvDeleteTempLockedFile($lockedFile);
-        sendToAdmins("✅ فایل NPVTSUB خودکار ساخته و ارسال شد.\n\n👤 کاربر: <code>{$safeUser}</code>\n🔮 نام سرویس: {$safeRemark}\n📱 Device ID:\n<code>{$safeDevice}</code>", null, 'HTML');
-        return true;
+        if($sent && (!is_object($sent) || !isset($sent->ok) || $sent->ok)){
+            if(function_exists('npvSavePublicKeyForRemark')) npvSavePublicKeyForRemark($remark, $publicKey);
+            sendToAdmins("✅ فایل NPVS مخصوص Public Key ساخته و ارسال شد.\n\n👤 کاربر: <code>{$safeUser}</code>\n🔮 نام سرویس: {$safeRemark}\n🔑 Public Key:\n<code>{$safePublicKey}</code>", null, 'HTML');
+            return true;
+        }
+        $genError = 'Telegram failed to deliver the generated NPVS file';
     }
 
-    sendMessage("✅ سفارش نامحدود شما ثبت شد.\n\nدر حال آماده‌سازی فایل مخصوص NapsternetV هستیم.\n\nDevice ID ثبت‌شده:\n<code>{$safeDevice}</code>", null, 'HTML', $chatId);
-    $adminText = "🔐 درخواست ساخت فایل NPVTSUB قفل‌شده\n\n" .
+    if($publicKey !== '' && function_exists('npvSavePublicKeyForRemark')) npvSavePublicKeyForRemark($remark, $publicKey);
+    $missingKeyText = $publicKey === '' ? "\n\nبرای سفارش قدیمی خود به «سرویس‌های من» بروید، روی «دریافت فایل» بزنید و Public Key جدید را ارسال کنید." : "\n\nPublic Key ثبت‌شده:\n<code>{$safePublicKey}</code>";
+    sendMessage("✅ سفارش نامحدود شما ثبت شد.\n\nفایل مخصوص NPV Tunnel در حال آماده‌سازی است." . $missingKeyText, null, 'HTML', $chatId);
+    $adminText = "🔐 درخواست ساخت فایل NPVS مخصوص Public Key\n\n" .
         "👤 کاربر: <code>{$safeUser}</code>\n" .
         "🖥 پنل: {$safeServer}\n" .
         "🔮 نام سرویس: {$safeRemark}\n" .
-        "📱 Device ID:\n<code>{$safeDevice}</code>\n\n" .
+        "🔑 Public Key:\n<code>{$safePublicKey}</code>\n\n" .
         "🌐 Subscription:\n<code>{$safeSub}</code>\n\n" .
         "⚠️ ساخت خودکار انجام نشد:\n<code>" . htmlspecialchars((string)$genError, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>\n\n" .
-        "برای خودکار شدن کامل، دستور سازنده را در فایل settings/npvtsub_generator_cmd.txt قرار بده.";
+        "برای تحویل خودکار فایل سازگار با نسخهٔ جدید، دستور سازندهٔ NPVS را در settings/npvs_generator_cmd.txt ثبت کنید.";
     sendToAdmins($adminText, null, 'HTML');
     return true;
 }
