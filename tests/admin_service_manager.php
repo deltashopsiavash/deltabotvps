@@ -21,5 +21,7 @@ assertEqual(deltaSvcTraffic(50*1048576),'50MB','MB display');
 assertEqual(deltaSvcTraffic(20*$gb),'20GB','GB display');
 assertEqual(deltaSvcTs(1760000000000),1760000000,'milliseconds to seconds');
 assertEqual(deltaSvcTs(1760000000),1760000000,'seconds unchanged');
-assertEqual(deltaSvcBar(5,10),str_repeat('🟩',8).str_repeat('⬜',7).' 50%','bar halfway');
+$half=deltaSvcBar(5,10);
+assertEqual(strpos($half,'50% باقی‌مانده')!==false,true,'bar halfway reports remaining');
+assertEqual(strpos($half,'🟨')!==false,true,'bar halfway uses warning color');
 echo "Admin service quota calculations: PASS\n";

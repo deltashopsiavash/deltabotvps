@@ -33,6 +33,7 @@ jobs:
           php tests/order_features.php
           php tests/admin_service_manager.php
           php tests/service_subscription_rules.php
+          php tests/service_ui_gradient.php
           bash -n update.sh
       - name: Test NPVS v6 public-key generator
         run: |
