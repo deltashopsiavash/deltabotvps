@@ -352,7 +352,7 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
         if($kind==='V' && (int)$s['total']===0)return ['ok'=>false,'msg'=>'افزایش حجم سرویس نامحدود یا با سقف نامشخص مجاز نیست'];
         $v=$kind==='V'?$amount:0;$d=$kind==='D'?$amount:0;
         if($type==='marzban'||$type==='pasarguard'){
-            $changes=['remark'=>$order['remark']];
+            $changes=['remark'=>$order['remark'],'preserve_status'=>true];
             if($kind==='V') $changes['plus_volume']=$v;
             else $changes['plus_day']=$d;
             $r=editMarzbanConfig($sid,$changes);
