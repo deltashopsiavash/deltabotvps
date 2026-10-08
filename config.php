@@ -1671,6 +1671,21 @@ function getResellerBotBuiltVolumeTotal($rid){
         }
     }
 
+    // Manual management charges are accounted for separately from initial plan volumes.
+    // This ledger lives inside EACH reseller's own DB, not the mother DB.
+    $schema = "CREATE TABLE IF NOT EXISTS admin_service_quota_charges (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        op_key VARCHAR(100) NOT NULL UNIQUE,
+        order_id INT NOT NULL,
+        action_type VARCHAR(20) NOT NULL,
+        gigabytes INT NOT NULL,
+        created_at INT NOT NULL,
+        INDEX(order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    if($conn->query($schema)){
+        $manual=$conn->query("SELECT COALESCE(SUM(gigabytes),0) AS spent FROM admin_service_quota_charges");
+        if($manual) $total += (float)($manual->fetch_assoc()['spent'] ?? 0);
+    }else error_log('Unable to create admin_service_quota_charges: '.$conn->error);
     @mysqli_close($conn);
     return (int)round($total);
 }
@@ -5292,6 +5307,8 @@ function getPlanDetailsKeys($planId){
     }
 }
 function getUserOrderDetailKeys($id, $offset = 0){
+    // Management-only redesigned screen; customer orderDetails is unchanged.
+    if(function_exists('deltaSvcIsAdmin')) return deltaSvcIsAdmin() ? deltaSvcView((int)$id) : null;
     global $connection, $botState, $mainValues, $buttonValues, $botUrl;
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `id`=?");
     $stmt->bind_param("i", $id);
@@ -7798,6 +7815,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
     if(!$response) return null;
     $response = $response->obj;
     $client_key = 0;
+    $clientFound = false;
     foreach($response as $row){
         if($row->id == $inbound_id) {
             $settings = xuiDecodeAssoc($row->settings);
@@ -7807,6 +7825,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
             foreach($clients as $key => $client){
                 if($client['id'] == $uuid || $client['password'] == $uuid){
                     $client_key = $key;
+                    $clientFound = true;
                     $email = $client['email'];
                     $emails = array_column($clientsStates,'email');
                     $emailKey = array_search($email,$emails);
@@ -7820,6 +7839,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
             }
         }
     }
+    if(!$clientFound) return (object)['success'=>false,'msg'=>'Client not found in panel'];
     if($volume != 0){
         $client_total = $settings['clients'][$client_key]['totalGB'];// - $up - $down;
         $extend_volume = floor($volume * 1073741824);
@@ -7845,6 +7865,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
         if(!isset($settings['clients'][$client_key]['enable']) && ($serverType == "sanaei" || $serverType == "alireza")) $settings['clients'][$client_key]['enable'] = true;
     }
     $settings['clients'] = array_values($settings['clients']);
+    $editedClient = $settings['clients'][$client_key];
     $settings = json_encode($settings);
     $dataArr = array('up' => $row->up,'down' => $row->down,'total' => $row->total,'remark' => $row->remark,'enable' => 'true',
         'expiryTime' => $row->expiryTime, 'listen' => '','port' => $row->port,'protocol' => $row->protocol,'settings' => $settings,
@@ -10781,7 +10802,7 @@ function editMarzbanConfig($server_id,$info){
         "username" => urlencode($remark),
         "note" => $configInfo->note,
         "data_limit_reset_strategy"=> $configInfo->data_limit_reset_strategy,
-        "status" => "active"
+        "status" => (!empty($info["preserve_status"]) && $configState === "disabled") ? "disabled" : "active"
     );
     
     $panel_url .=  '/api/user/'. $remark;
