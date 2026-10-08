@@ -23,5 +23,6 @@ assertEqual(deltaSvcTs(1760000000000),1760000000,'milliseconds to seconds');
 assertEqual(deltaSvcTs(1760000000),1760000000,'seconds unchanged');
 $half=deltaSvcBar(5,10);
 assertEqual(strpos($half,'50% باقی‌مانده')!==false,true,'bar halfway reports remaining');
-assertEqual(strpos($half,'🟨')!==false,true,'bar halfway uses warning color');
+assertEqual(strpos($half,'🟧')!==false,true,'bar halfway is uniformly orange');
+assertEqual(strpos($half,'🟨')!==false,false,'bar halfway has no mixed warning shades');
 echo "Admin service quota calculations: PASS\n";
