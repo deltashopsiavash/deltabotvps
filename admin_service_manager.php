@@ -94,23 +94,18 @@ function deltaSvcTraffic($bytes){
     return rtrim(rtrim(number_format($bytes/1073741824,2,'.',''),'0'),'.').'GB';
 }
 /**
- * Render remaining-life bars. The color moves continuously from green through
- * yellow/orange to red as usable traffic or subscription time runs out.
- * Fully exhausted subscriptions are deliberately shown as solid red.
+ * A clean single-color bar: all filled squares share the same shade.
+ * The remaining percentage determines the tone in 20-percent bands.
+ * Both customer and admin traffic/time displays call this shared helper.
  */
 function deltaSvcBar($consumed,$total){
     if($total<=0) return '♾️ نامحدود';
-    $remaining=max(0.0,min(1.0,1.0-(float)$consumed/(float)$total));
-    if($remaining<=0.0)return str_repeat('🟥',15).' ۰٪ باقی‌مانده';
-    $count=max(1,min(15,(int)ceil(15*$remaining)));
-    $bar='';
-    for($i=0;$i<$count;$i++){
-        // A small within-bar blend softens the four emoji color transitions.
-        $shade=min(1.0,$remaining+0.14*(1.0-2.0*$i/max(1,$count-1)));
-        $bar.=($shade>=0.76?'🟩':($shade>=0.52?'🟨':($shade>=0.26?'🟧':'🟥')));
-    }
-    $bar.=str_repeat('⬜',15-$count);
-    return $bar.' '.(int)round(100*$remaining).'% باقی‌مانده';
+    $ratio=max(0.0,min(1.0,1.0-(float)$consumed/(float)$total));
+    $pct=(int)round(100*$ratio);
+    if($ratio<=0.0) return str_repeat('🟥',15).' ۰٪ باقی‌مانده';
+    $color=$pct>=80?'🟩':($pct>=60?'🟨':($pct>=20?'🟧':'🟥'));
+    $filled=max(1,min(15,(int)ceil(15*$ratio)));
+    return str_repeat($color,$filled).str_repeat('⬜',15-$filled).' '.$pct.'% باقی‌مانده';
 }
 function deltaSvcView($id){
     $order=deltaSvcOrder((int)$id);
