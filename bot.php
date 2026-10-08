@@ -3,6 +3,9 @@ include_once 'config.php';
 
 check();
 
+require_once __DIR__ . '/admin_service_manager.php';
+if(deltaSvcHandleRequest()) exit;
+
 if(function_exists('deltaFeatureHandleRequest')) deltaFeatureHandleRequest();
 
 function pgUserRenewSuggestionEnabled($userId){
