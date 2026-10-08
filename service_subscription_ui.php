@@ -61,6 +61,12 @@ function dsInitialCharge($order){
     $vol=(float)($p['volume']??0);
     return (int)round($vol<=0?30:((float)($p['quota_charge_volume']??0)>0 ? (float)$p['quota_charge_volume'] : $vol));
 }
+function dsRefundEligible($purchaseTs,$currentTime,$usedBytes,$totalBytes,$resetCharges=0){
+    $age=(int)$currentTime-(int)$purchaseTs;
+    return $purchaseTs>0 && $age>=0 && $age<86400
+        && $totalBytes>0 && $usedBytes>=0 && $usedBytes<1073741824
+        && $resetCharges===0;
+}
 function dsDeleteQuote($order,$snapshot){
     $q=['quota'=>deltaSvcIsQuotaBot(),'eligible'=>false,'refund'=>0,'initial'=>0,'manual'=>0,
         'consumed'=>0,'balance'=>max(0,(int)($snapshot['total']??0)-(int)($snapshot['used']??0)),
@@ -71,12 +77,16 @@ function dsDeleteQuote($order,$snapshot){
         $q['error']='اطلاعات مبلغ سهمیه یا دفتر حسابداری در دسترس نیست';return $q;
     }
     $q['initial']=$initial;$q['manual']=$manual;
-    $ts=deltaSvcTs($order['date']??0);$age=time()-$ts;
+    $ts=deltaSvcTs($order['date']??0);
     $used=(int)($snapshot['used']??0);$total=(int)($snapshot['total']??0);
     $q['consumed']=(int)ceil(max(0,$used)/1073741824);
     // No refund on missing/unlimited snapshots, nonexistent purchase dates or 24h boundary.
-    $q['eligible']=!empty($snapshot['found']) && $total>0 && $ts>0 &&
-        $age>=0 && $age<86400 && $used>=0 && $used<1073741824;
+    // Any previously billed traffic reset makes the lifetime usage uncertain;
+    // do not let reset → delete convert consumed traffic into a refund.
+    $st=$GLOBALS['connection']->prepare("SELECT COALESCE(SUM(gigabytes),0) AS r FROM admin_service_quota_charges WHERE order_id=? AND action_type='R'");
+    $resetCharges=0;
+    if($st){$oid=(int)$order['id'];$st->bind_param('i',$oid);$st->execute();$resetCharges=(int)($st->get_result()->fetch_assoc()['r']??0);$st->close();}
+    $q['eligible']=!empty($snapshot['found']) && dsRefundEligible($ts,time(),$used,$total,$resetCharges);
     if($q['eligible']){
         // Fractional gigabytes are never credited upward. Also never credit
         // more GB than the quota actually charged for this order.
