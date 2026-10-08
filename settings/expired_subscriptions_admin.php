@@ -176,6 +176,7 @@ function adminDeleteExpiredOrder($orderId){
         $stmt->execute();
         $stmt->close();
     }
+    if(!deltaQuotaPreserveBeforeOrderRemoval($o))return [false,'خطا در ثبت سهمیه قبل از حذف'];
     $stmt=$connection->prepare("DELETE FROM orders_list WHERE id=?");
     $stmt->bind_param('i',$orderId);
     $stmt->execute();

@@ -232,6 +232,38 @@ function botWithToken($token, $method, $datas = []){
     return $decoded;
 }
 
+/**
+ * Set and verify a new reseller bot webhook synchronously.
+ * Do not report a child bot as live before Telegram confirms its exact URL.
+ */
+function deltaResellerWebhookSetup($rid){
+    global $connection,$botUrl;
+    $rid=(int)$rid;
+    $st=$connection->prepare("SELECT bot_token,db_name,status,admin_userid FROM reseller_bots WHERE id=? AND is_deleted=0 LIMIT 1");
+    if(!$st)return ['ok'=>false,'error'=>'خطا در کوئری نمایندگی'];
+    $st->bind_param('i',$rid);$st->execute();$row=$st->get_result()->fetch_assoc();$st->close();
+    if(!$row||empty($row['bot_token']))return ['ok'=>false,'error'=>'توکن ربات ذخیره نشده'];
+    if((int)($row['admin_userid']??0)<=0)return ['ok'=>false,'error'=>'ادمین ربات انتخاب نشده'];
+    if(empty($row['db_name']))return ['ok'=>false,'error'=>'دیتابیس نمایندگی تعریف نشده'];
+    if(!deltaResellerDbHealthy((string)$row['db_name']))
+        return ['ok'=>false,'error'=>'ساختار دیتابیس نمایندگی ناقص است؛ دسترسی دیتابیس را بررسی کنید'];
+    if(!preg_match('#^https://[a-z0-9.-]+(?::443)?(?:/|$)#i',trim((string)$botUrl)))
+        return ['ok'=>false,'error'=>'آدرس عمومی ربات باید HTTPS و دامنه معتبر باشد'];
+    $hookUrl=rtrim((string)$botUrl,'/').'/bot.php?bid='.$rid;
+    $token=(string)$row['bot_token'];
+    $res=botWithToken($token,'setWebhook',['url'=>$hookUrl,'drop_pending_updates'=>'false']);
+    if(!is_array($res) || empty($res['ok'])){
+        $description=(string)($res['description']??'عدم ارتباط با تلگرام');
+        return ['ok'=>false,'error'=>'ثبت Webhook ناموفق: '.$description,'url'=>$hookUrl];
+    }
+    $info=botWithToken($token,'getWebhookInfo',[]);
+    if(!is_array($info)||empty($info['ok'])|| (string)($info['result']['url']??'')!==$hookUrl)
+        return ['ok'=>false,'error'=>'تلگرام آدرس ثبت‌شده را تأیید نکرد','url'=>$hookUrl];
+    $last=(string)($info['result']['last_error_message']??'');
+    return ['ok'=>true,'url'=>$hookUrl,'last_error'=>$last,
+        'pending'=>(int)($info['result']['pending_update_count']??0)];
+}
+
 // Ensure reseller tables exist (safe to call many times)
 function ensureResellerTables(){
     global $connection;
@@ -295,6 +327,40 @@ function ensureResellerTables(){
 
 }
 
+/**
+ * Recover missing essential child tables without overwriting customer data.
+ * Covers MySQL 8 template dumps that cannot import on MariaDB.
+ */
+function deltaResellerDbHealthy($database){
+    global $connection,$mainDbName;
+    $database=(string)$database;
+    $mainDbName=(string)$mainDbName;
+    if(!preg_match('/^[A-Za-z0-9_]{1,64}$/',$database) || !preg_match('/^[A-Za-z0-9_]{1,64}$/',$mainDbName))
+        return false;
+    try{
+        // Clone ALL missing ordinary tables, not just the core eight:
+        // child /start also touches campaign, special-offer and pricing tables.
+        $tables=$connection->query("SHOW TABLES FROM ".$mainDbName);
+        if(!$tables)return false;
+        while($item=$tables->fetch_array(MYSQLI_NUM)){
+            $table=(string)($item[0]??'');
+            if(!preg_match('/^[A-Za-z0-9_]+$/',$table)||in_array($table,['reseller_bots','reseller_plans'],true))continue;
+            $res=$connection->query("SHOW TABLES FROM ".$database." LIKE '".$table."'");
+            if($res && $res->num_rows>0)continue;
+            $ok=$connection->query("CREATE TABLE IF NOT EXISTS ".$database.".".$table." LIKE ".$mainDbName.".".$table);
+            if(!$ok)return false;
+        }
+        $state=$connection->query("SELECT COUNT(*) AS c FROM ".$database.".setting WHERE type='BOT_STATES'");
+        if($state && (int)($state->fetch_assoc()['c']??0)===0){
+            $connection->query("INSERT INTO ".$database.".setting (type,value) SELECT type,value FROM ".$mainDbName.".setting WHERE type='BOT_STATES' LIMIT 1");
+        }
+        return true;
+    }catch(Throwable $e){
+        error_log('Reseller database recovery error: '.$e->getMessage());
+        return false;
+    }
+}
+
 // Create a dedicated database for a reseller bot (child bot).
 // We clone schema from the mother DB and copy only configuration tables.
 function ensureResellerBotDatabase($rid){
@@ -306,7 +372,7 @@ function ensureResellerBotDatabase($rid){
     $row = $connection->query("SELECT `id`,`db_name` FROM `reseller_bots` WHERE `id`={$rid} LIMIT 1");
     $rb = $row ? $row->fetch_assoc() : null;
     if(!$rb) return false;
-    if(!empty($rb['db_name'])) return true;
+    if(!empty($rb['db_name'])) return deltaResellerDbHealthy((string)$rb['db_name']);
 
     // Generate DB name
     $newDb = preg_replace('/[^a-zA-Z0-9_]/','_', $mainDbName . '_rb' . $rid);
@@ -369,6 +435,14 @@ function ensureResellerBotDatabase($rid){
         }
     }
 
+    if(!deltaResellerDbHealthy($newDb))return false;
+    // The bundled legacy SQL template contains demonstration users and orders.
+    // Fresh reseller databases must never inherit those records.
+    if($importOk){
+        foreach(['users','orders_list','pays'] as $table){
+            $connection->query("DELETE FROM ".$newDb.".".$table);
+        }
+    }
     // Save db_name for child bot so it never falls back to mother DB
     $stmt = $connection->prepare("UPDATE `reseller_bots` SET `db_name`=? WHERE `id`=?");
     $stmt->bind_param("si", $newDb, $rid);
@@ -1688,6 +1762,37 @@ function getResellerBotBuiltVolumeTotal($rid){
     }else error_log('Unable to create admin_service_quota_charges: '.$conn->error);
     @mysqli_close($conn);
     return (int)round($total);
+}
+
+/**
+ * Preserve spent reseller quota whenever an existing order is removed outside
+ * the 24h/under-1GB verified refund path (expiry cron, bulk cleanup, etc).
+ */
+function deltaQuotaPreserveBeforeOrderRemoval($order){
+    global $isChildBot,$currentBotInstanceId,$connection;
+    if(empty($isChildBot) || !$currentBotInstanceId ||
+        getResellerBotQuotaLimit((int)$currentBotInstanceId)===null)return true;
+    if(!is_array($order) || (int)($order['id']??0)<=0)return false;
+    if((int)($order['status']??1)!==1)return true; // Already outside active-order quota.
+    $id=(int)$order['id'];$fid=(int)$order['fileid'];
+    $schema="CREATE TABLE IF NOT EXISTS admin_service_quota_charges (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        op_key VARCHAR(100) NOT NULL UNIQUE,order_id INT NOT NULL,
+        action_type VARCHAR(20) NOT NULL,gigabytes INT NOT NULL,
+        created_at INT NOT NULL,INDEX(order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    if(!$connection->query($schema))return false;
+    $st=$connection->prepare("SELECT volume,quota_charge_volume FROM server_plans WHERE id=?");
+    if(!$st)return false;
+    $st->bind_param('i',$fid);$st->execute();$plan=$st->get_result()->fetch_assoc();$st->close();
+    if(!$plan)return false;
+    $volume=(float)($plan['volume']??0);
+    $cost=(int)round($volume<=0?30:((float)($plan['quota_charge_volume']??0)>0?(float)$plan['quota_charge_volume']:$volume));
+    $key='DELETE_'.$id;$kind='DELETE';$now=time();
+    $stmt=$connection->prepare("INSERT IGNORE INTO admin_service_quota_charges (op_key,order_id,action_type,gigabytes,created_at) VALUES (?,?,?,?,?)");
+    if(!$stmt)return false;
+    $stmt->bind_param('sisii',$key,$id,$kind,$cost,$now);$ok=$stmt->execute();$stmt->close();
+    return $ok;
 }
 
 function getResellerBotQuotaLimit($rid){
@@ -5606,6 +5711,8 @@ function getUserOrderDetailKeys($id, $offset = 0){
     }
 }
 function getOrderDetailKeys($from_id, $id, $offset = 0){
+    // Customer-only card, validated by order ownership; the admin panel stays separate.
+    if(function_exists('deltaSvcCustomerView')) return deltaSvcCustomerView((int)$id,(int)$from_id);
     global $connection, $botState, $mainValues, $buttonValues, $botUrl;
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `userid`=? AND `id`=?");
     $stmt->bind_param("ii", $from_id, $id);

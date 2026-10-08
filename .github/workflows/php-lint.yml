@@ -22,12 +22,17 @@ jobs:
         run: |
           php -l bot.php
           php -l admin_service_manager.php
+          php -l service_subscription_ui.php
+          php -l reseller_finalize_worker.php
+          php -l settings/warnusers.php
+          php -l settings/expired_subscriptions_admin.php
           php -l config.php
           php -l delta_order_features.php
           php -l settings/rewardReport.php
           php -l tests/order_features.php
           php tests/order_features.php
           php tests/admin_service_manager.php
+          php tests/service_subscription_rules.php
           bash -n update.sh
       - name: Test NPVS v6 public-key generator
         run: |
