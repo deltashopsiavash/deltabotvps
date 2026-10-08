@@ -245,6 +245,8 @@ function deltaResellerWebhookSetup($rid){
     if(!$row||empty($row['bot_token']))return ['ok'=>false,'error'=>'توکن ربات ذخیره نشده'];
     if((int)($row['admin_userid']??0)<=0)return ['ok'=>false,'error'=>'ادمین ربات انتخاب نشده'];
     if(empty($row['db_name']))return ['ok'=>false,'error'=>'دیتابیس نمایندگی تعریف نشده'];
+    if(!deltaResellerDbHealthy((string)$row['db_name']))
+        return ['ok'=>false,'error'=>'ساختار دیتابیس نمایندگی ناقص است؛ دسترسی دیتابیس را بررسی کنید'];
     if(!preg_match('#^https://[a-z0-9.-]+(?::443)?(?:/|$)#i',trim((string)$botUrl)))
         return ['ok'=>false,'error'=>'آدرس عمومی ربات باید HTTPS و دامنه معتبر باشد'];
     $hookUrl=rtrim((string)$botUrl,'/').'/bot.php?bid='.$rid;
