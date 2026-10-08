@@ -12800,24 +12800,27 @@ if($data==='myExpiredCleanupDo'){
     $rows=$stmt->get_result();$pending=[];
     while($row=$rows->fetch_assoc())$pending[]=$row;
     $stmt->close();
-    $quotaOk=true;
+    $deleted=0;
+    $quotaError=false;
     foreach($pending as $row){
-        if(!deltaQuotaPreserveBeforeOrderRemoval($row)){ $quotaOk=false;break; }
+        // Keep ledger adjustment next to the corresponding DELETE so a failed
+        // later row cannot precharge unrelated orders.
+        if(!deltaQuotaPreserveBeforeOrderRemoval($row)){$quotaError=true;break;}
+        $id=(int)$row['id'];
+        $st=$connection->prepare("DELETE FROM orders_list WHERE id=? AND userid=?");
+        $st->bind_param('ii',$id,$from_id);
+        $ok=$st->execute();
+        $n=$st->affected_rows;
+        $st->close();
+        if(!$ok){$quotaError=true;break;}
+        $deleted += max(0,(int)$n);
     }
-    if(!$quotaOk){
-        sendMessage("❌ به دلیل خطا در ثبت سابقهٔ سهمیه، پاکسازی لغو شد تا سهمیه اشتباهی برنگردد.");
-        exit;
-    }
-    $stmt=$connection->prepare("DELETE FROM `orders_list`".$filter);
-    $stmt->bind_param('iii',$from_id,$now,$nowMs);
-    $stmt->execute();
-    $deleted=$stmt->affected_rows;
-    $stmt->close();
+    if($quotaError)error_log('Expired cleanup stopped because quota ledger or deletion failed for user '.(int)$from_id);
     $kb=json_encode(['inline_keyboard'=>[
         [['text'=>'📋 بازگشت به سرویس‌های من','callback_data'=>'mySubscriptions']],
         [['text'=>$buttonValues['back_to_main'],'callback_data'=>'mainMenu']]
     ]],JSON_UNESCAPED_UNICODE);
-    smartSendOrEdit($message_id,"✅ تعداد {$deleted} اشتراک تمام‌شده از لیست شما حذف شد.",$kb);
+    smartSendOrEdit($message_id,($quotaError?"⚠️ پاکسازی به دلیل خطای ثبت سهمیه متوقف شد.\n\n":"✅ ")."تعداد {$deleted} اشتراک تمام‌شده از لیست شما حذف شد.",$kb);
     exit;
 }
 if($data=="searchAgentConfig" || $data == "searchMyConfig" || $data=="searchUsersConfig"){
