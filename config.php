@@ -335,17 +335,22 @@ function deltaResellerDbHealthy($database){
     $mainDbName=(string)$mainDbName;
     if(!preg_match('/^[A-Za-z0-9_]{1,64}$/',$database) || !preg_match('/^[A-Za-z0-9_]{1,64}$/',$mainDbName))
         return false;
-    foreach(['users','setting','orders_list','pays','server_config','server_info','server_plans','server_categories'] as $table){
-        $res=$connection->query("SHOW TABLES FROM ".$database." LIKE '".$table."'");
-        if($res && $res->num_rows>0)continue;
-        $ok=$connection->query("CREATE TABLE IF NOT EXISTS ".$database.".".$table." LIKE ".$mainDbName.".".$table);
-        if(!$ok){error_log('Reseller schema recovery failed for '.$table.': '.$connection->error);return false;}
+    try{
+        foreach(['users','setting','orders_list','pays','server_config','server_info','server_plans','server_categories'] as $table){
+            $res=$connection->query("SHOW TABLES FROM ".$database." LIKE '".$table."'");
+            if($res && $res->num_rows>0)continue;
+            $ok=$connection->query("CREATE TABLE IF NOT EXISTS ".$database.".".$table." LIKE ".$mainDbName.".".$table);
+            if(!$ok)return false;
+        }
+        $state=$connection->query("SELECT COUNT(*) AS c FROM ".$database.".setting WHERE type='BOT_STATES'");
+        if($state && (int)($state->fetch_assoc()['c']??0)===0){
+            $connection->query("INSERT INTO ".$database.".setting (type,value) SELECT type,value FROM ".$mainDbName.".setting WHERE type='BOT_STATES' LIMIT 1");
+        }
+        return true;
+    }catch(Throwable $e){
+        error_log('Reseller database recovery error: '.$e->getMessage());
+        return false;
     }
-    $state=$connection->query("SELECT COUNT(*) AS c FROM ".$database.".setting WHERE type='BOT_STATES'");
-    if($state && (int)($state->fetch_assoc()['c']??0)===0){
-        $connection->query("INSERT INTO ".$database.".setting (type,value) SELECT type,value FROM ".$mainDbName.".setting WHERE type='BOT_STATES' LIMIT 1");
-    }
-    return true;
 }
 
 // Create a dedicated database for a reseller bot (child bot).
