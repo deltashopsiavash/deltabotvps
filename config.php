@@ -5606,6 +5606,8 @@ function getUserOrderDetailKeys($id, $offset = 0){
     }
 }
 function getOrderDetailKeys($from_id, $id, $offset = 0){
+    // Customer-only card, validated by order ownership; the admin panel stays separate.
+    if(function_exists('deltaSvcCustomerView')) return deltaSvcCustomerView((int)$id,(int)$from_id);
     global $connection, $botState, $mainValues, $buttonValues, $botUrl;
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `userid`=? AND `id`=?");
     $stmt->bind_param("ii", $from_id, $id);
