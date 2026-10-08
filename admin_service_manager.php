@@ -240,8 +240,15 @@ function deltaSvcPgRevoke($order,$server){
         foreach(['/api/user/'.rawurlencode($order['remark']).'/revoke_sub',
                  '/api/user/by-username/'.rawurlencode($order['remark']).'/revoke_sub'] as $path){
             $ch=curl_init();
+            $host=(string)parse_url($base,PHP_URL_HOST);
+            $ipOnly=(bool)filter_var($host,FILTER_VALIDATE_IP);
+            if($ipOnly) error_log('PasarGuard revoke uses IP without certificate hostname; configure a matching HTTPS DNS hostname for secure TLS.');
             curl_setopt_array($ch,[CURLOPT_URL=>$base.$path,CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,
-                CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>['Accept: application/json','Authorization: Bearer '.$token->access_token]]);
+                CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,
+                // Compatibility only for existing PasarGuard IP endpoints, matching
+                // the legacy edit/get methods. FQDN endpoints retain strict TLS.
+                CURLOPT_SSL_VERIFYPEER=>!$ipOnly,CURLOPT_SSL_VERIFYHOST=>$ipOnly?0:2,
+                CURLOPT_HTTPHEADER=>['Accept: application/json','Authorization: Bearer '.$token->access_token]]);
             $raw=curl_exec($ch);$err=curl_error($ch);$http=curl_getinfo($ch,CURLINFO_HTTP_CODE);curl_close($ch);
             if(!$err && $http>=200 && $http<300){
                 $j=json_decode((string)$raw);
