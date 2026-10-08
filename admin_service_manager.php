@@ -138,6 +138,7 @@ function deltaSvcScreen($id,$where='main',$edit=true){
             [['text'=>'➕ افزایش حجم','callback_data'=>'dsAskV_'.$id],['text'=>'📆 افزایش تاریخ','callback_data'=>'dsDays_'.$id]],
             [['text'=>'🔄 ریست حجم ترافیک','callback_data'=>'dsReset_'.$id]],
             [['text'=>'🔗 دریافت لینک ساب و QR','callback_data'=>'dsSub_'.$id]],
+            [['text'=>'🗑 حذف کانفیگ','callback_data'=>'delUserConfig'.$id]],
             [['text'=>'🔙 بازگشت به اشتراک','callback_data'=>'dsView_'.$id]]
         ];
         $v=['msg'=>"🛠 <b>مدیریت اشتراک</b>\n\n".$v['msg'],'keyboard'=>deltaSvcKb($rows)];
@@ -152,7 +153,7 @@ function deltaSvcScreen($id,$where='main',$edit=true){
         $v=['msg'=>"👤 <b>مشخصات خریدار</b>\n\n🆔 آیدی: <code>".$uid."</code>\n📛 نام: ".deltaSvcEsc($name)."\n🔖 یوزرنیم: ".($handle!==''?'@'.deltaSvcEsc($handle):'ثبت نشده'),
             'keyboard'=>deltaSvcKb([[['text'=>'💬 ورود به پی‌وی کاربر','url'=>$url]],[['text'=>'🔙 بازگشت','callback_data'=>'dsView_'.$id]]])];
     }
-    if($edit && isset($message_id) && $message_id) smartSendOrEdit($message_id,$v['msg'],$v['keyboard'],'HTML');
+    if($edit && isset($message_id) && $message_id && empty($GLOBALS['isChildBot'])) smartSendOrEdit($message_id,$v['msg'],$v['keyboard'],'HTML');
     else sendMessage($v['msg'],$v['keyboard'],'HTML');
 }
 function deltaSvcIsQuotaBot(){
@@ -241,6 +242,24 @@ function deltaSvcPgRevoke($order,$server){
     }
     return ['ok'=>false,'msg'=>$last];
 }
+function deltaSvcMarzbanPost($serverId,$remark,$operation){
+    $server=deltaSvcServer((int)$serverId);
+    if(!$server)return (object)['success'=>false,'msg'=>'سرور پیدا نشد'];
+    $token=getMarzbanToken($serverId);
+    if(!is_object($token)||empty($token->access_token))return (object)['success'=>false,'msg'=>'توکن پنل در دسترس نیست'];
+    $url=rtrim((string)$server['panel_url'],'/').'/api/user/'.rawurlencode((string)$remark).'/'.$operation;
+    $ch=curl_init();
+    curl_setopt_array($ch,[CURLOPT_URL=>$url,CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,
+        CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,
+        CURLOPT_HTTPHEADER=>['Accept: application/json','Authorization: Bearer '.$token->access_token]]);
+    $raw=curl_exec($ch);$err=curl_error($ch);$http=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);curl_close($ch);
+    if($err || $http<200 || $http>=300)
+        return (object)['success'=>false,'msg'=>($err?:'HTTP '.$http.' '.substr((string)$raw,0,160))];
+    $json=json_decode((string)$raw);
+    if(is_object($json)&&isset($json->detail))return (object)['success'=>false,'msg'=>(string)json_encode($json->detail)];
+    return (object)['success'=>true,'obj'=>$json];
+}
+
 function deltaSvcRevokeApply($order,$s){
     global $connection;
     $sid=(int)$order['server_id'];$id=(int)$order['id'];$type=$s['type'];
@@ -262,7 +281,9 @@ function deltaSvcRevokeApply($order,$s){
         return ['ok'=>true,'msg'=>'✅ لینک سابسکریپشن از پنل PasarGuard تغییر کرد. لینک جدید را از دکمهٔ دریافت لینک ساب بگیرید.'];
     }
     if($type==='marzban'){
-        $r=renewMarzbanUUID($sid,$order['remark']);
+        $revoke=deltaSvcMarzbanPost($sid,$order['remark'],'revoke_sub');
+        if(!deltaSvcPanelOK($revoke))return ['ok'=>false,'msg'=>$revoke->msg??'خطا در تغییر لینک سابسکریپشن'];
+        $r=getMarzbanUser($sid,$order['remark']);
         if(!is_object($r) || isset($r->detail) || (isset($r->success) && !$r->success))
             return ['ok'=>false,'msg'=>(string)($r->msg ?? $r->detail ?? 'خطا در پنل مرزبان')];
         $sub=xuiFindSubscriptionString($r);
@@ -304,7 +325,7 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
         if(abs((int)$s['used']-(int)$expectedUsed)>1048576)
             return ['ok'=>false,'msg'=>'⚠️ میزان مصرف از زمان تأیید تغییر کرده است. دوباره ریست را انتخاب و مبلغ جدید را تأیید کنید.'];
         if($type==='pasarguard')$r=resetPasarguardTraffic($sid,$order['remark']);
-        elseif($type==='marzban')$r=resetMarzbanTraffic($sid,$order['remark'],getMarzbanToken($sid));
+        elseif($type==='marzban')$r=deltaSvcMarzbanPost($sid,$order['remark'],'reset');
         else $r=resetClientTraffic($sid,$s['email'],in_array($type,['sanaei','alireza'],true)?$s['inbound']:($order['inbound_id']?:null));
         return ['ok'=>deltaSvcPanelOK($r),'msg'=>deltaSvcPanelOK($r)?'✅ حجم مصرف‌شده در پنل ریست شد.':'❌ ریست حجم در پنل موفق نبود'];
     }
