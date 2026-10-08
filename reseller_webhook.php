@@ -49,7 +49,7 @@ function deltaResellerWebhookCandidates($rid,$motherWebhook,$configuredBase,$req
     $base=trim((string)$configuredBase);
     if($base!==''){
         $p=parse_url($base);
-        if(is_array($p) && !empty($p['scheme']) && !empty($p['host'])){
+        if(is_array($p) && strtolower((string)($p['scheme']??''))==='https' && !empty($p['host'])){
             $root='https://'.$p['host'].(isset($p['port'])?':'.(int)$p['port']:'');
             $path=(string)($p['path']??'');
             $make($path,$root);
