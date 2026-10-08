@@ -93,10 +93,24 @@ function deltaSvcTraffic($bytes){
     if($bytes<1073741824) return (string)round($bytes/1048576, $bytes<10485760?1:0).'MB';
     return rtrim(rtrim(number_format($bytes/1073741824,2,'.',''),'0'),'.').'GB';
 }
-function deltaSvcBar($n,$d){
-    if($d<=0) return '♾️ نامحدود';
-    $full=max(0,min(15,(int)round(15*$n/$d)));
-    return str_repeat('🟩',$full).str_repeat('⬜',15-$full).' '.(int)round(100*$n/$d).'%';
+/**
+ * Render remaining-life bars. The color moves continuously from green through
+ * yellow/orange to red as usable traffic or subscription time runs out.
+ * Fully exhausted subscriptions are deliberately shown as solid red.
+ */
+function deltaSvcBar($consumed,$total){
+    if($total<=0) return '♾️ نامحدود';
+    $remaining=max(0.0,min(1.0,1.0-(float)$consumed/(float)$total));
+    if($remaining<=0.0)return str_repeat('🟥',15).' ۰٪ باقی‌مانده';
+    $count=max(1,min(15,(int)ceil(15*$remaining)));
+    $bar='';
+    for($i=0;$i<$count;$i++){
+        // A small within-bar blend softens the four emoji color transitions.
+        $shade=min(1.0,$remaining+0.14*(1.0-2.0*$i/max(1,$count-1)));
+        $bar.=($shade>=0.76?'🟩':($shade>=0.52?'🟨':($shade>=0.26?'🟧':'🟥')));
+    }
+    $bar.=str_repeat('⬜',15-$count);
+    return $bar.' '.(int)round(100*$remaining).'% باقی‌مانده';
 }
 function deltaSvcView($id){
     $order=deltaSvcOrder((int)$id);
@@ -115,7 +129,9 @@ function deltaSvcView($id){
     $text.="📊 <b>مصرف ترافیک</b>\n<b>".deltaSvcTraffic($used)." / ".($total>0?deltaSvcTraffic($total):'♾️')."</b>\n";
     $text.=deltaSvcBar($used,$total)."\n\n";
     $text.="🗓 <b>زمان اشتراک</b>\n<b>".$dUsed."D / ".($days>0?$days.'D':'♾️')."</b>\n";
-    $text.=deltaSvcBar($dUsed,$days)."\n\n";
+    $elapsedSeconds=$purchase>0?max(0,time()-$purchase):0;
+    $totalSeconds=$purchase>0 && $expiration>$purchase?($expiration-$purchase):0;
+    $text.=deltaSvcBar($elapsedSeconds,$totalSeconds)."\n\n";
     $text.="📅 تاریخ خریداری‌شده: ".($purchase>0?jdate('Y/m/d H:i',$purchase):'نامشخص')."\n";
     $text.="⏳ تاریخ انقضا: ".($expiration>0?jdate('Y/m/d H:i',$expiration):'نامحدود / نامشخص');
     $rows=[
@@ -299,7 +315,7 @@ function deltaSvcRevokeApply($order,$s){
                 $stmt->bind_param('si',$new,$id);$stmt->execute();$stmt->close();
             }
         }
-        return ['ok'=>true,'msg'=>'✅ لینک سابسکریپشن از پنل PasarGuard تغییر کرد. لینک جدید را از دکمهٔ دریافت لینک ساب بگیرید.'];
+        return ['ok'=>true,'msg'=>'✅ لینک اشتراک با موفقیت تغییر کرد. لینک قبلی دیگر معتبر نیست.'];
     }
     if($type==='marzban'){
         $revoke=deltaSvcMarzbanPost($sid,$order['remark'],'revoke_sub');
@@ -315,7 +331,7 @@ function deltaSvcRevokeApply($order,$s){
                 $st->bind_param('si',$new,$id);$st->execute();$st->close();
             }
         }
-        return ['ok'=>true,'msg'=>'✅ لینک سابسکریپشن در پنل Marzban تغییر کرد.'];
+        return ['ok'=>true,'msg'=>'✅ لینک اشتراک با موفقیت تغییر کرد. لینک قبلی دیگر معتبر نیست.'];
     }
     // Legacy x-ui: renew UUID only after explicit confirmation.
     $old=(string)($order['uuid']??'');
@@ -403,10 +419,16 @@ function deltaSvcExecute($id,$kind,$value,$nonce,$expectedStep,$expectedUsed=0){
         if(!$r['ok']){sendMessage($r['msg'],deltaSvcKb([[['text'=>'🔙 مدیریت اشتراک','callback_data'=>'dsMenu_'.$id]]]));return;}
         $key='svc-'.$id.'-'.$kind.'-'.$nonce;
         $charged=$needsLedger?deltaSvcLogCharge($key,$id,$kind,$charge):true;
-        $detail=$needsLedger?("\n💸 از سهمیه ربات: ".$charge." گیگ کسر شد."):("\n🎟 کسر از سهمیه: ندارد");
+        $detail=$kind==='S' ? '' : ($needsLedger?("\n💸 از سهمیه ربات: ".$charge." گیگ کسر شد."):("\n🎟 کسر از سهمیه: ندارد"));
         if(!$charged)$detail="\n🚨 عملیات روی پنل موفق بود، اما ثبت کسر سهمیه خطا داشت. عملیات را تکرار نکنید؛ گزارش را بررسی کنید.";
-        sendMessage($r['msg'].$detail,deltaSvcKb([[['text'=>'🛠 بازگشت به مدیریت اشتراک','callback_data'=>'dsMenu_'.$id]]]));
-        deltaSvcScreen($id,'menu',false);
+        if($kind==='S'){
+            sendMessage($r['msg']."\n✅ حجم و زمان اشتراک بدون تغییر باقی مانده است.");
+            // Send the updated URL and its QR image immediately, using live panel data.
+            if(function_exists('dsSendSubscription'))dsSendSubscription(deltaSvcOrder($id),'dsMenu_'.$id);
+        }else{
+            sendMessage($r['msg'].$detail,deltaSvcKb([[['text'=>'🛠 بازگشت به مدیریت اشتراک','callback_data'=>'dsMenu_'.$id]]]));
+            deltaSvcScreen($id,'menu',false);
+        }
     }catch(Throwable $e){
         error_log('deltaSvcExecute: '.$e->getMessage());
         sendMessage('❌ خطای داخلی هنگام اعمال عملیات؛ برای جلوگیری از تکرار ناخواسته وضعیت را در پنل بررسی کنید.');
