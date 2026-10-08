@@ -504,8 +504,10 @@ if($orders){
                         error_log('Quota ledger missing before expired order delete');
                         continue;
                     }
-                    $stmt = $connection->prepare("DELETE FROM `orders_list` WHERE `uuid`=?");
-                    $stmt->bind_param("s", $uuid);
+                    // Delete exactly the verified order, never all services sharing a UUID.
+                    $stmt = $connection->prepare("DELETE FROM `orders_list` WHERE `id`=?");
+                    $deleteOrderId=(int)$order['id'];
+                    $stmt->bind_param("i", $deleteOrderId);
                     $stmt->execute();
                     $stmt->close();
                     continue;
