@@ -12794,7 +12794,21 @@ if($data==='myExpiredCleanupAsk'){
 if($data==='myExpiredCleanupDo'){
     $now=time();
     $nowMs=$now*1000;
-    $stmt=$connection->prepare("DELETE FROM `orders_list` WHERE `userid`=? AND `agent_bought`=0 AND (`status`<>1 OR COALESCE(`expired_warned_at`,0)>0 OR (COALESCE(`expire_date`,0)>0 AND ((`expire_date`<20000000000 AND `expire_date`<=?) OR (`expire_date`>=20000000000 AND `expire_date`<=?))))");
+    $filter=" WHERE `userid`=? AND `agent_bought`=0 AND (`status`<>1 OR COALESCE(`expired_warned_at`,0)>0 OR (COALESCE(`expire_date`,0)>0 AND ((`expire_date`<20000000000 AND `expire_date`<=?) OR (`expire_date`>=20000000000 AND `expire_date`<=?))))";
+    $stmt=$connection->prepare("SELECT * FROM orders_list".$filter);
+    $stmt->bind_param('iii',$from_id,$now,$nowMs);$stmt->execute();
+    $rows=$stmt->get_result();$pending=[];
+    while($row=$rows->fetch_assoc())$pending[]=$row;
+    $stmt->close();
+    $quotaOk=true;
+    foreach($pending as $row){
+        if(!deltaQuotaPreserveBeforeOrderRemoval($row)){ $quotaOk=false;break; }
+    }
+    if(!$quotaOk){
+        sendMessage("❌ به دلیل خطا در ثبت سابقهٔ سهمیه، پاکسازی لغو شد تا سهمیه اشتباهی برنگردد.");
+        exit;
+    }
+    $stmt=$connection->prepare("DELETE FROM `orders_list`".$filter);
     $stmt->bind_param('iii',$from_id,$now,$nowMs);
     $stmt->execute();
     $deleted=$stmt->affected_rows;
