@@ -336,7 +336,13 @@ function deltaResellerDbHealthy($database){
     if(!preg_match('/^[A-Za-z0-9_]{1,64}$/',$database) || !preg_match('/^[A-Za-z0-9_]{1,64}$/',$mainDbName))
         return false;
     try{
-        foreach(['users','setting','orders_list','pays','server_config','server_info','server_plans','server_categories'] as $table){
+        // Clone ALL missing ordinary tables, not just the core eight:
+        // child /start also touches campaign, special-offer and pricing tables.
+        $tables=$connection->query("SHOW TABLES FROM ".$mainDbName);
+        if(!$tables)return false;
+        while($item=$tables->fetch_array(MYSQLI_NUM)){
+            $table=(string)($item[0]??'');
+            if(!preg_match('/^[A-Za-z0-9_]+$/',$table)||in_array($table,['reseller_bots','reseller_plans'],true))continue;
             $res=$connection->query("SHOW TABLES FROM ".$database." LIKE '".$table."'");
             if($res && $res->num_rows>0)continue;
             $ok=$connection->query("CREATE TABLE IF NOT EXISTS ".$database.".".$table." LIKE ".$mainDbName.".".$table);
