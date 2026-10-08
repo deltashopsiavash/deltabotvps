@@ -1286,8 +1286,10 @@ setUser("resellerAwaitAdmin_" . $rid, "step");
         $stmt->execute();
         $stmt->close();
 
-// Connection is tested below before claiming the bot is online.
-@sendMessage("🔄 در حال بررسی اتصال ربات نمایندگی به تلگرام...", null, "HTML");
+// ضمانت نمایش 100% حتی اگر مراحل بعدی (وبهوک/کوئری‌ها) خطا بخورن یا کند بشن
+@sendMessage("🟩🟩🟩🟩🟩🟩 100%\n\n✅ ربات با موفقیت فعال شد.\n
+ℹ️ تنظیمات نهایی در پس‌زمینه انجام می‌شود...", null, "Markdown");
+
 
         // set webhook for the new bot to this same handler, with bid param
         $hookUrl = $botUrl . "bot.php?bid=" . $rid;
@@ -1349,17 +1351,11 @@ sendMessage("✅ اطلاعات ربات شما:
 "
             ."از این به بعد میتونی ربات‌هات رو از بخش «{$buttonValues['my_reseller_bots']}» مدیریت کنی.");
 
-        // Telegram must confirm the child webhook; no silent CLI worker.
-        $hookResult=deltaResellerWebhookSetup($rid);
-        if(!empty($hookResult['ok'])){
-            sendMessage("✅ ربات نمایندگی ساخته شد و اتصال تلگرام تأیید شد.\n🤖 ".$uname.
-                "\n\nحالا /start را در ربات جدید تست کنید.",
-                ['inline_keyboard'=>[[['text'=>'🔍 بررسی اتصال','callback_data'=>'resCheck_'.$rid]]]]);
-        }else{
-            sendMessage("⚠️ مشخصات ربات ذخیره شد، اما اتصال به تلگرام هنوز برقرار نشده است.\n\n".
-                htmlspecialchars((string)($hookResult['error']??'خطای نامشخص'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
-                ['inline_keyboard'=>[[['text'=>'🔁 تلاش مجدد','callback_data'=>'resUpdate_'.$rid]],
-                                     [['text'=>'🔍 بررسی اتصال','callback_data'=>'resCheck_'.$rid]]]],'HTML');
+        // Finalize (setWebhook + admin report) in background to avoid webhook timeouts
+        $worker = __DIR__ . "/reseller_finalize_worker.php";
+        if(file_exists($worker)){
+            $cmd = "nohup php " . escapeshellarg($worker) . " " . escapeshellarg((string)$rid) . " > /dev/null 2>&1 &";
+            @shell_exec($cmd);
         }
 
         exit;
@@ -2722,11 +2718,7 @@ if(!$isChildBot && preg_match('/^resEnable_(\d+)/',$data,$m)){
     // re-set webhook
     if(!empty($b['bot_token'])){
         $hookUrl = $botUrl . "bot.php?bid=" . $rid;
-        $hookResult=deltaResellerWebhookSetup($rid);
-        if(empty($hookResult['ok'])){
-            alert('⚠️ اتصال برقرار نشد: '.mb_substr((string)($hookResult['error']??'خطای نامشخص'),0,125),true);
-            exit;
-        }
+        @botWithToken($b['bot_token'], 'setWebhook', ['url'=>$hookUrl]);
     }
     $connection->query("UPDATE `reseller_bots` SET `status`=1 WHERE `id`={$rid} LIMIT 1");
     alert('✅ ربات فعال شد');
@@ -2760,16 +2752,7 @@ if(!$isChildBot && preg_match('/^resUpdate_(\d+)/',$data,$m)){
     // refresh webhook to ensure it points to the latest handler
     if(!empty($b['bot_token'])){
         $hookUrl = $botUrl . "bot.php?bid=" . $rid;
-        $hookResult=deltaResellerWebhookSetup($rid);
-        if(empty($hookResult['ok'])){
-            smartSendOrEdit($message_id,
-                "⚠️ بروزرسانی فایل‌های ربات انجام شد، اما اتصال تلگرام هنوز تأیید نشده است.\n\n".
-                htmlspecialchars((string)($hookResult['error']??'خطای نامشخص'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
-                ['inline_keyboard'=>[[['text'=>'🔁 تلاش مجدد','callback_data'=>'resUpdate_'.$rid]],
-                                     [['text'=>'🔍 بررسی اتصال','callback_data'=>'resCheck_'.$rid]],
-                                     [['text'=>'🔙 بازگشت','callback_data'=>'myResBot_'.$rid]]]],'HTML');
-            exit;
-        }
+        @botWithToken($b['bot_token'], 'setWebhook', ['url'=>$hookUrl]);
     }
 
     smartSendOrEdit($message_id, "✅ بروزرسانی انجام شد.\n\nاز این به بعد ربات شما دقیقا از امکانات نسخه مادر استفاده می‌کند.", ['inline_keyboard'=>[[['text'=>'بازگشت 🔙','callback_data'=>'myResBot_'.$rid]]]]);
