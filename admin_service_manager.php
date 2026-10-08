@@ -181,7 +181,15 @@ function deltaSvcStep($step){
 }
 function deltaSvcConfirm($id,$kind,$amount,$snapshotBytes=0){
     $id=(int)$id;$amount=(int)$amount;
-    if(!deltaSvcOrder($id)) {sendMessage('❌ سفارش پیدا نشد.');return;}
+    $order=deltaSvcOrder($id);
+    if(!$order) {sendMessage('❌ سفارش پیدا نشد.');return;}
+    if($kind==='V'){
+        $snap=deltaSvcSnapshot($order);
+        if(empty($snap['found']) || (int)$snap['total']===0){
+            sendMessage('⚠️ حجم فعلی این سرویس در پنل مشخص نیست یا نامحدود است. افزایش حجم به‌صورت دستی روی سرویس نامحدود مجاز نیست تا سقف ترافیک ناخواسته محدود نشود.');
+            return;
+        }
+    }
     if($kind==='V' && $amount<5){sendMessage('⚠️ حداقل افزایش حجم ۵ گیگ است.');return;}
     if($kind==='D' && ($amount<30 || $amount>60)){sendMessage('⚠️ افزایش تاریخ باید بین ۳۰ تا ۶۰ روز باشد.');return;}
     $cost=deltaSvcCost($kind,$amount,$snapshotBytes);
@@ -341,6 +349,7 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
         return ['ok'=>deltaSvcPanelOK($r),'msg'=>deltaSvcPanelOK($r)?'✅ حجم مصرف‌شده در پنل ریست شد.':'❌ ریست حجم در پنل موفق نبود'];
     }
     if($kind==='V'||$kind==='D'){
+        if($kind==='V' && (int)$s['total']===0)return ['ok'=>false,'msg'=>'افزایش حجم سرویس نامحدود یا با سقف نامشخص مجاز نیست'];
         $v=$kind==='V'?$amount:0;$d=$kind==='D'?$amount:0;
         if($type==='marzban'||$type==='pasarguard'){
             $changes=['remark'=>$order['remark']];
