@@ -19,6 +19,13 @@ function dsLocked($order){
     $p=$st->get_result()->fetch_assoc();$st->close();
     return is_array($p) && function_exists('npvPlanIsLockedPasarguard') && npvPlanIsLockedPasarguard($p);
 }
+/**
+ * Retain the legacy PasarGuard-specific renewal switch alongside the standard
+ * renewal setting: the custom renewal menu is controlled independently.
+ */
+function dsShouldShowRenew($serverType,$regularOn,$specialOn){
+    return strtolower((string)$serverType)==='pasarguard' ? (bool)$specialOn : (bool)$regularOn;
+}
 function deltaSvcCustomerView($id,$ownerId){
     global $botState,$buttonValues;
     $o=deltaSvcOrder((int)$id);
@@ -30,8 +37,15 @@ function deltaSvcCustomerView($id,$ownerId){
     $rows=[];
     if(($botState['serviceTransferState']??'on')==='on')
         $rows[]=[['text'=>'🔄 انتقال سرویس','callback_data'=>'transferMyOrder'.$id]];
-    if(($botState['renewAccountState']??'on')==='on')
-        $rows[]=[['text'=>'🔁 تمدید سرویس','callback_data'=>(deltaSvcServer((int)$o['server_id'])['type']??'')==='pasarguard'?'pgRenewMenu'.$id:'renewAccount'.$id]];
+    $server=deltaSvcServer((int)$o['server_id']);
+    $serverType=strtolower((string)($server['type']??''));
+    $generalRenew=strtolower(trim((string)($botState['renewAccountState']??'off')))==='on';
+    $specialRenew=$serverType==='pasarguard' && function_exists('pgRenewSetting')
+        && pgRenewSetting('MAIN_STATE','on')==='on';
+    if(dsShouldShowRenew($serverType,$generalRenew,$specialRenew)){
+        $rows[]=[['text'=>$buttonValues['renew_config']??'🔁 تمدید سرویس',
+                   'callback_data'=>($serverType==='pasarguard'?'pgRenewMenu':'renewAccount').$id]];
+    }
     if(!$locked){
         $rows[]=[['text'=>'📱 کیو آر ساب پنل','callback_data'=>'dsCustomerSub_'.$id]];
         if(($botState['renewConfigLinkState']??'off')==='on')
@@ -242,8 +256,14 @@ function dsHandleCustomer(){
         $s=deltaSvcSnapshot($o);
         if(empty($s['found'])){sendMessage('❌ پنل پاسخگو نیست؛ لینک تغییر نکرد.');return true;}
         $result=deltaSvcRevokeApply($o,$s);
-        sendMessage($result['msg'],deltaSvcKb([[['text'=>'🔗 دریافت لینک ساب جدید','callback_data'=>'dsCustomerSub_'.$id]],
-                                                [['text'=>'🔙 مشخصات سرویس','callback_data'=>'orderDetails'.$id]]]));
+        if(empty($result['ok'])){
+            sendMessage('❌ تغییر لینک اشتراک تأیید نشد. لطفاً وضعیت سرویس را بررسی کنید.',
+                deltaSvcKb([[['text'=>'🔙 مشخصات سرویس','callback_data'=>'orderDetails'.$id]]]));
+            return true;
+        }
+        sendMessage("✅ لینک سابسکریپشن با موفقیت تغییر کرد.\n🔒 لینک قبلی باطل شد.\n📦 حجم و تاریخ اشتراک بدون تغییر باقی مانده است.");
+        // Deliver a newly fetched subscription URL and QR in this same callback.
+        dsSendSubscription(deltaSvcOrder($id),'orderDetails'.$id);
         return true;
     }
     return false;
@@ -266,7 +286,7 @@ function dsSendSubscription($order,$backCallback){
     }else $link=xuiExtractOrderSubLink($order);
     if($link===''){sendMessage('⚠️ لینک زنده از پنل دریافت نشد؛ لینک قدیمی نمایش داده نمی‌شود.');return;}
     $key=deltaSvcKb([[['text'=>'📋 کپی لینک','copy_text'=>['text'=>$link]]],[['text'=>'🔙 بازگشت','callback_data'=>$backCallback]]]);
-    $txt="🔗 <b>لینک سابسکریپشن</b>\n<code>".deltaSvcEsc($link)."</code>";
+    $txt="🔗 <b>لینک سابسکریپشن</b>\n<code>".deltaSvcEsc($link)."</code>\n\n📲 کد QR همین لینک:";
     $tmp=tempnam(sys_get_temp_dir(),'dsub_');
     if($tmp && file_exists(__DIR__.'/phpqrcode/qrlib.php')){
         require_once __DIR__.'/phpqrcode/qrlib.php';
