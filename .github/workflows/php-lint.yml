@@ -27,6 +27,7 @@ jobs:
           php -l settings/rewardReport.php
           php -l tests/order_features.php
           php tests/order_features.php
+          php tests/admin_service_manager.php
           bash -n update.sh
       - name: Test NPVS v6 public-key generator
         run: |
