@@ -4,6 +4,7 @@ require_once __DIR__ . "/settings/jdf.php";
 // Always load baseInfo.php from the project root (fixes include path issues when config.php
 // is included from subfolders like /settings or /pay).
 require_once __DIR__ . "/baseInfo.php";
+require_once __DIR__ . "/reseller_webhook.php";
 $mainDbName = $dbName; // keep a stable reference to the mother DB
 $connection = new mysqli('localhost',$dbUserName,$dbPassword,$dbName);
 if($connection->connect_error){

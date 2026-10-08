@@ -94,18 +94,21 @@ function deltaSvcTraffic($bytes){
     return rtrim(rtrim(number_format($bytes/1073741824,2,'.',''),'0'),'.').'GB';
 }
 /**
- * A clean single-color bar: all filled squares share the same shade.
- * The remaining percentage determines the tone in 20-percent bands.
- * Both customer and admin traffic/time displays call this shared helper.
+ * A white bar means untouched quota/time (100% remaining).
+ * Filled blocks represent the CONSUMED portion, with one uniform color.
+ * Each 20% of depletion moves the whole colored portion to the next tone.
  */
 function deltaSvcBar($consumed,$total){
     if($total<=0) return '♾️ نامحدود';
-    $ratio=max(0.0,min(1.0,1.0-(float)$consumed/(float)$total));
-    $pct=(int)round(100*$ratio);
-    if($ratio<=0.0) return str_repeat('🟥',15).' ۰٪ باقی‌مانده';
-    $color=$pct>=80?'🟩':($pct>=60?'🟨':($pct>=20?'🟧':'🟥'));
+    $ratio=max(0.0,min(1.0,(float)$consumed/(float)$total));
+    $usedPct=(int)round(100*$ratio);
+    $remainingPct=100-$usedPct;
+    if($ratio<=0.0) return str_repeat('⬜',15).' ۱۰۰٪ باقی‌مانده';
     $filled=max(1,min(15,(int)ceil(15*$ratio)));
-    return str_repeat($color,$filled).str_repeat('⬜',15-$filled).' '.$pct.'% باقی‌مانده';
+    // 0-20% consumed: green, 20-40%: yellow, 40-60%: orange,
+    // 60-80%: red, 80-100%: red (maximum alert).
+    $color=$ratio<=0.2?'🟩':($ratio<=0.4?'🟨':($ratio<=0.6?'🟧':'🟥'));
+    return str_repeat($color,$filled).str_repeat('⬜',15-$filled).' '.$remainingPct.'% باقی‌مانده';
 }
 function deltaSvcView($id){
     $order=deltaSvcOrder((int)$id);
