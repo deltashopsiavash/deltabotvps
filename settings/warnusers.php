@@ -255,6 +255,10 @@ if($res){
       $order['delete_after']=$oldDue;
       sendToAdmins(pgExpiryAdminDeleteReport($order,$fresh,$deletedAt,$del),null,'HTML');
 
+      if(!deltaQuotaPreserveBeforeOrderRemoval($order)){
+          error_log('Quota ledger write failed for auto-expired order '.(int)$order['id']);
+          continue;
+      }
       $stmt=$connection->prepare("DELETE FROM orders_list WHERE id=?");
       $stmt->bind_param('i',$order['id']); $stmt->execute(); $stmt->close();
       if($pgGlobalAlerts && (int)$order['pg_expiry_alerts']===1){
@@ -496,6 +500,10 @@ if($orders){
                     $msg = "💡 کاربر گرامی،
     اشتراک سرویس $remark منقضی شد و از لیست سفارش ها حذف گردید. لطفا از فروشگاه, سرویس جدید خریداری کنید.";
                     sendMessage( $msg, null, null, $from_id);
+                    if(!deltaQuotaPreserveBeforeOrderRemoval($order ?? null)){
+                        error_log('Quota ledger missing before expired order delete');
+                        continue;
+                    }
                     $stmt = $connection->prepare("DELETE FROM `orders_list` WHERE `uuid`=?");
                     $stmt->bind_param("s", $uuid);
                     $stmt->execute();
