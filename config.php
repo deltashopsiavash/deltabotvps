@@ -325,6 +325,29 @@ function ensureResellerTables(){
 
 }
 
+/**
+ * Recover missing essential child tables without overwriting customer data.
+ * Covers MySQL 8 template dumps that cannot import on MariaDB.
+ */
+function deltaResellerDbHealthy($database){
+    global $connection,$mainDbName;
+    $database=(string)$database;
+    $mainDbName=(string)$mainDbName;
+    if(!preg_match('/^[A-Za-z0-9_]{1,64}$/',$database) || !preg_match('/^[A-Za-z0-9_]{1,64}$/',$mainDbName))
+        return false;
+    foreach(['users','setting','orders_list','pays','server_config','server_info','server_plans','server_categories'] as $table){
+        $res=$connection->query("SHOW TABLES FROM ".$database." LIKE '".$table."'");
+        if($res && $res->num_rows>0)continue;
+        $ok=$connection->query("CREATE TABLE IF NOT EXISTS ".$database.".".$table." LIKE ".$mainDbName.".".$table);
+        if(!$ok){error_log('Reseller schema recovery failed for '.$table.': '.$connection->error);return false;}
+    }
+    $state=$connection->query("SELECT COUNT(*) AS c FROM ".$database.".setting WHERE type='BOT_STATES'");
+    if($state && (int)($state->fetch_assoc()['c']??0)===0){
+        $connection->query("INSERT INTO ".$database.".setting (type,value) SELECT type,value FROM ".$mainDbName.".setting WHERE type='BOT_STATES' LIMIT 1");
+    }
+    return true;
+}
+
 // Create a dedicated database for a reseller bot (child bot).
 // We clone schema from the mother DB and copy only configuration tables.
 function ensureResellerBotDatabase($rid){
@@ -336,7 +359,7 @@ function ensureResellerBotDatabase($rid){
     $row = $connection->query("SELECT `id`,`db_name` FROM `reseller_bots` WHERE `id`={$rid} LIMIT 1");
     $rb = $row ? $row->fetch_assoc() : null;
     if(!$rb) return false;
-    if(!empty($rb['db_name'])) return true;
+    if(!empty($rb['db_name'])) return deltaResellerDbHealthy((string)$rb['db_name']);
 
     // Generate DB name
     $newDb = preg_replace('/[^a-zA-Z0-9_]/','_', $mainDbName . '_rb' . $rid);
@@ -399,6 +422,14 @@ function ensureResellerBotDatabase($rid){
         }
     }
 
+    if(!deltaResellerDbHealthy($newDb))return false;
+    // The bundled legacy SQL template contains demonstration users and orders.
+    // Fresh reseller databases must never inherit those records.
+    if($importOk){
+        foreach(['users','orders_list','pays'] as $table){
+            $connection->query("DELETE FROM ".$newDb.".".$table);
+        }
+    }
     // Save db_name for child bot so it never falls back to mother DB
     $stmt = $connection->prepare("UPDATE `reseller_bots` SET `db_name`=? WHERE `id`=?");
     $stmt->bind_param("si", $newDb, $rid);
