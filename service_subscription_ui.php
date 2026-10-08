@@ -53,6 +53,7 @@ function dsManualSpent($id){
 }
 function dsInitialCharge($order){
     global $connection;
+    if((int)($order['status']??1)!==1)return 0; // Not counted in active-order quota.
     $stmt=$connection->prepare("SELECT volume,quota_charge_volume FROM server_plans WHERE id=? LIMIT 1");
     if(!$stmt)return null;
     $fid=(int)$order['fileid'];$stmt->bind_param('i',$fid);$stmt->execute();
