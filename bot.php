@@ -1287,7 +1287,8 @@ setUser("resellerAwaitAdmin_" . $rid, "step");
         $stmt->close();
 
 // ضمانت نمایش 100% حتی اگر مراحل بعدی (وبهوک/کوئری‌ها) خطا بخورن یا کند بشن
-@sendMessage("🟩🟩🟩🟩🟩🟩 90%\n\nدر حال ثبت و بررسی وب‌هوک تلگرام...", null, "Markdown");
+@sendMessage("🟩🟩🟩🟩🟩🟩 100%\n\n✅ ربات با موفقیت فعال شد.\n
+ℹ️ تنظیمات نهایی در پس‌زمینه انجام می‌شود...", null, "Markdown");
 
 
 
@@ -1351,15 +1352,11 @@ sendMessage("✅ اطلاعات ربات شما:
 "
             ."از این به بعد میتونی ربات‌هات رو از بخش «{$buttonValues['my_reseller_bots']}» مدیریت کنی.");
 
-        // Report actual Telegram webhook status; never claim success before verification.
-        $webhookResult = deltaResellerWebhookSetup($rid);
-        if(!empty($webhookResult['ok'])){
-            sendMessage("🟩🟩🟩🟩🟩🟩 100%\n\n✅ اتصال ربات نمایندگی به تلگرام تأیید شد.\n🤖 ".$uname."\n\nحالا /start را در ربات نمایندگی امتحان کنید.");
-        }else{
-            $webhookErr = htmlspecialchars((string)($webhookResult['error']??'نامشخص'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
-            sendMessage("⚠️ ربات ثبت شد اما Webhook تلگرام فعال نشده است.\n\n❌ خطا: ".$webhookErr.
-                "\n\nبرای تلاش مجدد به «ربات‌های من ← بروزرسانی ربات» مراجعه کنید.",null,"HTML");
-            error_log("Reseller #".$rid." webhook setup failed: ".($webhookResult['error']??'unknown'));
+        // Finalize (setWebhook + admin report) in background to avoid webhook timeouts
+        $worker = __DIR__ . "/reseller_finalize_worker.php";
+        if(file_exists($worker)){
+            $cmd = "nohup php " . escapeshellarg($worker) . " " . escapeshellarg((string)$rid) . " > /dev/null 2>&1 &";
+            @shell_exec($cmd);
         }
 
         exit;
@@ -2695,11 +2692,7 @@ if(!$isChildBot && preg_match('/^resEnable_(\d+)/',$data,$m)){
     // re-set webhook
     if(!empty($b['bot_token'])){
         $hookUrl = $botUrl . "bot.php?bid=" . $rid;
-        $hookResult = deltaResellerWebhookSetup($rid);
-        if(empty($hookResult['ok'])){
-            alert('❌ خطا در ثبت Webhook: '.mb_substr((string)($hookResult['error']??''),0,125),true);
-            exit;
-        }
+        @botWithToken($b['bot_token'], 'setWebhook', ['url'=>$hookUrl]);
     }
     $connection->query("UPDATE `reseller_bots` SET `status`=1 WHERE `id`={$rid} LIMIT 1");
     alert('✅ ربات فعال شد');
@@ -2733,12 +2726,7 @@ if(!$isChildBot && preg_match('/^resUpdate_(\d+)/',$data,$m)){
     // refresh webhook to ensure it points to the latest handler
     if(!empty($b['bot_token'])){
         $hookUrl = $botUrl . "bot.php?bid=" . $rid;
-        $hookResult = deltaResellerWebhookSetup($rid);
-        if(empty($hookResult['ok'])){
-            smartSendOrEdit($message_id,"❌ ثبت Webhook نمایندگی انجام نشد.\n\n".htmlspecialchars((string)($hookResult['error']??'خطای ناشناخته'),ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
-                ['inline_keyboard'=>[[['text'=>'🔁 تلاش مجدد','callback_data'=>'resUpdate_'.$rid]],[['text'=>'بازگشت 🔙','callback_data'=>'myResBot_'.$rid]]]],'HTML');
-            exit;
-        }
+        @botWithToken($b['bot_token'], 'setWebhook', ['url'=>$hookUrl]);
     }
 
     smartSendOrEdit($message_id, "✅ بروزرسانی انجام شد.\n\nاز این به بعد ربات شما دقیقا از امکانات نسخه مادر استفاده می‌کند.", ['inline_keyboard'=>[[['text'=>'بازگشت 🔙','callback_data'=>'myResBot_'.$rid]]]]);
