@@ -1773,6 +1773,7 @@ function deltaQuotaPreserveBeforeOrderRemoval($order){
     if(empty($isChildBot) || !$currentBotInstanceId ||
         getResellerBotQuotaLimit((int)$currentBotInstanceId)===null)return true;
     if(!is_array($order) || (int)($order['id']??0)<=0)return false;
+    if((int)($order['status']??1)!==1)return true; // Already outside active-order quota.
     $id=(int)$order['id'];$fid=(int)$order['fileid'];
     $schema="CREATE TABLE IF NOT EXISTS admin_service_quota_charges (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
