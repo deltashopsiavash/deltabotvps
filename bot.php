@@ -12814,7 +12814,7 @@ if(($userInfo['step'] == "searchAgentConfig" || $userInfo['step'] == "searchMyCo
         setUser();
     }
 }
-if(($userInfo['step'] == "searchUsersConfig" && $text != $buttonValues['cancel']) || preg_match('/^userOrderDetails(\d+)_(\d+)/',$data,$match)){
+if((($userInfo['step'] == "searchUsersConfig" && $text != $buttonValues['cancel']) || preg_match('/^userOrderDetails(\d+)_(\d+)/',$data,$match)) && deltaSvcIsAdmin()){
     if(isset($data)){
         $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `id` = ?");
         $stmt->bind_param("i", $match[1]);
