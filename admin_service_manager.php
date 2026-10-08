@@ -263,7 +263,7 @@ function deltaSvcRevokeApply($order,$s){
     }
     if($type==='marzban'){
         $r=renewMarzbanUUID($sid,$order['remark']);
-        if(!is_object($r) || isset($r->detail) || !empty($r->success)===false && isset($r->success))
+        if(!is_object($r) || isset($r->detail) || (isset($r->success) && !$r->success))
             return ['ok'=>false,'msg'=>(string)($r->msg ?? $r->detail ?? 'خطا در پنل مرزبان')];
         $sub=xuiFindSubscriptionString($r);
         if($sub!==''){
@@ -310,8 +310,12 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
     }
     if($kind==='V'||$kind==='D'){
         $v=$kind==='V'?$amount:0;$d=$kind==='D'?$amount:0;
-        if($type==='marzban'||$type==='pasarguard')
-            $r=editMarzbanConfig($sid,['remark'=>$order['remark'],'plus_volume'=>$v,'plus_day'=>$d]);
+        if($type==='marzban'||$type==='pasarguard'){
+            $changes=['remark'=>$order['remark']];
+            if($kind==='V') $changes['plus_volume']=$v;
+            else $changes['plus_day']=$d;
+            $r=editMarzbanConfig($sid,$changes);
+        }
         elseif((int)$order['inbound_id']===0)$r=editInboundTraffic($sid,$order['uuid'],$v,$d);
         else $r=editClientTraffic($sid,(int)$order['inbound_id'],$order['uuid'],$v,$d);
         if(!deltaSvcPanelOK($r))return ['ok'=>false,'msg'=>'❌ پنل افزایش را تأیید نکرد؛ سهمیه کم نشد'];
@@ -368,6 +372,8 @@ function deltaSvcHandleRequest(){
     if(preg_match('/^changeUserConfigState(\d+)$/',$data,$m))$data='dsToggle_'.$m[1];
     if(preg_match('/^changAccountConnectionLink(\d+)$/',$data,$m))$data='dsRevoke_'.$m[1];
     if(preg_match('/^ds(View|Menu|Buyer)_(\d+)$/',$data,$m)){
+        // Cancel any outstanding input/confirmation when navigating away.
+        setUser('none','step');setUser('','temp');
         deltaSvcScreen((int)$m[2],strtolower($m[1]));return true;
     }
     if(preg_match('/^dsAsk([VD])_(\d+)$/',$data,$m)){
@@ -377,7 +383,7 @@ function deltaSvcHandleRequest(){
             "📆 <b>افزایش تاریخ</b>\n\n📥 تعداد روز را وارد کنید.\n⚠️ حداقل ۳۰ و حداکثر ۶۰ روز.";
         sendMessage($msg,deltaSvcKb([[['text'=>'❌ انصراف','callback_data'=>'dsMenu_'.$id]]]),'HTML');return true;
     }
-    if(preg_match('/^dsInput([VD])_(\d+)$/',$step,$m)){
+    if($data==='' && preg_match('/^dsInput([VD])_(\d+)$/',$step,$m)){
         $kind=$m[1];$id=(int)$m[2];
         if(trim((string)$text)===(string)($buttonValues['cancel']??'')){setUser('none','step');deltaSvcScreen($id,'menu',false);return true;}
         $entered=trim((string)$text);
