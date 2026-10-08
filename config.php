@@ -7437,9 +7437,7 @@ function changeClientState($server_id, $inbound_id, $uuid){
     if($serverType == "sanaei" || $serverType == "alireza"){
         
         $newSetting = array();
-        // The original code used an undefined $editedClient here, preventing
-        // Sanaei/Alireza traffic and day updates from reaching the panel.
-        $newSetting['clients'][] = $settingsArrayForUpdate['clients'][$client_key];
+        $newSetting['clients'][] = $editedClient;
         $newSetting = json_encode($newSetting);
 
         $dataArr = array(
@@ -7668,7 +7666,6 @@ function editClientRemark($server_id, $inbound_id, $uuid, $newRemark){
     if(!$response) return null;
     $response = $response->obj;
     $client_key = 0;
-    $clientFound = false;
     foreach($response as $row){
         if($row->id == $inbound_id) {
             $settings = xuiDecodeAssoc($row->settings);
@@ -7678,7 +7675,6 @@ function editClientRemark($server_id, $inbound_id, $uuid, $newRemark){
             foreach($clients as $key => $client){
                 if($client['id'] == $uuid || $client['password'] == $uuid){
                     $client_key = $key;
-                    $clientFound = true;
                     $email = $client['email'];
                     $emails = array_column($clientsStates,'email');
                     $emailKey = array_search($email,$emails);
@@ -7697,7 +7693,6 @@ function editClientRemark($server_id, $inbound_id, $uuid, $newRemark){
     if(!isset($settings['clients'][$client_key]['enable']) && ($serverType == "sanaei" || $serverType == "alireza")) $settings['clients'][$client_key]['enable'] = true;
 
     $settings['clients'] = array_values($settings['clients']);
-    $settingsArrayForUpdate = $settings;
     $settings = json_encode($settings);
     $dataArr = array('up' => $row->up,'down' => $row->down,'total' => $row->total,'remark' => $row->remark,'enable' => 'true',
         'expiryTime' => $row->expiryTime, 'listen' => '','port' => $row->port,'protocol' => $row->protocol,'settings' => $settings,
@@ -7820,6 +7815,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
     if(!$response) return null;
     $response = $response->obj;
     $client_key = 0;
+    $clientFound = false;
     foreach($response as $row){
         if($row->id == $inbound_id) {
             $settings = xuiDecodeAssoc($row->settings);
@@ -7829,6 +7825,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
             foreach($clients as $key => $client){
                 if($client['id'] == $uuid || $client['password'] == $uuid){
                     $client_key = $key;
+                    $clientFound = true;
                     $email = $client['email'];
                     $emails = array_column($clientsStates,'email');
                     $emailKey = array_search($email,$emails);
@@ -7868,6 +7865,7 @@ function editClientTraffic($server_id, $inbound_id, $uuid, $volume, $days, $edit
         if(!isset($settings['clients'][$client_key]['enable']) && ($serverType == "sanaei" || $serverType == "alireza")) $settings['clients'][$client_key]['enable'] = true;
     }
     $settings['clients'] = array_values($settings['clients']);
+    $editedClient = $settings['clients'][$client_key];
     $settings = json_encode($settings);
     $dataArr = array('up' => $row->up,'down' => $row->down,'total' => $row->total,'remark' => $row->remark,'enable' => 'true',
         'expiryTime' => $row->expiryTime, 'listen' => '','port' => $row->port,'protocol' => $row->protocol,'settings' => $settings,
