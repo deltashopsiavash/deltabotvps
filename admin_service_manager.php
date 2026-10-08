@@ -235,7 +235,13 @@ function deltaSvcPgRevoke($order,$server){
             curl_setopt_array($ch,[CURLOPT_URL=>$base.$path,CURLOPT_POST=>true,CURLOPT_RETURNTRANSFER=>true,
                 CURLOPT_CONNECTTIMEOUT=>10,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>['Accept: application/json','Authorization: Bearer '.$token->access_token]]);
             $raw=curl_exec($ch);$err=curl_error($ch);$http=curl_getinfo($ch,CURLINFO_HTTP_CODE);curl_close($ch);
-            if(!$err && $http>=200 && $http<300)return ['ok'=>true,'msg'=>'لینک ساب در پنل تغییر کرد'];
+            if(!$err && $http>=200 && $http<300){
+                $j=json_decode((string)$raw);
+                if(is_object($j) && ((isset($j->success) && $j->success===false) || isset($j->detail))){
+                    return ['ok'=>false,'msg'=>'پنل تغییر لینک ساب را رد کرد: '.substr((string)$raw,0,160)];
+                }
+                return ['ok'=>true,'msg'=>'لینک ساب در پنل تغییر کرد'];
+            }
             $last=$err?:'HTTP '.$http.' '.substr((string)$raw,0,180);
             if($http===401 || $http===403)return ['ok'=>false,'msg'=>$last];
         }
@@ -256,7 +262,7 @@ function deltaSvcMarzbanPost($serverId,$remark,$operation){
     if($err || $http<200 || $http>=300)
         return (object)['success'=>false,'msg'=>($err?:'HTTP '.$http.' '.substr((string)$raw,0,160))];
     $json=json_decode((string)$raw);
-    if(is_object($json)&&isset($json->detail))return (object)['success'=>false,'msg'=>(string)json_encode($json->detail)];
+    if(is_object($json) && (isset($json->detail) || (isset($json->success) && $json->success===false)))return (object)['success'=>false,'msg'=>(string)$raw];
     return (object)['success'=>true,'obj'=>$json];
 }
 
@@ -318,7 +324,12 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
     if($kind==='T'){
         $r=($type==='pasarguard'||$type==='marzban') ? changeMarzbanState($sid,$order['remark']):
             ((int)$order['inbound_id']===0?changeInboundState($sid,$order['uuid']):changeClientState($sid,$order['inbound_id'],$order['uuid']));
-        return ['ok'=>deltaSvcPanelOK($r),'msg'=>deltaSvcPanelOK($r)?($s['enabled']?'✅ کانفیگ غیرفعال شد.':'✅ کانفیگ دوباره فعال شد.'):'❌ پنل عملیات تغییر وضعیت را تأیید نکرد'];
+        if(!deltaSvcPanelOK($r))
+            return ['ok'=>false,'msg'=>'❌ پنل عملیات تغییر وضعیت را تأیید نکرد'];
+        $after=deltaSvcSnapshot($order);
+        if(empty($after['found']) || $after['enabled']===$s['enabled'])
+            return ['ok'=>false,'msg'=>'⚠️ پاسخ پنل دریافت شد، اما وضعیت تازه تأیید نشد. قبل از تکرار، وضعیت سرویس را در پنل بررسی کنید.'];
+        return ['ok'=>true,'msg'=>$after['enabled']?'✅ کانفیگ دوباره فعال شد.':'✅ کانفیگ غیرفعال شد.'];
     }
     if($kind==='S')return deltaSvcRevokeApply($order,$s);
     if($kind==='R'){
