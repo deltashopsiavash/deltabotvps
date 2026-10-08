@@ -351,7 +351,9 @@ function deltaSvcApply($id,$kind,$amount,$expectedUsed=0){
 }
 function deltaSvcExecute($id,$kind,$value,$nonce,$expectedStep,$expectedUsed=0){
     global $connection,$from_id;
-    $lockName='delta_svc_'.(int)($GLOBALS['currentBotInstanceId']??0).'_'.$id;
+    // Serialize all admin edits inside a quota-limited reseller, even across different orders.
+    $rid=(int)($GLOBALS['currentBotInstanceId']??0);
+    $lockName=deltaSvcIsQuotaBot() ? ('delta_svc_quota_'.$rid) : ('delta_svc_order_'.$rid.'_'.$id);
     $escaped=$connection->real_escape_string($lockName);
     $l=$connection->query("SELECT GET_LOCK('".$escaped."',10) AS ok");
     if(!$l || (int)($l->fetch_assoc()['ok']??0)!==1){sendMessage('⌛️ سرویس در حال تغییر است؛ دوباره امتحان کنید.');return;}
@@ -483,7 +485,26 @@ function deltaSvcHandleRequest(){
     if(preg_match('/^dsSub_(\d+)$/',$data,$m)){
         $id=(int)$m[1];$order=deltaSvcOrder($id);
         if(!$order){sendMessage('❌ سفارش یافت نشد');return true;}
-        $link=trim((string)xuiExtractOrderSubLink($order));
+        // Read the live subscription URL FIRST; a revoked token cached in orders_list
+        // must never be sent again if the panel already rotated it.
+        $server=deltaSvcServer((int)$order['server_id']);
+        $type=strtolower((string)($server['type']??''));
+        $link='';
+        if($type==='pasarguard' || $type==='marzban'){
+            $current=$type==='pasarguard'
+                ? getPasarguardUserInfo((int)$order['server_id'],$order['remark'])
+                : getMarzbanUser((int)$order['server_id'],$order['remark']);
+            $fresh=xuiFindSubscriptionString($current);
+            if($fresh!==''){
+                $base=$type==='pasarguard'?pasarguardPublicSubBase($server):
+                    xuiGetServerSubBaseUrl((int)$order['server_id'],$server['panel_url']);
+                $link=xuiBuildPanelSubLink($base,$fresh,$base);
+            }
+            if($link===''){
+                sendMessage('⚠️ لینک زنده از پنل قابل دریافت نیست؛ برای جلوگیری از ارسال لینک ابطال‌شده، لینک قدیمی نمایش داده نشد.');
+                return true;
+            }
+        }else $link=trim((string)xuiExtractOrderSubLink($order));
         if($link===''){sendMessage('❌ لینک سابسکریپشن در پنل یافت نشد.');return true;}
         $caption="🔗 <b>لینک اشتراک</b>\n<code>".deltaSvcEsc($link)."</code>\n\n📲 کد QR همین لینک:";
         $keys=deltaSvcKb([[['text'=>'📋 کپی لینک','copy_text'=>['text'=>$link]]],[['text'=>'🔙 مدیریت اشتراک','callback_data'=>'dsMenu_'.$id]]]);
