@@ -4,7 +4,8 @@ include_once 'config.php';
 check();
 
 require_once __DIR__ . '/admin_service_manager.php';
-if(deltaSvcHandleRequest()) exit;
+require_once __DIR__ . '/service_subscription_ui.php';
+if(deltaSvcHandleRequest() || dsHandleCustomer()) exit;
 
 if(function_exists('deltaFeatureHandleRequest')) deltaFeatureHandleRequest();
 
