@@ -5308,7 +5308,7 @@ function getPlanDetailsKeys($planId){
 }
 function getUserOrderDetailKeys($id, $offset = 0){
     // Management-only redesigned screen; customer orderDetails is unchanged.
-    if(function_exists('deltaSvcIsAdmin') && deltaSvcIsAdmin()) return deltaSvcView((int)$id);
+    if(function_exists('deltaSvcIsAdmin')) return deltaSvcIsAdmin() ? deltaSvcView((int)$id) : null;
     global $connection, $botState, $mainValues, $buttonValues, $botUrl;
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `id`=?");
     $stmt->bind_param("i", $id);
