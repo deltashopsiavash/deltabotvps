@@ -1671,6 +1671,21 @@ function getResellerBotBuiltVolumeTotal($rid){
         }
     }
 
+    // Manual management charges are accounted for separately from initial plan volumes.
+    // This ledger lives inside EACH reseller's own DB, not the mother DB.
+    $schema = "CREATE TABLE IF NOT EXISTS admin_service_quota_charges (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        op_key VARCHAR(100) NOT NULL UNIQUE,
+        order_id INT NOT NULL,
+        action_type VARCHAR(20) NOT NULL,
+        gigabytes INT NOT NULL,
+        created_at INT NOT NULL,
+        INDEX(order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    if($conn->query($schema)){
+        $manual=$conn->query("SELECT COALESCE(SUM(gigabytes),0) AS spent FROM admin_service_quota_charges");
+        if($manual) $total += (float)($manual->fetch_assoc()['spent'] ?? 0);
+    }else error_log('Unable to create admin_service_quota_charges: '.$conn->error);
     @mysqli_close($conn);
     return (int)round($total);
 }
@@ -5292,6 +5307,8 @@ function getPlanDetailsKeys($planId){
     }
 }
 function getUserOrderDetailKeys($id, $offset = 0){
+    // Management-only redesigned screen; customer orderDetails is unchanged.
+    if(function_exists('deltaSvcIsAdmin') && deltaSvcIsAdmin()) return deltaSvcView((int)$id);
     global $connection, $botState, $mainValues, $buttonValues, $botUrl;
     $stmt = $connection->prepare("SELECT * FROM `orders_list` WHERE `id`=?");
     $stmt->bind_param("i", $id);
