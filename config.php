@@ -1751,6 +1751,36 @@ function getResellerBotBuiltVolumeTotal($rid){
     return (int)round($total);
 }
 
+/**
+ * Preserve spent reseller quota whenever an existing order is removed outside
+ * the 24h/under-1GB verified refund path (expiry cron, bulk cleanup, etc).
+ */
+function deltaQuotaPreserveBeforeOrderRemoval($order){
+    global $isChildBot,$currentBotInstanceId,$connection;
+    if(empty($isChildBot) || !$currentBotInstanceId ||
+        getResellerBotQuotaLimit((int)$currentBotInstanceId)===null)return true;
+    if(!is_array($order) || (int)($order['id']??0)<=0)return false;
+    $id=(int)$order['id'];$fid=(int)$order['fileid'];
+    $schema="CREATE TABLE IF NOT EXISTS admin_service_quota_charges (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        op_key VARCHAR(100) NOT NULL UNIQUE,order_id INT NOT NULL,
+        action_type VARCHAR(20) NOT NULL,gigabytes INT NOT NULL,
+        created_at INT NOT NULL,INDEX(order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+    if(!$connection->query($schema))return false;
+    $st=$connection->prepare("SELECT volume,quota_charge_volume FROM server_plans WHERE id=?");
+    if(!$st)return false;
+    $st->bind_param('i',$fid);$st->execute();$plan=$st->get_result()->fetch_assoc();$st->close();
+    if(!$plan)return false;
+    $volume=(float)($plan['volume']??0);
+    $cost=(int)round($volume<=0?30:((float)($plan['quota_charge_volume']??0)>0?(float)$plan['quota_charge_volume']:$volume));
+    $key='DELETE_'.$id;$kind='DELETE';$now=time();
+    $stmt=$connection->prepare("INSERT IGNORE INTO admin_service_quota_charges (op_key,order_id,action_type,gigabytes,created_at) VALUES (?,?,?,?,?)");
+    if(!$stmt)return false;
+    $stmt->bind_param('sisii',$key,$id,$kind,$cost,$now);$ok=$stmt->execute();$stmt->close();
+    return $ok;
+}
+
 function getResellerBotQuotaLimit($rid){
     $row = getResellerBotRowById((int)$rid);
     if(!$row) return null;
