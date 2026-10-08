@@ -232,6 +232,36 @@ function botWithToken($token, $method, $datas = []){
     return $decoded;
 }
 
+/**
+ * Set and verify a new reseller bot webhook synchronously.
+ * Do not report a child bot as live before Telegram confirms its exact URL.
+ */
+function deltaResellerWebhookSetup($rid){
+    global $connection,$botUrl;
+    $rid=(int)$rid;
+    $st=$connection->prepare("SELECT bot_token,db_name,status,admin_userid FROM reseller_bots WHERE id=? AND is_deleted=0 LIMIT 1");
+    if(!$st)return ['ok'=>false,'error'=>'خطا در کوئری نمایندگی'];
+    $st->bind_param('i',$rid);$st->execute();$row=$st->get_result()->fetch_assoc();$st->close();
+    if(!$row||empty($row['bot_token']))return ['ok'=>false,'error'=>'توکن ربات ذخیره نشده'];
+    if((int)($row['admin_userid']??0)<=0)return ['ok'=>false,'error'=>'ادمین ربات انتخاب نشده'];
+    if(empty($row['db_name']))return ['ok'=>false,'error'=>'دیتابیس نمایندگی تعریف نشده'];
+    if(!preg_match('#^https://[a-z0-9.-]+(?::443)?(?:/|$)#i',trim((string)$botUrl)))
+        return ['ok'=>false,'error'=>'آدرس عمومی ربات باید HTTPS و دامنه معتبر باشد'];
+    $hookUrl=rtrim((string)$botUrl,'/').'/bot.php?bid='.$rid;
+    $token=(string)$row['bot_token'];
+    $res=botWithToken($token,'setWebhook',['url'=>$hookUrl,'drop_pending_updates'=>'false']);
+    if(!is_array($res) || empty($res['ok'])){
+        $description=(string)($res['description']??'عدم ارتباط با تلگرام');
+        return ['ok'=>false,'error'=>'ثبت Webhook ناموفق: '.$description,'url'=>$hookUrl];
+    }
+    $info=botWithToken($token,'getWebhookInfo',[]);
+    if(!is_array($info)||empty($info['ok'])|| (string)($info['result']['url']??'')!==$hookUrl)
+        return ['ok'=>false,'error'=>'تلگرام آدرس ثبت‌شده را تأیید نکرد','url'=>$hookUrl];
+    $last=(string)($info['result']['last_error_message']??'');
+    return ['ok'=>true,'url'=>$hookUrl,'last_error'=>$last,
+        'pending'=>(int)($info['result']['pending_update_count']??0)];
+}
+
 // Ensure reseller tables exist (safe to call many times)
 function ensureResellerTables(){
     global $connection;
