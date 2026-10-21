@@ -384,12 +384,18 @@ function phoneRegHandle() {
                 phoneRegNotify('ویرایش شد', $previous, $saved);
                 sendMessage(phoneRegText('edited'), null, null);
             } else {
-                // Serialize concurrent submissions by this user to enforce the three-record limit.
-                $connection->begin_transaction();
+                // users is MyISAM in older installs; use a MySQL advisory lock
+                // instead of SELECT ... FOR UPDATE to enforce the three-record limit.
+                $lockName = 'phone_reg_' . $uid;
+                $lockStmt = $connection->prepare('SELECT GET_LOCK(?, 5) AS acquired');
+                $lockStmt->bind_param('s', $lockName);
+                $lockStmt->execute();
+                $locked = (int)($lockStmt->get_result()->fetch_assoc()['acquired'] ?? 0);
+                $lockStmt->close();
+                if ($locked !== 1) throw new RuntimeException('Could not lock phone registrations');
                 try {
-                    $stmt = $connection->prepare('SELECT userid FROM users WHERE userid=? FOR UPDATE');
-                    $stmt->bind_param('i', $uid);
-                    $stmt->execute(); $stmt->get_result(); $stmt->close();
+                    $connection->begin_transaction();
+                    try {
                     $stmt = $connection->prepare('SELECT COUNT(*) AS c FROM phone_registrations WHERE user_id=?');
                     $stmt->bind_param('i', $uid);
                     $stmt->execute();
@@ -406,9 +412,15 @@ function phoneRegHandle() {
                     $id = (int)$connection->insert_id;
                     $stmt->close();
                     $connection->commit();
-                } catch (Throwable $e) {
-                    $connection->rollback();
-                    throw $e;
+                    } catch (Throwable $e) {
+                        $connection->rollback();
+                        throw $e;
+                    }
+                } finally {
+                    $unlockStmt = $connection->prepare('SELECT RELEASE_LOCK(?)');
+                    $unlockStmt->bind_param('s', $lockName);
+                    $unlockStmt->execute();
+                    $unlockStmt->close();
                 }
                 $saved = phoneRegRecord($id, $uid);
                 phoneRegCancel();
