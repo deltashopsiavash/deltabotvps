@@ -133,8 +133,10 @@ function phoneRegStart($mode, $id = 0) {
 }
 
 function phoneRegCancel() {
+    global $userInfo;
     setUser('none', 'step');
     setUser('', 'temp');
+    if (is_array($userInfo)) { $userInfo['step'] = 'none'; $userInfo['temp'] = ''; }
 }
 
 function phoneRegNotify($action, $old, $new) {
@@ -208,7 +210,10 @@ function phoneRegHandle() {
         if (strpos($step, 'phoneReg') === 0) phoneRegCancel();
         return false;
     }
-    if ($callback !== '' && strpos($step, 'phoneReg') === 0) phoneRegCancel();
+    if ($callback !== '' && strpos($step, 'phoneReg') === 0) {
+        phoneRegCancel();
+        $step = 'none';
+    }
 
     // Normal /start and main-menu navigation can always interrupt the flow.
     if ($callback === 'mainMenu' || trim((string)($text ?? '')) === '/start' ||
