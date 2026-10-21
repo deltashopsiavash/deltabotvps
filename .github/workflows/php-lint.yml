@@ -22,6 +22,7 @@ jobs:
         run: |
           php -l bot.php
           php -l phone_registration.php
+          php -l tests/phone_registration.php
           php -l admin_service_manager.php
           php -l service_subscription_ui.php
           php -l reseller_webhook.php
@@ -34,6 +35,7 @@ jobs:
           php -l tests/order_features.php
           php tests/order_features.php
           php tests/admin_service_manager.php
+          php tests/phone_registration.php
           php tests/service_subscription_rules.php
           php tests/service_ui_gradient.php
           php tests/reseller_webhook.php
