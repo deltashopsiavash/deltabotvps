@@ -1677,6 +1677,10 @@ if($userInfo['phone'] == null && $from_id != $admin && $userInfo['isAdmin'] != t
 // Seven-day school-supplies charity campaign (main bot only).
 require_once __DIR__ . '/charity_campaign.php';
 
+// Isolated, optional phone registration; runs after the existing approval and phone gates.
+require_once __DIR__ . '/phone_registration.php';
+if (phoneRegHandle()) exit;
+
 if(preg_match('/^\/([Ss]tart)/', $text) or $text == $buttonValues['back_to_main'] or $data == 'mainMenu') {
     setUser();
     setUser("", "temp"); 
