@@ -2559,6 +2559,7 @@ $botState = array_merge([
     'pgExpiryAlertsState' => 'on',
     // Master switch for showing the service-status / availability buttons on the main menu.
     'serviceStatusButtonState' => 'on',
+    'phoneRegistrationState' => 'off',
 ], is_array($botState) ? $botState : []);
 
 // Apply custom button labels / texts (admin editable).
@@ -3225,6 +3226,11 @@ if(!$isChildBot && (($botState['cloudVpsPanelState'] ?? 'on') == 'on')){
     ]);
 }
 
+// Optional Rubika-phone registration button (all bot instances; hidden when disabled).
+if (($botState['phoneRegistrationState'] ?? 'off') === 'on') {
+    $mainKeys[] = [['text'=>'📱 ثبت شماره', 'callback_data'=>'phoneRegOpen']];
+}
+
 // (apply saved order + columns)
     $stmt = $connection->prepare("SELECT * FROM `setting` WHERE `type` LIKE '%MAIN_BUTTONS%'");
     $stmt->execute();
@@ -3446,6 +3452,10 @@ function getAdminKeys(){
     $rows[] = [
         ['text'=>'👥 لیست کاربران','callback_data'=>'adminUsersList0'],
         ['text'=>'٪ درصدی‌ها','callback_data'=>'adminDiscountUsers0'],
+    ];
+
+    $rows[] = [
+        ['text'=>'📱 شماره‌های ثبت‌شده', 'callback_data'=>'phoneRegAdminList_0'],
     ];
 
     // Fast config lookup by remark
@@ -4750,6 +4760,7 @@ function getBotSettingKeys(){
     $forceJoinState = (($botState['forceJoinState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $serviceTransferState = (($botState['serviceTransferState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
     $pgExpiryAlertsState = (($botState['pgExpiryAlertsState'] ?? 'on')=='on')?$buttonValues['on']:$buttonValues['off'];
+    $phoneRegistrationState = (($botState['phoneRegistrationState'] ?? 'off')==='on')?$buttonValues['on']:$buttonValues['off'];
     
     $requirePhone = $botState['requirePhone']=="on"?$buttonValues['on']:$buttonValues['off'];
     $requireIranPhone = $botState['requireIranPhone']=="on"?$buttonValues['on']:$buttonValues['off'];
@@ -4784,6 +4795,10 @@ function getBotSettingKeys(){
         [
             ['text'=>"🎗 بنر بازاریابی 🎗",'callback_data'=>"inviteSetting"]
             ],
+        [
+            ['text'=>$phoneRegistrationState,'callback_data'=>'phoneRegToggle'],
+            ['text'=>'📱 ثبت شماره / تنظیم متن‌ها','callback_data'=>'phoneRegSettings']
+        ],
         [
             ['text'=> $inviteBtn,'callback_data'=>"toggleInviteButton"],
             ['text'=>"زیرمجموعه گیری",'callback_data'=>"deltach"]

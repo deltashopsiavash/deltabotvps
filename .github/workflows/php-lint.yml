@@ -21,6 +21,7 @@ jobs:
       - name: Lint changed PHP files
         run: |
           php -l bot.php
+          php -l phone_registration.php
           php -l admin_service_manager.php
           php -l service_subscription_ui.php
           php -l reseller_webhook.php
