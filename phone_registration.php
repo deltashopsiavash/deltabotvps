@@ -14,7 +14,9 @@ function phoneRegTextFields() {
         'limit' => ['سقف ثبت', 'حداکثر ۳ شماره می‌توانید ثبت کنید. برای شماره جدید ابتدا یکی را حذف کنید.'],
         'edited' => ['ویرایش موفق', '✅ مشخصات شما با موفقیت ویرایش شد.'],
         'deleted' => ['حذف موفق', '✅ شماره ثبت‌شده حذف شد.'],
-        'duplicate' => ['شماره تکراری', '❌ این شماره را قبلاً ثبت کرده‌اید.']
+        'duplicate' => ['شماره تکراری', '❌ این شماره را قبلاً ثبت کرده‌اید.'],
+        'noactive' => ['اشتراک فعال یافت نشد', '❌ شما از ما اشتراک فعالی ندارید و نمی‌توانید شماره ثبت کنید. لطفاً ابتدا یک اشتراک تهیه کنید، سپس برای ثبت شماره اقدام نمایید.'],
+        'unavailable' => ['عدم امکان استعلام پنل', '⚠️ فعلاً امکان بررسی وضعیت اشتراک از پنل وجود ندارد. لطفاً کمی بعد دوباره تلاش کنید.']
     ];
 }
 
@@ -40,6 +42,7 @@ function phoneRegEnsureTable() {
         user_id BIGINT NOT NULL,
         phone VARCHAR(11) NOT NULL,
         nickname TEXT NOT NULL,
+        order_id BIGINT UNSIGNED NULL DEFAULT NULL,
         created_at BIGINT UNSIGNED NOT NULL,
         updated_at BIGINT UNSIGNED NOT NULL,
         PRIMARY KEY (id),
@@ -47,8 +50,15 @@ function phoneRegEnsureTable() {
         KEY user_records (user_id, id),
         KEY registered_latest (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-    if ($ok) $checked[$db] = true;
-    return (bool)$ok;
+    if (!$ok) return false;
+    // Non-destructive migration: existing numbers remain unchanged (order_id = NULL).
+    $column = $connection->query("SHOW COLUMNS FROM phone_registrations LIKE 'order_id'");
+    if (!$column) return false;
+    $missing = $column->num_rows === 0;
+    $column->free();
+    if ($missing && !$connection->query('ALTER TABLE phone_registrations ADD COLUMN order_id BIGINT UNSIGNED NULL DEFAULT NULL AFTER nickname')) return false;
+    $checked[$db] = true;
+    return true;
 }
 
 function phoneRegEsc($value) {
@@ -85,6 +95,95 @@ function phoneRegRecord($id, $uid = null) {
     return $row ?: null;
 }
 
+
+/**
+ * Reuse the established panel snapshot reader in admin_service_manager.php.
+ * status=1 means a provisioned order; it does NOT prove that quota/time remains.
+ */
+function phoneRegAssessSnapshot($order, $snap, $now = null) {
+    $now = $now === null ? time() : (int)$now;
+    if (empty($snap['found'])) {
+        $storedExpiry = function_exists('deltaSvcTs') ? deltaSvcTs($order['expire_date'] ?? 0) : (int)($order['expire_date'] ?? 0);
+        return $storedExpiry > 0 && $storedExpiry <= $now ? 'inactive' : 'unknown';
+    }
+    if (empty($snap['enabled']) || strtolower((string)($snap['status'] ?? '')) !== 'active') return 'inactive';
+    $expire = (int)($snap['expire'] ?? 0);
+    if ($expire > 0 && $expire <= $now) return 'inactive';
+    $total = max(0, (int)($snap['total'] ?? 0));
+    $used = max(0, (int)($snap['used'] ?? 0));
+    // Both supported panel families represent unlimited data as 0 bytes.
+    if ($total > 0 && $used >= $total) return 'inactive';
+    return 'active';
+}
+
+function phoneRegCheckOrder($orderId, $userId) {
+    global $connection;
+    $stmt = $connection->prepare('SELECT * FROM orders_list WHERE id=? AND userid=? AND status=1 LIMIT 1');
+    if (!$stmt) throw new RuntimeException('Cannot query user order');
+    $stmt->bind_param('ii', $orderId, $userId);
+    $stmt->execute();
+    $order = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$order) return ['state'=>'inactive'];
+    if (!function_exists('deltaSvcSnapshot')) return ['state'=>'unknown'];
+    $snap = deltaSvcSnapshot($order);
+    $state = phoneRegAssessSnapshot($order, $snap);
+    return ['state'=>$state, 'order'=>$order, 'snapshot'=>$snap];
+}
+
+function phoneRegLatestActive($userId) {
+    global $connection;
+    $stmt = $connection->prepare('SELECT id FROM orders_list WHERE userid=? AND status=1 ORDER BY id DESC');
+    if (!$stmt) throw new RuntimeException('Cannot query user orders');
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $ids = [];
+    $result = $stmt->get_result();
+    while ($row = $result->fetch_assoc()) $ids[] = (int)$row['id'];
+    $stmt->close();
+    $unknown = false;
+    foreach ($ids as $id) {
+        $checked = phoneRegCheckOrder($id, $userId);
+        if ($checked['state'] === 'active') return $checked;
+        if ($checked['state'] === 'unknown') $unknown = true;
+    }
+    // Panel outages are not evidence of an expired subscription.
+    return ['state'=>$unknown ? 'unknown' : 'inactive'];
+}
+
+function phoneRegEligibilityError($status) {
+    sendMessage(phoneRegText($status === 'unknown' ? 'unavailable' : 'noactive'), null, null);
+}
+
+function phoneRegOffer() {
+    global $from_id;
+    $rows = phoneRegRows((int)$from_id);
+    if (count($rows) >= 3) {
+        sendMessage(phoneRegText('limit'), phoneRegKeyboard($rows), null);
+        return;
+    }
+    $checked = phoneRegLatestActive((int)$from_id);
+    if ($checked['state'] !== 'active') {
+        phoneRegEligibilityError($checked['state']);
+        return;
+    }
+    $order = $checked['order'];
+    $snap = $checked['snapshot'];
+    $total = max(0, (int)($snap['total'] ?? 0));
+    $used = max(0, (int)($snap['used'] ?? 0));
+    $remain = $total > 0 ? (function_exists('deltaSvcTraffic') ? deltaSvcTraffic(max(0, $total-$used)) : round(max(0, $total-$used)/1073741824, 2).' GB') : '♾️ نامحدود';
+    $expiry = (int)($snap['expire'] ?? 0);
+    $days = $expiry > 0 ? max(0, (int)ceil(($expiry-time())/86400)).' روز' : '♾️ نامحدود';
+    $caption = "✅ اشتراک فعال شما شناسایی شد.\n\n📦 اشتراک: <b>".phoneRegEsc($order['remark'] ?? ('#'.$order['id']))."</b>".
+        "\n🟢 وضعیت: فعال\n📊 حجم باقی‌مانده: ".phoneRegEsc($remain).
+        "\n📅 اعتبار باقی‌مانده: ".phoneRegEsc($days).
+        "\n\nبرای ادامه روی دکمه زیر بزنید.";
+    sendMessage($caption, json_encode(['inline_keyboard'=>[
+        [['text'=>'ثبت شماره','callback_data'=>'phoneRegConfirm_'.(int)$order['id']]],
+        [['text'=>'↩️ بازگشت','callback_data'=>'phoneRegCancel']]
+    ]], JSON_UNESCAPED_UNICODE), 'HTML');
+}
+
 function phoneRegKeyboard($rows) {
     $keys = [];
     foreach ($rows as $row) {
@@ -114,18 +213,19 @@ function phoneRegOverview() {
     sendMessage($message, phoneRegKeyboard($rows), null);
 }
 
-function phoneRegStart($mode, $id = 0) {
+function phoneRegStart($mode, $id = 0, $orderId = 0) {
     global $from_id;
     $rows = phoneRegRows((int)$from_id);
     if ($mode === 'new' && count($rows) >= 3) {
         sendMessage(phoneRegText('limit'), phoneRegKeyboard($rows), null);
         return;
     }
+    if ($mode === 'new' && (int)$orderId <= 0) { phoneRegOffer(); return; }
     if ($mode === 'edit' && !phoneRegRecord($id, (int)$from_id)) {
         sendMessage('❌ این شماره متعلق به شما نیست یا حذف شده است.', null, null);
         return;
     }
-    setUser(json_encode(['mode'=>$mode,'id'=>(int)$id], JSON_UNESCAPED_UNICODE), 'temp');
+    setUser(json_encode(['mode'=>$mode,'id'=>(int)$id,'order_id'=>(int)$orderId], JSON_UNESCAPED_UNICODE), 'temp');
     setUser('phoneRegWaitPhone', 'step');
     sendMessage(phoneRegText('phone'), json_encode(['inline_keyboard'=>[
         [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegCancel']]
@@ -160,6 +260,7 @@ function phoneRegNotify($action, $old, $new) {
             "\nشماره: <code>".phoneRegEsc($new['phone'])."</code>".
             "\nنام مستعار/آیدی: ".phoneRegEsc(mb_substr($new['nickname'], 0, 400, 'UTF-8')).
             "\nتاریخ ثبت: ".phoneRegEsc(phoneRegDate($new['created_at']));
+        if (!empty($new['order_id'])) $body .= "\n📦 سفارش مرتبط: <code>".(int)$new['order_id']."</code>";
     }
     sendToAdmins($body, null, 'HTML');
 }
@@ -260,6 +361,7 @@ function phoneRegHandle() {
                     "\n✏️ نام مستعار/آیدی: ".phoneRegEsc(mb_substr($row['nickname'], 0, 1400, 'UTF-8')).
                     "\n🕒 زمان ثبت: ".phoneRegEsc(phoneRegDate($row['created_at'])).
                     "\n🔄 آخرین ویرایش: ".phoneRegEsc(phoneRegDate($row['updated_at']));
+                if (!empty($row['order_id'])) $body .= "\n📦 سفارش مرتبط: <code>".(int)$row['order_id']."</code>";
                 smartSendOrEdit($message_id, $body,
                     json_encode(['inline_keyboard'=>[[['text'=>'↩️ بازگشت به فهرست', 'callback_data'=>'phoneRegAdminList_0']]]], JSON_UNESCAPED_UNICODE), 'HTML');
             }
@@ -281,11 +383,20 @@ function phoneRegHandle() {
             phoneRegCancel();
             $rows = phoneRegRows((int)$from_id);
             if ($rows) phoneRegOverview();
-            else phoneRegStart('new');
+            else phoneRegOffer();
             return true;
         }
         if ($callback === 'phoneRegNew') {
-            phoneRegStart('new');
+            phoneRegOffer();
+            return true;
+        }
+        if (preg_match('/^phoneRegConfirm_(\d+)$/', $callback, $m)) {
+            $checked = phoneRegCheckOrder((int)$m[1], (int)$from_id);
+            if ($checked['state'] !== 'active') {
+                phoneRegEligibilityError($checked['state']);
+                return true;
+            }
+            phoneRegStart('new', 0, (int)$m[1]);
             return true;
         }
         if (preg_match('/^phoneRegView_(\d+)$/', $callback, $m)) {
@@ -370,6 +481,15 @@ function phoneRegHandle() {
             }
             $uid = (int)$from_id; $now = time();
             $mode = ($context['mode'] ?? 'new') === 'edit' ? 'edit' : 'new';
+            if ($mode === 'new') {
+                // Revalidate at submission; an earlier green card is not permanent authorization.
+                $checked = phoneRegCheckOrder((int)($context['order_id'] ?? 0), $uid);
+                if ($checked['state'] !== 'active') {
+                    phoneRegCancel();
+                    phoneRegEligibilityError($checked['state']);
+                    return true;
+                }
+            }
             if ($mode === 'edit') {
                 $id = (int)($context['id'] ?? 0);
                 $previous = phoneRegRecord($id, $uid);
@@ -406,8 +526,9 @@ function phoneRegHandle() {
                         sendMessage(phoneRegText('limit'), null, null);
                         return true;
                     }
-                    $stmt = $connection->prepare('INSERT INTO phone_registrations (user_id,phone,nickname,created_at,updated_at) VALUES (?,?,?,?,?)');
-                    $stmt->bind_param('issii', $uid, $phone, $nickname, $now, $now);
+                    $orderId = (int)$context['order_id'];
+                    $stmt = $connection->prepare('INSERT INTO phone_registrations (user_id,phone,nickname,order_id,created_at,updated_at) VALUES (?,?,?,?,?,?)');
+                    $stmt->bind_param('issiii', $uid, $phone, $nickname, $orderId, $now, $now);
                     $stmt->execute();
                     $id = (int)$connection->insert_id;
                     $stmt->close();
