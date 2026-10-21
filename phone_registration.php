@@ -498,7 +498,7 @@ function phoneRegHandle() {
                     "👤 کاربر: <code>".(int)$row['user_id']."</code>";
                 smartSendOrEdit($message_id, $body, json_encode(['inline_keyboard'=>[
                     [['text'=>'🗑 بله، این شماره حذف شود', 'callback_data'=>'phoneRegAdminDeleteConfirm_'.(int)$row['id']]],
-                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]
+                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
                 ]], JSON_UNESCAPED_UNICODE), 'HTML');
             } elseif (preg_match('/^phoneRegAdminDeleteConfirm_(\d+)$/', $callback, $m)) {
                 $row = phoneRegRecord((int)$m[1]);
