@@ -265,6 +265,96 @@ function phoneRegNotify($action, $old, $new) {
     sendToAdmins($body, null, 'HTML');
 }
 
+
+/**
+ * Existing pre-gate rows have NULL order_id: retain them for manual review.
+ * Newly registered and manually confirmed numbers have an order_id, which
+ * remains as historical evidence after subscription expiry or panel deletion.
+ */
+function phoneRegIsReviewed($row) {
+    return (int)($row['order_id'] ?? 0) > 0;
+}
+
+function phoneRegAdminKb($row, $scanned = null) {
+    $id = (int)$row['id'];
+    $rows = [
+        [['text'=>'🔍 اسکن آخرین اشتراک فعال', 'callback_data'=>'phoneRegAdminScan_'.$id]]
+    ];
+    if (!phoneRegIsReviewed($row) && is_array($scanned) && ($scanned['state'] ?? '') === 'active') {
+        $rows[] = [['text'=>'✅ تأیید و ثبت دستی این شماره', 'callback_data'=>'phoneRegAdminApprove_'.$id.'_'.(int)$scanned['order']['id']]];
+    }
+    $rows[] = [
+        ['text'=>'✏️ ویرایش شماره', 'callback_data'=>'phoneRegAdminEditPhone_'.$id],
+        ['text'=>'📝 ویرایش نام/آیدی', 'callback_data'=>'phoneRegAdminEditAlias_'.$id]
+    ];
+    $rows[] = [['text'=>'✉️ ارسال پیام خصوصی', 'callback_data'=>'phoneRegAdminMsg_'.$id]];
+    $rows[] = [['text'=>'🗑 حذف شماره', 'callback_data'=>'phoneRegAdminDeleteAsk_'.$id]];
+    $rows[] = [['text'=>'↩️ فهرست بررسی‌نشده‌ها', 'callback_data'=>'phoneRegAdminPending_0']];
+    $rows[] = [['text'=>'📋 همه شماره‌ها', 'callback_data'=>'phoneRegAdminList_0']];
+    return json_encode(['inline_keyboard'=>$rows], JSON_UNESCAPED_UNICODE);
+}
+
+function phoneRegAdminDetails($row, $scanned = null) {
+    global $message_id;
+    $body = "📱 <b>جزئیات شماره ثبت‌شده</b>".
+        "\n🆔 ردیف: ".(int)$row['id'].
+        "\n👤 شناسه کاربر: <a href=\"tg://user?id=".(int)$row['user_id']."\">".(int)$row['user_id']."</a>".
+        "\n📞 شماره: <code>".phoneRegEsc($row['phone'])."</code>".
+        "\n✏️ نام مستعار/آیدی: ".phoneRegEsc(mb_substr($row['nickname'], 0, 1000, 'UTF-8')).
+        "\n🕒 زمان ثبت: ".phoneRegEsc(phoneRegDate($row['created_at'])).
+        "\n🔄 آخرین ویرایش: ".phoneRegEsc(phoneRegDate($row['updated_at'])).
+        "\n\n🔖 وضعیت ثبت: ".(phoneRegIsReviewed($row) ? '✅ تأییدشده (ماندگار)' : '🟡 قدیمی - نیازمند بررسی دستی');
+    if (phoneRegIsReviewed($row)) {
+        $body .= "\n📦 سفارش هنگام تأیید/ثبت: <code>".(int)$row['order_id']."</code>".
+            "\n📌 پایان اعتبار اشتراک باعث حذف یا لغو این ثبت نمی‌شود.";
+    }
+    if (is_array($scanned)) {
+        $state = $scanned['state'] ?? 'unknown';
+        if ($state === 'active') {
+            $order = $scanned['order'];
+            $snap = $scanned['snapshot'];
+            $total = max(0, (int)($snap['total'] ?? 0));
+            $used = max(0, (int)($snap['used'] ?? 0));
+            $remain = $total > 0 ? deltaSvcTraffic(max(0, $total-$used)) : '♾️ نامحدود';
+            $expire = (int)($snap['expire'] ?? 0);
+            $days = $expire > 0 ? max(0, (int)ceil(($expire-time())/86400)).' روز' : '♾️ نامحدود';
+            $body .= "\n\n✅ <b>نتیجه اسکن: آخرین اشتراک فعال پیدا شد</b>".
+                "\n📦 نام اشتراک: ".phoneRegEsc($order['remark'] ?? '#'.$order['id']).
+                "\n🆔 سفارش: <code>".(int)$order['id']."</code>".
+                "\n📊 حجم باقی‌مانده: ".phoneRegEsc($remain).
+                "\n⏳ اعتبار باقی‌مانده: ".phoneRegEsc($days);
+        } elseif ($state === 'unknown') {
+            $body .= "\n\n⚠️ <b>نتیجه اسکن: نامشخص</b>\nحداقل یکی از پنل‌ها قابل استعلام نیست؛ این به معنی نداشتن اشتراک نیست. بعداً دوباره بررسی کنید.";
+        } else {
+            $body .= "\n\n❌ <b>نتیجه اسکن: اشتراک فعالی شناسایی نشد.</b>\nمی‌توانید متن دلخواه را خصوصی برای این کاربر ارسال کنید.";
+        }
+        $body .= "\n🕒 زمان اسکن: ".phoneRegEsc(phoneRegDate(time()));
+    } else {
+        $body .= "\n\nبرای بررسی وضعیت <b>فعلی</b> اشتراک، دکمه اسکن را بزنید.";
+    }
+    smartSendOrEdit($message_id, $body, phoneRegAdminKb($row, $scanned), 'HTML');
+}
+
+function phoneRegAdminAudit($action, $before, $after) {
+    global $from_id;
+    $row = $after ?: $before;
+    if (!$row) return;
+    $text = "🛠 <b>گزارش مدیریت شماره</b>".
+        "\n🔹 عملیات: ".phoneRegEsc($action).
+        "\n👨‍💼 مدیر: <code>".(int)$from_id."</code>".
+        "\n👤 کاربر: <code>".(int)$row['user_id']."</code>".
+        "\n🆔 ردیف: <code>".(int)$row['id']."</code>".
+        "\n⏱ زمان: ".phoneRegEsc(phoneRegDate(time()));
+    foreach (['قبل'=>$before,'بعد'=>$after] as $label=>$item) {
+        if (!$item) continue;
+        $text .= "\n\n<b>".phoneRegEsc($label).":</b>".
+            "\n📞 <code>".phoneRegEsc($item['phone'])."</code>".
+            "\n✏️ ".phoneRegEsc(mb_substr($item['nickname'], 0, 250, 'UTF-8')).
+            "\n📦 سفارش: ".(int)($item['order_id'] ?? 0);
+    }
+    sendToAdmins($text, null, 'HTML');
+}
+
 function phoneRegAdminSettingsKeys() {
     global $botState;
     $rows = [
@@ -272,31 +362,38 @@ function phoneRegAdminSettingsKeys() {
     ];
     foreach (phoneRegTextFields() as $key => $value)
         $rows[] = [['text'=>'✏️ '.$value[0], 'callback_data'=>'phoneRegText_'.$key]];
-    $rows[] = [['text'=>'📋 شماره‌های ثبت‌شده', 'callback_data'=>'phoneRegAdminList_0']];
+    $rows[] = [['text'=>'🟡 ثبت‌های قدیمی بررسی‌نشده', 'callback_data'=>'phoneRegAdminPending_0']];
+    $rows[] = [['text'=>'📋 همه شماره‌های ثبت‌شده', 'callback_data'=>'phoneRegAdminList_0']];
     $rows[] = [['text'=>'↩️ بازگشت به تنظیمات ربات', 'callback_data'=>'botSettings']];
     return json_encode(['inline_keyboard'=>$rows], JSON_UNESCAPED_UNICODE);
 }
 
-function phoneRegAdminList($page) {
+function phoneRegAdminList($page, $pendingOnly = false) {
     global $connection, $message_id;
     $page = max(0, (int)$page);
-    $total = (int)($connection->query('SELECT COUNT(*) AS c FROM phone_registrations')->fetch_assoc()['c'] ?? 0);
+    $where = $pendingOnly ? ' WHERE COALESCE(order_id, 0)=0' : '';
+    $total = (int)($connection->query('SELECT COUNT(*) AS c FROM phone_registrations'.$where)->fetch_assoc()['c'] ?? 0);
     $pages = max(1, (int)ceil($total / 25));
     $page = min($page, $pages-1);
     $offset = $page*25;
-    $result = $connection->query('SELECT id, phone, nickname FROM phone_registrations ORDER BY id DESC LIMIT 25 OFFSET '.$offset);
+    $result = $connection->query('SELECT id, phone, nickname, order_id FROM phone_registrations'.$where.' ORDER BY id DESC LIMIT 25 OFFSET '.$offset);
     $rows = [];
     $i = $offset + 1;
     while ($row = $result->fetch_assoc()) {
         $name = mb_substr(str_replace(["\n", "\r"], ' ', $row['nickname']), 0, 18, 'UTF-8');
-        $rows[] = [['text'=>($i++).'. '.$row['phone'].' | '.$name, 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]];
+        $status = phoneRegIsReviewed($row) ? '✅' : '🟡';
+        $rows[] = [['text'=>$status.' '.($i++).'. '.$row['phone'].' | '.$name, 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]];
     }
+    $prefix = $pendingOnly ? 'phoneRegAdminPending_' : 'phoneRegAdminList_';
     $nav = [];
-    if ($page > 0) $nav[] = ['text'=>'⬅️ قبلی', 'callback_data'=>'phoneRegAdminList_'.($page-1)];
-    if ($page < $pages-1) $nav[] = ['text'=>'بعدی ➡️', 'callback_data'=>'phoneRegAdminList_'.($page+1)];
+    if ($page > 0) $nav[] = ['text'=>'⬅️ قبلی', 'callback_data'=>$prefix.($page-1)];
+    if ($page < $pages-1) $nav[] = ['text'=>'بعدی ➡️', 'callback_data'=>$prefix.($page+1)];
     if ($nav) $rows[] = $nav;
+    if (!$pendingOnly) $rows[] = [['text'=>'🟡 بررسی‌نشده‌ها', 'callback_data'=>'phoneRegAdminPending_0']];
+    else $rows[] = [['text'=>'📋 همه شماره‌ها', 'callback_data'=>'phoneRegAdminList_0']];
     $rows[] = [['text'=>'↩️ بازگشت', 'callback_data'=>'phoneRegSettings']];
-    smartSendOrEdit($message_id, '📋 شماره‌های ثبت‌شده'."\nتعداد: $total\nصفحه ".($page+1)." از $pages",
+    smartSendOrEdit($message_id, ($pendingOnly ? '🟡 شماره‌های بررسی‌نشده' : '📋 شماره‌های ثبت‌شده').
+        "\nتعداد: $total\nصفحه ".($page+1)." از $pages",
         json_encode(['inline_keyboard'=>$rows], JSON_UNESCAPED_UNICODE), 'HTML');
 }
 
@@ -311,7 +408,10 @@ function phoneRegHandle() {
         if (strpos($step, 'phoneReg') === 0) phoneRegCancel();
         return false;
     }
-    if ($callback !== '' && strpos($step, 'phoneReg') === 0) {
+    // Keep the draft only while the admin confirms sending the previewed message.
+    $confirmingDraft = preg_match('/^phoneRegAdminMsgConfirm_(\d+)$/', $callback, $draftMatch) &&
+        $step === 'phoneRegAdminMsgReady:'.$draftMatch[1];
+    if ($callback !== '' && strpos($step, 'phoneReg') === 0 && !$confirmingDraft) {
         phoneRegCancel();
         $step = 'none';
     }
@@ -330,7 +430,7 @@ function phoneRegHandle() {
         }
         // All management callbacks and editable texts are strictly admin-only.
         if (preg_match('/^phoneReg(?:Settings|Toggle|Text_|Admin)/', $callback) ||
-            strpos($step, 'phoneRegText:') === 0) {
+            strpos($step, 'phoneRegText:') === 0 || strpos($step, 'phoneRegAdmin') === 0) {
             if (!$isAdmin) { answerQuery('دسترسی ندارید.', true); return true; }
 
             if ($callback === 'phoneRegSettings') {
@@ -351,19 +451,153 @@ function phoneRegHandle() {
                 } else sendMessage('❌ لطفاً یک متن غیرخالی بفرستید.', null, null);
             } elseif (preg_match('/^phoneRegAdminList_(\d+)$/', $callback, $m)) {
                 phoneRegAdminList((int)$m[1]);
+            } elseif (preg_match('/^phoneRegAdminPending_(\d+)$/', $callback, $m)) {
+                phoneRegAdminList((int)$m[1], true);
             } elseif (preg_match('/^phoneRegAdminView_(\d+)$/', $callback, $m)) {
                 $row = phoneRegRecord((int)$m[1]);
                 if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
-                $body = "📱 <b>جزئیات شماره ثبت‌شده</b>".
-                    "\n🆔 ردیف: ".(int)$row['id'].
-                    "\n👤 شناسه کاربر: <a href=\"tg://user?id=".(int)$row['user_id']."\">".(int)$row['user_id']."</a>".
-                    "\n📞 شماره: <code>".phoneRegEsc($row['phone'])."</code>".
-                    "\n✏️ نام مستعار/آیدی: ".phoneRegEsc(mb_substr($row['nickname'], 0, 1400, 'UTF-8')).
-                    "\n🕒 زمان ثبت: ".phoneRegEsc(phoneRegDate($row['created_at'])).
-                    "\n🔄 آخرین ویرایش: ".phoneRegEsc(phoneRegDate($row['updated_at']));
-                if (!empty($row['order_id'])) $body .= "\n📦 سفارش مرتبط: <code>".(int)$row['order_id']."</code>";
-                smartSendOrEdit($message_id, $body,
-                    json_encode(['inline_keyboard'=>[[['text'=>'↩️ بازگشت به فهرست', 'callback_data'=>'phoneRegAdminList_0']]]], JSON_UNESCAPED_UNICODE), 'HTML');
+                phoneRegAdminDetails($row);
+            } elseif (preg_match('/^phoneRegAdminScan_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
+                $checked = phoneRegLatestActive((int)$row['user_id']);
+                phoneRegAdminDetails($row, $checked);
+            } elseif (preg_match('/^phoneRegAdminApprove_(\d+)_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
+                if (phoneRegIsReviewed($row)) {
+                    sendMessage('ℹ️ این شماره قبلاً تأیید شده است.', null, null);
+                } else {
+                    // Do not trust an old scan or a crafted callback: check ownership and live state again.
+                    $checked = phoneRegLatestActive((int)$row['user_id']);
+                    if (($checked['state'] ?? '') !== 'active' || (int)$checked['order']['id'] !== (int)$m[2]) {
+                        sendMessage('⚠️ وضعیت اشتراک تغییر کرده یا قابل استعلام نیست. دوباره اسکن کنید.', null, null);
+                    } else {
+                        $oid = (int)$m[2]; $rid = (int)$row['id'];
+                        $stmt = $connection->prepare('UPDATE phone_registrations SET order_id=? WHERE id=? AND COALESCE(order_id,0)=0');
+                        $stmt->bind_param('ii', $oid, $rid);
+                        $stmt->execute();
+                        $changed = $stmt->affected_rows;
+                        $stmt->close();
+                        if ($changed) {
+                            $new = phoneRegRecord($rid);
+                            phoneRegAdminAudit('تأیید دستی با اشتراک فعال', $row, $new);
+                            sendMessage('✅ ثبت این شماره تأیید شد. حتی پس از پایان اشتراک باقی می‌ماند.', null, null);
+                        } else {
+                            sendMessage('ℹ️ وضعیت این شماره قبلاً تغییر کرده است.', null, null);
+                        }
+                    }
+                }
+                $updated = phoneRegRecord((int)$m[1]);
+                if ($updated) phoneRegAdminDetails($updated);
+            } elseif (preg_match('/^phoneRegAdminDeleteAsk_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
+                $body = "⚠️ <b>تأیید حذف شماره</b>\nاین عمل فقط با تأیید شما انجام می‌شود.\n".
+                    "📞 <code>".phoneRegEsc($row['phone'])."</code>\n".
+                    "👤 کاربر: <code>".(int)$row['user_id']."</code>";
+                smartSendOrEdit($message_id, $body, json_encode(['inline_keyboard'=>[
+                    [['text'=>'🗑 بله، این شماره حذف شود', 'callback_data'=>'phoneRegAdminDeleteConfirm_'.(int)$row['id']]],
+                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
+                ]], JSON_UNESCAPED_UNICODE), 'HTML');
+            } elseif (preg_match('/^phoneRegAdminDeleteConfirm_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { answerQuery('این شماره قبلاً حذف شده است.', true); return true; }
+                $id = (int)$row['id'];
+                $stmt = $connection->prepare('DELETE FROM phone_registrations WHERE id=?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $changed = $stmt->affected_rows;
+                $stmt->close();
+                if ($changed) {
+                    phoneRegAdminAudit('حذف دستی توسط مدیر', $row, null);
+                    sendMessage('✅ شماره موردنظر حذف شد.', null, null);
+                }
+                phoneRegAdminList(0);
+            } elseif (preg_match('/^phoneRegAdminEdit(Phone|Alias)_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[2]);
+                if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
+                $field = $m[1];
+                setUser('phoneRegAdminEdit'.$field.':'.(int)$row['id'], 'step');
+                $prompt = $field === 'Phone'
+                    ? "✏️ شماره جدید را به شکل 09xxxxxxxxx وارد کنید.\nشماره فعلی: ".$row['phone']
+                    : "📝 نام مستعار یا آیدی جدید را ارسال کنید.\nمقدار فعلی: ".mb_substr($row['nickname'], 0, 200, 'UTF-8');
+                sendMessage($prompt, json_encode(['inline_keyboard'=>[
+                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
+                ]],JSON_UNESCAPED_UNICODE), null);
+            } elseif (preg_match('/^phoneRegAdminEdit(Phone|Alias):(\d+)$/', $step, $m) && isset($update->message)) {
+                $row = phoneRegRecord((int)$m[2]);
+                if (!$row) { phoneRegCancel(); sendMessage('❌ شماره دیگر وجود ندارد.', null, null); return true; }
+                $value = trim((string)($update->message->text ?? ''));
+                if ($m[1] === 'Phone') {
+                    if (!preg_match('/^09[0-9]{9}$/D', $value)) {
+                        sendMessage(phoneRegText('invalid'), null, null);
+                        return true;
+                    }
+                    $stmt = $connection->prepare('UPDATE phone_registrations SET phone=?, updated_at=? WHERE id=?');
+                } else {
+                    if ($value === '' || mb_strlen($value, 'UTF-8') > 500) {
+                        sendMessage('❌ نام/آیدی باید متن غیرخالی و حداکثر ۵۰۰ کاراکتر باشد.', null, null);
+                        return true;
+                    }
+                    $stmt = $connection->prepare('UPDATE phone_registrations SET nickname=?, updated_at=? WHERE id=?');
+                }
+                $now = time(); $id = (int)$row['id'];
+                $stmt->bind_param('sii', $value, $now, $id);
+                $stmt->execute();
+                $stmt->close();
+                $new = phoneRegRecord($id);
+                phoneRegCancel();
+                phoneRegAdminAudit('ویرایش دستی توسط مدیر', $row, $new);
+                sendMessage('✅ مشخصات ویرایش شد.', null, null);
+                phoneRegAdminDetails($new);
+            } elseif (preg_match('/^phoneRegAdminMsg_(\d+)$/', $callback, $m)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { answerQuery('شماره پیدا نشد.', true); return true; }
+                setUser('phoneRegAdminMsg:'.(int)$row['id'], 'step');
+                setUser('', 'temp');
+                sendMessage("✉️ متن پیام خصوصی موردنظرتان را ارسال کنید.\n".
+                    "👤 شناسه گیرنده: ".(int)$row['user_id'].
+                    "\n\nنمونه پیشنهادی (ارسال خودکار نیست):\n".
+                    "شما در حال حاضر اشتراک فعالی از دلتا شاپ ندارید. برای ثبت شماره لطفاً ابتدا اشتراک تهیه کنید.".
+                    "\n\nبعد از ارسال متن، پیش‌نمایش و دکمه تأیید نمایش داده می‌شود.",
+                    json_encode(['inline_keyboard'=>[[['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]]], JSON_UNESCAPED_UNICODE), null);
+            } elseif (preg_match('/^phoneRegAdminMsg:(\d+)$/', $step, $m) && isset($update->message)) {
+                $row = phoneRegRecord((int)$m[1]);
+                if (!$row) { phoneRegCancel(); sendMessage('❌ شماره دیگر وجود ندارد.', null, null); return true; }
+                $draft = trim((string)($update->message->text ?? ''));
+                if ($draft === '' || mb_strlen($draft, 'UTF-8') > 500) {
+                    sendMessage('❌ فقط متن غیرخالی تا ۵۰۰ کاراکتر ارسال کنید.', null, null);
+                    return true;
+                }
+                setUser(json_encode(['id'=>(int)$row['id'],'message'=>$draft], JSON_UNESCAPED_UNICODE), 'temp');
+                setUser('phoneRegAdminMsgReady:'.(int)$row['id'], 'step');
+                sendMessage("📨 پیش‌نمایش پیام خصوصی برای کاربر ".(int)$row['user_id'].":\n\n".$draft.
+                    "\n\n⚠️ پیام فقط پس از زدن دکمه تأیید ارسال می‌شود.",
+                    json_encode(['inline_keyboard'=>[
+                        [['text'=>'✅ تأیید و ارسال پیام', 'callback_data'=>'phoneRegAdminMsgConfirm_'.(int)$row['id']]],
+                        [['text'=>'❌ لغو ارسال', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
+                    ]], JSON_UNESCAPED_UNICODE), null);
+            } elseif (preg_match('/^phoneRegAdminMsgConfirm_(\d+)$/', $callback, $m)) {
+                $id = (int)$m[1];
+                $ctx = json_decode((string)($userInfo['temp'] ?? ''), true);
+                $row = phoneRegRecord($id);
+                if ($step !== 'phoneRegAdminMsgReady:'.$id || !$row || !is_array($ctx) ||
+                    (int)($ctx['id'] ?? 0) !== $id || trim((string)($ctx['message'] ?? '')) === '') {
+                    sendMessage('⚠️ پیش‌نویس معتبر نیست یا منقضی شده است. دوباره متن را وارد کنید.', null, null);
+                    return true;
+                }
+                $draft = (string)$ctx['message'];
+                $sent = sendMessage($draft, null, null, (int)$row['user_id']);
+                if (is_object($sent) && !empty($sent->ok)) {
+                    phoneRegCancel();
+                    sendMessage('✅ پیام خصوصی با موفقیت ارسال شد.', null, null);
+                    phoneRegAdminDetails($row);
+                } else {
+                    sendMessage('❌ ارسال پیام ناموفق بود. ممکن است کاربر ربات را مسدود کرده باشد. پیش‌نویس حفظ شده؛ می‌توانید دوباره تلاش کنید یا لغو کنید.', null, null);
+                }
+            } elseif (strpos($step, 'phoneRegAdminMsgReady:') === 0 && isset($update->message)) {
+                sendMessage('📨 متن شما آماده است. برای ارسال از دکمه «تأیید و ارسال پیام» زیر پیش‌نمایش استفاده کنید یا لغو کنید.', null, null);
             }
             return true;
         }

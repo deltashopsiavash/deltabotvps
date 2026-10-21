@@ -21,4 +21,9 @@ phoneAssert(phoneRegAssessSnapshot($order,array_merge($live,['total'=>0,'used'=>
 phoneAssert(phoneRegAssessSnapshot($order,array_merge($live,['expire'=>0]),$now),'active','unlimited time');
 phoneAssert(phoneRegAssessSnapshot($order,['found'=>false],$now),'unknown','panel unverified and remaining term');
 phoneAssert(phoneRegAssessSnapshot(['expire_date'=>$now-86400],['found'=>false],$now),'inactive','already expired without panel');
-echo "Phone eligibility rules: PASS\n";
+// Historical registrations keep their confirmation even if the panel expires later.
+phoneAssert(phoneRegIsReviewed(['order_id'=>null]), false, 'legacy row awaits optional review');
+phoneAssert(phoneRegIsReviewed(['order_id'=>0]), false, 'unapproved row');
+phoneAssert(phoneRegIsReviewed(['order_id'=>167]), true, 'auto-approved new row');
+phoneAssert(phoneRegIsReviewed(['order_id'=>167,'expire_date'=>$now-86400]), true, 'confirmed row survives expiry');
+echo "Phone eligibility and historical registration rules: PASS\n";
