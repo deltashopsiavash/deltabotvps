@@ -106,7 +106,7 @@ function phoneRegOverview() {
     $message = count($rows) ? phoneRegText('existing') : '📱 هنوز شماره‌ای ثبت نکرده‌اید.';
     foreach ($rows as $i => $row) {
         $message .= "\n\n".($i+1).") شماره: ".$row['phone'].
-            "\nنام مستعار / آیدی: ".$row['nickname'].
+            "\nنام مستعار / آیدی: ".mb_substr($row['nickname'], 0, 600, 'UTF-8').
             "\nزمان ثبت: ".phoneRegDate($row['created_at']);
         if ((int)$row['updated_at'] > (int)$row['created_at'])
             $message .= "\nآخرین ویرایش: ".phoneRegDate($row['updated_at']);
@@ -203,6 +203,12 @@ function phoneRegHandle() {
     $step = (string)($userInfo['step'] ?? '');
     $isAdmin = (int)$from_id === (int)$admin || !empty($userInfo['isAdmin']);
     if (strpos($callback, 'phoneReg') !== 0 && strpos($step, 'phoneReg') !== 0) return false;
+    // Do not hijack other bot menu buttons while a registration form is open.
+    if ($callback !== '' && strpos($callback, 'phoneReg') !== 0) {
+        if (strpos($step, 'phoneReg') === 0) phoneRegCancel();
+        return false;
+    }
+    if ($callback !== '' && strpos($step, 'phoneReg') === 0) phoneRegCancel();
 
     // Normal /start and main-menu navigation can always interrupt the flow.
     if ($callback === 'mainMenu' || trim((string)($text ?? '')) === '/start' ||
@@ -246,7 +252,7 @@ function phoneRegHandle() {
                     "\n🆔 ردیف: ".(int)$row['id'].
                     "\n👤 شناسه کاربر: <a href=\"tg://user?id=".(int)$row['user_id']."\">".(int)$row['user_id']."</a>".
                     "\n📞 شماره: <code>".phoneRegEsc($row['phone'])."</code>".
-                    "\n✏️ نام مستعار/آیدی: ".phoneRegEsc($row['nickname']).
+                    "\n✏️ نام مستعار/آیدی: ".phoneRegEsc(mb_substr($row['nickname'], 0, 1400, 'UTF-8')).
                     "\n🕒 زمان ثبت: ".phoneRegEsc(phoneRegDate($row['created_at'])).
                     "\n🔄 آخرین ویرایش: ".phoneRegEsc(phoneRegDate($row['updated_at']));
                 smartSendOrEdit($message_id, $body,
@@ -368,6 +374,7 @@ function phoneRegHandle() {
                 $stmt->execute();
                 $stmt->close();
                 $saved = phoneRegRecord($id, $uid);
+                if (!$saved) throw new RuntimeException('Edited record unavailable');
                 phoneRegCancel();
                 phoneRegNotify('ویرایش شد', $previous, $saved);
                 sendMessage(phoneRegText('edited'), null, null);
