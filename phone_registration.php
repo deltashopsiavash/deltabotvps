@@ -523,7 +523,7 @@ function phoneRegHandle() {
                     ? "✏️ شماره جدید را به شکل 09xxxxxxxxx وارد کنید.\nشماره فعلی: ".$row['phone']
                     : "📝 نام مستعار یا آیدی جدید را ارسال کنید.\nمقدار فعلی: ".mb_substr($row['nickname'], 0, 200, 'UTF-8');
                 sendMessage($prompt, json_encode(['inline_keyboard'=>[
-                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]
+                    [['text'=>'❌ انصراف', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
                 ]],JSON_UNESCAPED_UNICODE), null);
             } elseif (preg_match('/^phoneRegAdminEdit(Phone|Alias):(\d+)$/', $step, $m) && isset($update->message)) {
                 $row = phoneRegRecord((int)$m[2]);
@@ -576,7 +576,7 @@ function phoneRegHandle() {
                     "\n\n⚠️ پیام فقط پس از زدن دکمه تأیید ارسال می‌شود.",
                     json_encode(['inline_keyboard'=>[
                         [['text'=>'✅ تأیید و ارسال پیام', 'callback_data'=>'phoneRegAdminMsgConfirm_'.(int)$row['id']]],
-                        [['text'=>'❌ لغو ارسال', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]
+                        [['text'=>'❌ لغو ارسال', 'callback_data'=>'phoneRegAdminView_'.(int)$row['id']]]
                     ]], JSON_UNESCAPED_UNICODE), null);
             } elseif (preg_match('/^phoneRegAdminMsgConfirm_(\d+)$/', $callback, $m)) {
                 $id = (int)$m[1];
