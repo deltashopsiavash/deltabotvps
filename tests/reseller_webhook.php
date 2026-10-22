@@ -14,4 +14,7 @@ $nonStandard=deltaResellerWebhookCandidates(9,'https://working.example.org/teleg
 assertCandidate($nonStandard[0],'https://working.example.org/telegram/bot.php?bid=9','mother hook path may be differently named');
 assertCandidate(deltaResellerWebhookCandidates(0,'https://working.example.org/bot.php','https://x.example.org/'),[],'invalid instance id');
 assertCandidate(deltaResellerWebhookCandidates(2,'http://insecure.example.org/bot.php','http://old.example.org/'),[],'never register HTTP');
-echo "Reseller webhook URL selection: PASS\n";
+$token='123456:example-bot-token';
+assertCandidate(deltaResellerWebhookSecret($token),hash('sha256',$token),'child-specific secret matches config.php check()');
+assertCandidate(strlen(deltaResellerWebhookSecret($token)),64,'Telegram webhook secret is 64 chars');
+echo "Reseller webhook URL selection and bot secret: PASS\n";
