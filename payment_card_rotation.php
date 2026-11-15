@@ -70,7 +70,7 @@ function deltaCardAdminMarkup() {
         } else $label="➕ کارت $i: خالی";
         $rows[]=[['text'=>$label,'callback_data'=>'deltaCardSlot_'.$i]];
     }
-    $rows[]=[['text'=>'↩️ بازگشت به درگاه و کانال','callback_data'=>'gateWays']];
+    $rows[]=[['text'=>'↩️ بازگشت به درگاه و کانال','callback_data'=>'gateWays_Channels']];
     return json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE);
 }
 function deltaCardShowAdminMenu() {
@@ -275,6 +275,16 @@ function deltaCardParseReceiptRef($raw) {
     if(preg_match('/^(.+)~([0-9]+)$/D',$raw,$m)) return ['hash'=>$m[1],'id'=>(int)$m[2]];
     return ['hash'=>$raw,'id'=>0];
 }
+function deltaCardOriginStep($hash,$storedStep) {
+    $hash=(string)$hash;
+    $step=(string)$storedStep;
+    if(strpos($step,'awaitingPayChoice|')===0) $step=substr($step,strlen('awaitingPayChoice|'));
+    if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/D',$step,$m) && $m[1]===$hash) $step=$m[2];
+    // Keep the original payment route for custom purchases, wallet top-ups and renewals.
+    if($hash!=='' && str_ends_with($step,$hash) &&
+        preg_match('/^(?:payCustomWithCartToCart|payWithCartToCart|increaseWalletWithCartToCart|payRenewWithCartToCart|payIncreaseDayWithCartToCart|payIncreaseWithCartToCart|pgRenewPayCart)/',$step)) return $step;
+    return deltaPaymentOriginStepByHash($hash);
+}
 function deltaCardBindReceipt($hash,$id,$uid) {
     global $connection;
     if(!deltaCardEnsureTable()) return false;
@@ -289,7 +299,7 @@ function deltaCardBindReceipt($hash,$id,$uid) {
         $st->bind_param('si',$hash,$uid);
     }
     $st->execute();$rec=$st->get_result()->fetch_assoc();$st->close();
-    if(!$rec) return false;
+    if(!$rec) return $id===0; // Accept already-shown pre-update payment messages.
     upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)(int)$rec['id']);
     return true;
 }
