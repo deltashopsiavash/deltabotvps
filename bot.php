@@ -861,6 +861,9 @@ if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithWeS
 }elseif(preg_match('/^payTextReceipt\|([^|]+)/',$reservationStep,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
 }
+if($specialReservationHash!=='' && function_exists('deltaCardParseReceiptRef')){
+    $specialReservationHash=deltaCardParseReceiptRef($specialReservationHash)['hash'];
+}
 if($specialReservationHash!==''){
     $reservationStmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
     $reservationStmt->bind_param('s',$specialReservationHash); $reservationStmt->execute();
@@ -929,7 +932,7 @@ if(preg_match('/^payPhotoReceipt(.+)$/', $data, $match)){
     if(!deltaCardBindReceipt($hash,(int)$ref['id'],(int)$from_id)){
         answerQuery('❌ رسید یا فاکتور معتبر نیست. لطفاً دوباره روش پرداخت را انتخاب کنید.',true); exit;
     }
-    $originStep=deltaPaymentOriginStepByHash($hash);
+    $originStep=deltaCardOriginStep($hash,(string)($userInfo['step']??''));
     setUser($originStep);
     // Do not delete/edit the original payment-card message.
     sendMessage(deltaCardPhotoPrompt(),deltaCardReceiptCancelKeys(),null);
@@ -941,7 +944,7 @@ if(preg_match('/^payTextReceipt(.+)$/', $data, $match)){
     if(!deltaCardBindReceipt($hash,(int)$ref['id'],(int)$from_id)){
         answerQuery('❌ رسید یا فاکتور معتبر نیست. لطفاً دوباره روش پرداخت را انتخاب کنید.',true); exit;
     }
-    $originStep=deltaPaymentOriginStepByHash($hash);
+    $originStep=deltaCardOriginStep($hash,(string)($userInfo['step']??''));
     setUser('payTextReceipt|' . $hash . '|' . $originStep);
     // Keep the original payment-card message and show a fresh prompt instead.
     sendMessage(deltaCardSmsPrompt(),deltaCardReceiptCancelKeys(),null);
