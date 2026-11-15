@@ -2098,8 +2098,15 @@ function getReceiptAdminKeyboard($approveCallback, $declineCallback, $uid){
 }
 
 function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown", $receiptHash = null){
+    $separateCardNote = '';
     if($receiptHash !== null && function_exists('deltaCardAppendAdminReceipt')){
-        $caption=deltaCardAppendAdminReceipt($caption,(string)$receiptHash,$parse,true);
+        $updatedCaption=deltaCardAppendAdminReceipt($caption,(string)$receiptHash,$parse,true);
+        // An oversized Telegram photo caption cannot contain the card note.
+        // Send it separately to each admin, keeping the original report intact.
+        if($updatedCaption===$caption && function_exists('deltaCardAdminReceiptNote')){
+            $separateCardNote=deltaCardAdminReceiptNote((string)$receiptHash,'HTML');
+        }
+        $caption=$updatedCaption;
     }
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
@@ -2107,6 +2114,9 @@ function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "
         if($firstRes === null) $firstRes = $res;
         if($receiptHash !== null && function_exists('deltaRememberReceiptAdminMessage')){
             deltaRememberReceiptAdminMessage($receiptHash, $aid, $res);
+        }
+        if($separateCardNote!=='' && is_object($res) && !empty($res->ok)){
+            sendMessage("🔖 کارت مرتبط با رسید و کد پیگیری: ".htmlspecialchars((string)$receiptHash,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8').$separateCardNote,null,'HTML',$aid);
         }
     }
     return $firstRes;
