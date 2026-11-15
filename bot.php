@@ -2,6 +2,7 @@
 include_once 'config.php';
 
 check();
+require_once __DIR__ . '/payment_card_rotation.php';
 
 require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
@@ -845,6 +846,9 @@ if(isset($data) && preg_match('/^(approveUserAccess|rejectUserAccess)_(\d+)$/', 
 
 GOTOSTART:
 
+// Card pool administration and receipt cancellation are handled before legacy payment flows.
+if(deltaCardHandle()) exit;
+
 // A special-offer invoice owns its stock reservation for five minutes. Block
 // every customer-side payment entry point once that reservation has expired.
 $specialReservationHash='';
@@ -856,6 +860,9 @@ if(preg_match('/^(?:payWithWallet|payWithCartToCart|payWithTronWallet|payWithWeS
     $specialReservationHash=(string)$reservationMatch[1];
 }elseif(preg_match('/^payTextReceipt\|([^|]+)/',$reservationStep,$reservationMatch)){
     $specialReservationHash=(string)$reservationMatch[1];
+}
+if($specialReservationHash!=='' && function_exists('deltaCardParseReceiptRef')){
+    $specialReservationHash=deltaCardParseReceiptRef($specialReservationHash)['hash'];
 }
 if($specialReservationHash!==''){
     $reservationStmt=$connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
@@ -920,27 +927,27 @@ if(preg_match('/^receiptBlockUser_(\d+)$/', $data, $match) && ($from_id == $admi
     exit;
 }
 if(preg_match('/^payPhotoReceipt(.+)$/', $data, $match)){
-    $originStep = (string)($userInfo['step'] ?? '');
-    if(strpos($originStep, 'awaitingPayChoice|') === 0){
-        $originStep = substr($originStep, strlen('awaitingPayChoice|'));
+    $ref=deltaCardParseReceiptRef($match[1]);
+    $hash=(string)$ref['hash'];
+    if(!deltaCardBindReceipt($hash,(int)$ref['id'],(int)$from_id)){
+        answerQuery('❌ رسید یا فاکتور معتبر نیست. لطفاً دوباره روش پرداخت را انتخاب کنید.',true); exit;
     }
-    if($originStep === '' || $originStep === 'none'){
-        $originStep = deltaPaymentOriginStepByHash($match[1]);
-    }
+    $originStep=deltaCardOriginStep($hash,(string)($userInfo['step']??''));
     setUser($originStep);
-    sendMessage("لطفاً فقط عکس رسید واریزی را ارسال کنید.", $cancelKey);
+    // Do not delete/edit the original payment-card message.
+    sendMessage(deltaCardPhotoPrompt(),deltaCardReceiptCancelKeys(),null);
     exit;
 }
 if(preg_match('/^payTextReceipt(.+)$/', $data, $match)){
-    $originStep = (string)($userInfo['step'] ?? '');
-    if(strpos($originStep, 'awaitingPayChoice|') === 0){
-        $originStep = substr($originStep, strlen('awaitingPayChoice|'));
+    $ref=deltaCardParseReceiptRef($match[1]);
+    $hash=(string)$ref['hash'];
+    if(!deltaCardBindReceipt($hash,(int)$ref['id'],(int)$from_id)){
+        answerQuery('❌ رسید یا فاکتور معتبر نیست. لطفاً دوباره روش پرداخت را انتخاب کنید.',true); exit;
     }
-    if($originStep === '' || $originStep === 'none'){
-        $originStep = deltaPaymentOriginStepByHash($match[1]);
-    }
-    setUser('payTextReceipt|' . $match[1] . '|' . $originStep);
-    sendMessage("لطفا ساعت و تاریخ دقیق واریزی، شماره کارت مبدا، شماره کارت مقصد و هزینه واریزی رو در قالب یک پیام ارسال کنید", $cancelKey);
+    $originStep=deltaCardOriginStep($hash,(string)($userInfo['step']??''));
+    setUser('payTextReceipt|' . $hash . '|' . $originStep);
+    // Keep the original payment-card message and show a fresh prompt instead.
+    sendMessage(deltaCardSmsPrompt(),deltaCardReceiptCancelKeys(),null);
     exit;
 }
 if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $match) && $text != $buttonValues['cancel']){
@@ -4933,7 +4940,7 @@ if(preg_match('/increaseWalletWithCartToCart(?<hashId>.*)/',$data, $match)) {
     delMessage();  
     setUser('awaitingPayChoice|' . $data);
 
-    sendMessage(str_replace(["ACCOUNT-NUMBER", "HOLDER-NAME"],[$paymentKeys['bankAccount'],$paymentKeys['holderName']], $mainValues['increase_wallet_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
     exit;
 }
 if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) and $text != $buttonValues['cancel']){
@@ -7920,7 +7927,7 @@ if(preg_match('/payCustomWithCartToCart(.*)/',$data, $match)) {
     
     setUser('awaitingPayChoice|' . $data);
     delMessage();
-    sendMessage(str_replace(["ACCOUNT-NUMBER", "HOLDER-NAME"],[$paymentKeys['bankAccount'],$paymentKeys['holderName']], $mainValues['buy_account_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
     exit;
 }
 if(preg_match('/payCustomWithCartToCart(.*)/',$userInfo['step'], $match) and $text != $buttonValues['cancel']){
@@ -8597,7 +8604,7 @@ if(preg_match('/payWithCartToCart(.*)/',$data,$match)) {
     
     setUser('awaitingPayChoice|' . $data);
     delMessage();
-    sendMessage(str_replace(["ACCOUNT-NUMBER", "HOLDER-NAME"],[$paymentKeys['bankAccount'],$paymentKeys['holderName']], $mainValues['buy_account_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
     exit;
 }
 if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != $buttonValues['cancel']){
@@ -9466,7 +9473,9 @@ if(preg_match('/^pgRenewPayWallet(.+)$/', $data, $m)){
 }
 if(preg_match('/^pgRenewPayCart(.+)$/', $data, $m)){
     $hash=$m[1]; setUser('pgRenewPayCart'.$hash); delMessage();
-    sendMessage(str_replace(['ACCOUNT-NUMBER','HOLDER-NAME'],[$paymentKeys['bankAccount'],$paymentKeys['holderName']], $mainValues['renew_ccount_cart_to_cart'] ?? 'رسید کارت به کارت را ارسال کنید'), getCopyPaymentButtons(0, $paymentKeys['bankAccount'], 'mainMenu', $hash), 'HTML');
+    $pgCardPay=deltaCardPayOwned($hash);
+    if(!$pgCardPay){ sendMessage('❌ فاکتور پیدا نشد یا متعلق به شما نیست.',null,null); exit; }
+    deltaCardShowInvoice($pgCardPay);
     exit;
 }
 if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text != $buttonValues['cancel']){
@@ -10548,7 +10557,7 @@ if(preg_match('/^renameButtonsPage(\d+)/',$data,$match) && ($from_id == $admin |
 }
 if(preg_match('/^renameBtnKey_(.+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     delMessage();
-    $textKeys=['start_message','bot_is_updating','card_to_card_text','buy_sub_select_location','buy_sub_select_category','buy_sub_select_plan','increase_wallet_prompt'];
+    $textKeys=['start_message','bot_is_updating','card_to_card_text','payment_photo_prompt','payment_sms_prompt','buy_sub_select_location','buy_sub_select_category','buy_sub_select_plan','increase_wallet_prompt'];
     if(in_array($match[1],$textKeys,true)){
         sendMessage("متن جدید را ارسال کنید.\n\n✨ متن می‌تواند یک یا چند ایموجی پرمیوم تلگرام داشته باشد و همان ایموجی‌ها هنگام نمایش متن حفظ می‌شوند.",$cancelKey);
     }else{
@@ -10569,6 +10578,8 @@ if(preg_match('/^renameBtnKey_(.+)/',$userInfo['step'],$match) && ($from_id == $
         'start_message'=>'MAINVALUE_start_message',
         'bot_is_updating'=>'MAINVALUE_bot_is_updating',
         'card_to_card_text'=>'MAINVALUE_card_to_card_text',
+        'payment_photo_prompt'=>'MAINVALUE_payment_photo_prompt',
+        'payment_sms_prompt'=>'MAINVALUE_payment_sms_prompt',
         'buy_sub_select_location'=>'MAINVALUE_buy_sub_select_location',
         'buy_sub_select_category'=>'MAINVALUE_buy_sub_select_category',
         'buy_sub_select_plan'=>'MAINVALUE_buy_sub_select_plan',
@@ -10592,6 +10603,11 @@ if(preg_match('/^renameBtnKey_(.+)/',$userInfo['step'],$match) && ($from_id == $
     }
     if(trim($valueToSave)===''){
         sendMessage("متن نمی‌تواند خالی باشد.");
+        exit();
+    }
+    if($key==='card_to_card_text' &&
+        (strpos($valueToSave,'ACCOUNT-NUMBER')===false || strpos($valueToSave,'HOLDER-NAME')===false)){
+        sendMessage("❌ متن کارت به کارت حتماً باید شامل هر دو جایگزین ACCOUNT-NUMBER و HOLDER-NAME باشد تا شماره و صاحب کارت رندوم نمایش داده شوند. متن را دوباره همراه این دو عبارت ارسال کنید.");
         exit();
     }
     upsertSettingValue($type,$valueToSave);
@@ -13708,7 +13724,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$data,$match)) {
     setUser('awaitingPayChoice|' . $data);
     delMessage();
 
-    sendMessage(str_replace(['ACCOUNT-NUMBER', 'HOLDER-NAME'],[$paymentKeys['bankAccount'], $paymentKeys['holderName']], $mainValues['renew_ccount_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
     exit;
 }
 if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text != $buttonValues['cancel']){
@@ -14585,7 +14601,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$data,$match)) {
 
     delMessage();
     setUser('awaitingPayChoice|' . $data);
-    sendMessage(str_replace(['ACCOUNT-NUMBER', 'HOLDER-NAME'],[$paymentKeys['bankAccount'], $paymentKeys['holderName']], $mainValues['renew_ccount_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
 
     exit;
 }
@@ -14965,7 +14981,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$data, $match)) {
     setUser('awaitingPayChoice|' . $data);
     delMessage();
     
-    sendMessage(str_replace(['ACCOUNT-NUMBER', 'HOLDER-NAME'],[$paymentKeys['bankAccount'], $paymentKeys['holderName']], $mainValues['renew_ccount_cart_to_cart']), getCopyPaymentButtons($payInfo['price'] ?? 0, $paymentKeys['bankAccount'], 'mainMenu', $payInfo['hash_id'] ?? $match['hashId'] ?? $match[1] ?? ''), "HTML");
+    deltaCardShowInvoice($payInfo);
     exit;
 }
 if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $text != $buttonValues['cancel']){
