@@ -22,6 +22,8 @@ jobs:
         run: |
           php -l bot.php
           php -l phone_registration.php
+          php -l payment_card_rotation.php
+          php -l tests/payment_card_rotation.php
           php -l tests/phone_registration.php
           php -l admin_service_manager.php
           php -l service_subscription_ui.php
@@ -36,6 +38,7 @@ jobs:
           php tests/order_features.php
           php tests/admin_service_manager.php
           php tests/phone_registration.php
+          php tests/payment_card_rotation.php
           php tests/service_subscription_rules.php
           php tests/service_ui_gradient.php
           php tests/reseller_webhook.php
