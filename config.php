@@ -632,6 +632,9 @@ function getAllAdminIds(){
     return $ids;
 }
 function sendToAdmins($txt, $key = null, $parse = "MarkDown", $msg = null, $receiptHash = null){
+    if($receiptHash !== null && function_exists('deltaCardAppendAdminReceipt')){
+        $txt=deltaCardAppendAdminReceipt($txt,(string)$receiptHash,$parse,false);
+    }
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
         $res = sendMessage($txt, $key, $parse, $aid, $msg);
@@ -1988,7 +1991,7 @@ function getLastBoughtPlanId($userId){
     return 0;
 }
 
-function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMenu', $hashId = ''){
+function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMenu', $hashId = '', $displayId = 0){
     $rows = [];
     $copyRow = [];
     if((string)$amount !== '' && (int)$amount > 0){
@@ -2003,8 +2006,9 @@ function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMen
     if(trim((string)$hashId) !== ''){
         $track=deltaTrackingCode($hashId);
         $rows[] = [['text' => '🔖 کد پیگیری: '.$track, 'copy_text' => ['text' => $track]]];
-        $rows[] = [['text' => '📷 ارسال عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $hashId]];
-        $rows[] = [['text' => '📩 ارسال پیامک واریزی', 'callback_data' => 'payTextReceipt' . $hashId]];
+        $receiptRef = $hashId . ((int)$displayId>0 ? '~'.(int)$displayId : '');
+        $rows[] = [['text' => '📷 ارسال عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $receiptRef]];
+        $rows[] = [['text' => '📩 ارسال پیامک واریزی', 'callback_data' => 'payTextReceipt' . $receiptRef]];
     }
     $rows[] = [['text' => '😪 منصرف شدم بیخیال', 'callback_data' => $cancelCallback]];
     return json_encode(['inline_keyboard' => $rows], 448);
@@ -2026,6 +2030,7 @@ function deltaPaymentOriginStepByHash($hashId){
     }
     if($type === 'INCREASE_WALLET') return 'increaseWalletWithCartToCart' . $hashId;
     if($type === 'RENEW_ACCOUNT') return 'payRenewWithCartToCart' . $hashId;
+    if(strpos($type, 'PG_RENEW_') === 0) return 'pgRenewPayCart' . $hashId;
     if($type === 'RENEW_SCONFIG' || $type === 'BUY_SUB') return 'payWithCartToCart' . $hashId;
     if(strpos($type, 'INCREASE_DAY_') === 0) return 'payIncreaseDayWithCartToCart' . $hashId;
     if(strpos($type, 'INCREASE_VOLUME_') === 0) return 'payIncreaseWithCartToCart' . $hashId;
@@ -2093,6 +2098,9 @@ function getReceiptAdminKeyboard($approveCallback, $declineCallback, $uid){
 }
 
 function sendPhotoToAdmins($photo, $caption = null, $keyboard = null, $parse = "MarkDown", $receiptHash = null){
+    if($receiptHash !== null && function_exists('deltaCardAppendAdminReceipt')){
+        $caption=deltaCardAppendAdminReceipt($caption,(string)$receiptHash,$parse,true);
+    }
     $firstRes = null;
     foreach(getAllAdminIds() as $aid){
         $res = sendPhoto($photo, $caption, $keyboard, $parse, $aid);
@@ -2741,6 +2749,8 @@ if(!function_exists('deltaEditableTextTemplates')){
             'start_message'=>(string)($mainValues['start_message']??''),
             'bot_is_updating'=>(string)($mainValues['bot_is_updating']??''),
             'card_to_card_text'=>(string)($mainValues['buy_account_cart_to_cart']??''),
+            'payment_photo_prompt'=>(string)getSettingValue('MAINVALUE_payment_photo_prompt',''),
+            'payment_sms_prompt'=>(string)getSettingValue('MAINVALUE_payment_sms_prompt',''),
             'buy_sub_select_location'=>(string)($mainValues['buy_sub_select_location']??''),
             'buy_sub_select_category'=>(string)($mainValues['buy_sub_select_category']??''),
             'buy_sub_select_plan'=>(string)($mainValues['buy_sub_select_plan']??''),
@@ -4647,12 +4657,7 @@ function getGateWaysKeys(){
     $stmt->close();
     return json_encode(['inline_keyboard'=>[
         [
-            ['text'=>(!empty($paymentKeys['bankAccount'])?$paymentKeys['bankAccount']:" "),'callback_data'=>"changePaymentKeysbankAccount"],
-            ['text'=>"شماره حساب",'callback_data'=>"deltach"]
-        ],
-        [
-            ['text'=>(!empty($paymentKeys['holderName'])?$paymentKeys['holderName']:" "),'callback_data'=>"changePaymentKeysholderName"],
-            ['text'=>"دارنده حساب",'callback_data'=>"deltach"]
+            ['text'=>'💳 مدیریت کارت‌های کارت‌به‌کارت ('.(function_exists('deltaCardPoolCount')?deltaCardPoolCount():0).'/۱۰)','callback_data'=>'deltaCardMenu']
         ],
         [
             ['text'=>(!empty($paymentKeys['nowpayment'])?$paymentKeys['nowpayment']:" "),'callback_data'=>"changePaymentKeysnowpayment"],
@@ -11948,7 +11953,9 @@ function getRenameButtonsKeys($page=0){
         ['key'=>'invite_friends','title'=>$buttonValues['invite_friends']??'زیرمجموعه‌گیری'],
         ['key'=>'test_account','title'=>$buttonValues['test_account']??'دریافت اکانت تست'],
         ['key'=>'cloud_vps_buy','title'=>$buttonValues['cloud_vps_buy']??'خرید سرور ابری'],
-        ['key'=>'card_to_card_text','title'=>'متن کارت به کارت'],
+        ['key'=>'card_to_card_text','title'=>'📝 تغییر متن کارت به کارت'],
+        ['key'=>'payment_photo_prompt','title'=>'📷 متن درخواست عکس رسید'],
+        ['key'=>'payment_sms_prompt','title'=>'📩 متن درخواست پیامک واریزی'],
         ['key'=>'buy_sub_select_location','title'=>'مرحله یک:'],
         ['key'=>'buy_sub_select_category','title'=>'مرحله دو:'],
         ['key'=>'buy_sub_select_plan','title'=>'مرحله سه:'],
