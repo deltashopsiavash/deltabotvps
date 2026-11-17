@@ -26,4 +26,16 @@ $ref=deltaCardParseReceiptRef('OldHash');
 assertCard($ref['hash']==='OldHash' && $ref['id']===0,'legacy callback reference');
 assertCard(deltaCardOriginStep('H1','awaitingPayChoice|payCustomWithCartToCartH1')==='payCustomWithCartToCartH1','custom purchase origin');
 assertCard(deltaCardOriginStep('H1','payTextReceipt|H1|increaseWalletWithCartToCartH1')==='increaseWalletWithCartToCartH1','wallet origin from text receipt');
+// The tracking code is rendered into the payment text, not only in a button.
+$template="💳 <code>ACCOUNT-NUMBER</code>\n👤 HOLDER-NAME\n🔖 TRACKING-CODE";
+$rendered=deltaCardReplaceInvoiceTokens($template,'6037991568211779','صاحب & کارت','ABC-123');
+assertCard(strpos($rendered,'6037991568211779')!==false,'card number placeholder');
+assertCard(strpos($rendered,'صاحب &amp; کارت')!==false,'holder escaped in HTML');
+assertCard(strpos($rendered,'ABC-123')!==false,'tracking placeholder');
+assertCard(strpos($rendered,'TRACKING-CODE')===false,'no literal tracking placeholder remains');
+assertCard(strpos($rendered,'ACCOUNT-NUMBER')===false,'no literal account placeholder remains');
+$legacy=deltaCardReplaceInvoiceTokens('💳 ACCOUNT-NUMBER — HOLDER-NAME','5022291538444652','صاحب کارت','OLD-789');
+assertCard(strpos($legacy,'🔖 کد پیگیری: <code>OLD-789</code>')!==false,
+    'pre-existing editable payment templates get a tracking code automatically');
+assertCard(substr_count($rendered,'ABC-123')===1,'tracking appears exactly once');
 echo "Random card-to-card payment rules: PASS\n";
