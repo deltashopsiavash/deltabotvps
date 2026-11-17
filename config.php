@@ -2002,17 +2002,21 @@ function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMen
     if(trim((string)$bankAccount) !== ''){
         $copyRow[] = ['text' => '💳 کپی شماره کارت', 'copy_text' => ['text' => trim((string)$bankAccount)]];
     }
+    if(trim((string)$hashId) !== '' && (int)$displayId>0){
+        // First row directly below the payment message: switch the displayed bank card.
+        $rows[] = [['text'=>'🔄 تغییر شماره کارت',
+            'callback_data'=>'deltaCardSwitch'.$hashId.'~'.(int)$displayId]];
+    }
+    // Second row: copy amount and bank card side by side.
     if(!empty($copyRow)) $rows[] = $copyRow;
     if(trim((string)$hashId) !== ''){
-        // Tracking is rendered in the invoice text via TRACKING-CODE, not as an inline button.
-        // This is a single dedicated row immediately below the payment message.
-        if((int)$displayId>0){
-            $rows[] = [['text'=>'🔄 تغییر شماره کارت',
-                'callback_data'=>'deltaCardSwitch'.$hashId.'~'.(int)$displayId]];
-        }
+        // The tracking code is already embedded in the payment message text.
         $receiptRef = $hashId . ((int)$displayId>0 ? '~'.(int)$displayId : '');
-        $rows[] = [['text' => '📷 ارسال عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $receiptRef]];
-        $rows[] = [['text' => '📩 ارسال پیامک واریزی', 'callback_data' => 'payTextReceipt' . $receiptRef]];
+        // Third row: both receipt choices side by side.
+        $rows[] = [
+            ['text' => '📷 عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $receiptRef],
+            ['text' => '📩 پیامک واریزی', 'callback_data' => 'payTextReceipt' . $receiptRef]
+        ];
     }
     $rows[] = [['text' => '😪 منصرف شدم بیخیال', 'callback_data' => $cancelCallback]];
     return json_encode(['inline_keyboard' => $rows], 448);
