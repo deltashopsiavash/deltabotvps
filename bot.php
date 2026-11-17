@@ -10558,7 +10558,9 @@ if(preg_match('/^renameButtonsPage(\d+)/',$data,$match) && ($from_id == $admin |
 if(preg_match('/^renameBtnKey_(.+)/',$data,$match) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     delMessage();
     $textKeys=['start_message','bot_is_updating','card_to_card_text','payment_photo_prompt','payment_sms_prompt','buy_sub_select_location','buy_sub_select_category','buy_sub_select_plan','increase_wallet_prompt'];
-    if(in_array($match[1],$textKeys,true)){
+    if($match[1]==='card_to_card_text'){
+        sendMessage("📝 متن جدید کارت‌به‌کارت را ارسال کنید.\n\nبرای نمایش درست مشخصات پرداخت باید این سه عبارت را در متن قرار دهید:\n💳 ACCOUNT-NUMBER (شماره کارت)\n👤 HOLDER-NAME (نام صاحب حساب)\n🔖 TRACKING-CODE (کد پیگیری)\n\nبرای مثال: 🔖 کد پیگیری: TRACKING-CODE\n✨ ایموجی‌های پرمیوم تلگرام هم پشتیبانی می‌شوند.",$cancelKey);
+    }elseif(in_array($match[1],$textKeys,true)){
         sendMessage("متن جدید را ارسال کنید.\n\n✨ متن می‌تواند یک یا چند ایموجی پرمیوم تلگرام داشته باشد و همان ایموجی‌ها هنگام نمایش متن حفظ می‌شوند.",$cancelKey);
     }else{
         sendMessage("اسم جدید را ارسال کنید.\n\n✅ می‌توانید یک ایموجی پرمیوم تلگرام هم داخل پیام بگذارید؛ ایموجی به‌صورت آیکن واقعی روی دکمه ذخیره می‌شود.\nبرای حذف آیکن قبلی، نام را بدون ایموجی پرمیوم ارسال کنید.",$cancelKey);
@@ -10589,7 +10591,6 @@ if(preg_match('/^renameBtnKey_(.+)/',$userInfo['step'],$match) && ($from_id == $
     if($isTextKey){
         $type=$textKeyMap[$key];
         $premiumEntities=deltaExtractPremiumTextEntities($update->message->entities??[]);
-        upsertSettingValue('MAINTEXT_ENTITIES_'.$key,json_encode($premiumEntities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
     }else{
         $type='BUTTON_LABEL_'.$key;
         $premium=deltaExtractPremiumButtonEmoji($valueToSave,$update->message->entities??[]);
@@ -10606,9 +10607,15 @@ if(preg_match('/^renameBtnKey_(.+)/',$userInfo['step'],$match) && ($from_id == $
         exit();
     }
     if($key==='card_to_card_text' &&
-        (strpos($valueToSave,'ACCOUNT-NUMBER')===false || strpos($valueToSave,'HOLDER-NAME')===false)){
-        sendMessage("❌ متن کارت به کارت حتماً باید شامل هر دو جایگزین ACCOUNT-NUMBER و HOLDER-NAME باشد تا شماره و صاحب کارت رندوم نمایش داده شوند. متن را دوباره همراه این دو عبارت ارسال کنید.");
+        (strpos($valueToSave,'ACCOUNT-NUMBER')===false ||
+         strpos($valueToSave,'HOLDER-NAME')===false ||
+         strpos($valueToSave,'TRACKING-CODE')===false)){
+        sendMessage("❌ متن کارت به کارت باید هر سه جایگزین ACCOUNT-NUMBER و HOLDER-NAME و TRACKING-CODE را داشته باشد. لطفاً متن را اصلاح کنید و دوباره ارسال کنید.");
         exit();
+    }
+    if($isTextKey){
+        // Only overwrite the emoji metadata after the full text passes validation.
+        upsertSettingValue('MAINTEXT_ENTITIES_'.$key,json_encode($premiumEntities,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
     }
     upsertSettingValue($type,$valueToSave);
     setUser();
