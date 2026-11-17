@@ -2004,8 +2004,12 @@ function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMen
     }
     if(!empty($copyRow)) $rows[] = $copyRow;
     if(trim((string)$hashId) !== ''){
-        $track=deltaTrackingCode($hashId);
-        $rows[] = [['text' => '🔖 کد پیگیری: '.$track, 'copy_text' => ['text' => $track]]];
+        // Tracking is rendered in the invoice text via TRACKING-CODE, not as an inline button.
+        // This is a single dedicated row immediately below the payment message.
+        if((int)$displayId>0){
+            $rows[] = [['text'=>'🔄 تغییر شماره کارت',
+                'callback_data'=>'deltaCardSwitch'.$hashId.'~'.(int)$displayId]];
+        }
         $receiptRef = $hashId . ((int)$displayId>0 ? '~'.(int)$displayId : '');
         $rows[] = [['text' => '📷 ارسال عکس واریزی', 'callback_data' => 'payPhotoReceipt' . $receiptRef]];
         $rows[] = [['text' => '📩 ارسال پیامک واریزی', 'callback_data' => 'payTextReceipt' . $receiptRef]];
@@ -2775,7 +2779,7 @@ if(!function_exists('deltaTemplateMatchesRenderedText')){
         if($template==='' || $rendered==='') return false;
         if($template===$rendered || strncmp($rendered,$template,strlen($template))===0) return true;
         $quoted=preg_quote($template,'~');
-        foreach(['ACCOUNT-NUMBER','HOLDER-NAME','PRICE','USERNAME','NAME','USER-ID'] as $ph){
+        foreach(['ACCOUNT-NUMBER','HOLDER-NAME','TRACKING-CODE','PRICE','USERNAME','NAME','USER-ID'] as $ph){
             $quoted=str_replace(preg_quote($ph,'~'),'.*?',$quoted);
         }
         return @preg_match('~^'.$quoted.'$~us',$rendered)===1;
