@@ -55,4 +55,18 @@ assertCard(strpos($keyboardSource,"📷 ارسال عکس واریزی")===false
     strpos($keyboardSource,"📩 ارسال پیامک واریزی")===false,'remove ارسال from both buttons');
 assertCard(strpos($keyboardSource,"['text' => '📷 عکس واریزی'") <
     strpos($keyboardSource,"['text' => '📩 پیامک واریزی'"),'photo followed by SMS in same row');
+// The awaiting-payment-choice error must have an inline cancel button that exits.
+$waitKeys=json_decode(deltaCardAwaitChoiceCancelKeys(),true);
+assertCard(($waitKeys['inline_keyboard'][0][0]['text']??'')==='❌ لغو',
+    'short cancel label below awaiting-payment error');
+assertCard(($waitKeys['inline_keyboard'][0][0]['callback_data']??'')==='deltaCardReceiptCancel',
+    'awaiting-payment cancel routes to existing flow-reset handler');
+$botText=file_get_contents(dirname(__DIR__).'/bot.php');
+$waitGuard=strpos($botText,"if(preg_match('/^awaitingPayChoice");
+assertCard($waitGuard!==false,'awaiting-choice guard exists');
+$waitBlock=substr($botText,$waitGuard,1600);
+assertCard(strpos($waitBlock,'deltaCardAwaitChoiceCancelKeys()')!==false,
+    'awaiting-choice error has an inline escape button');
+assertCard(strpos($waitBlock,"=== 'mainMenu'")!==false,
+    'original payment cancellation does not remain trapped');
 echo "Random card-to-card payment rules: PASS\n";
