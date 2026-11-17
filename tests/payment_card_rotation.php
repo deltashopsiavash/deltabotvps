@@ -38,4 +38,21 @@ $legacy=deltaCardReplaceInvoiceTokens('💳 ACCOUNT-NUMBER — HOLDER-NAME','502
 assertCard(strpos($legacy,'🔖 کد پیگیری: <code>OLD-789</code>')!==false,
     'pre-existing editable payment templates get a tracking code automatically');
 assertCard(substr_count($rendered,'ABC-123')===1,'tracking appears exactly once');
+// Regression check: the generated keyboard must keep the requested row order.
+$configSource=file_get_contents(dirname(__DIR__).'/config.php');
+$keyboardStart=strpos($configSource,'function getCopyPaymentButtons(');
+$keyboardEnd=strpos($configSource,'function deltaPaymentOriginStepByHash(',$keyboardStart);
+assertCard($keyboardStart!==false && $keyboardEnd!==false,'payment keyboard function available');
+$keyboardSource=substr($configSource,$keyboardStart,$keyboardEnd-$keyboardStart);
+$switchPos=strpos($keyboardSource,"['text'=>'🔄 تغییر شماره کارت'");
+$copyPos=strpos($keyboardSource,'if(!empty($copyRow)) $rows[] = $copyRow;');
+$receiptPos=strpos($keyboardSource,"['text' => '📷 عکس واریزی'");
+assertCard($switchPos!==false && $copyPos!==false && $receiptPos!==false
+    && $switchPos<$copyPos && $copyPos<$receiptPos,'switch / copy / receipt rows in requested order');
+assertCard(strpos($keyboardSource,"['text' => '📩 پیامک واریزی'")!==false,
+    'concise SMS button label');
+assertCard(strpos($keyboardSource,"📷 ارسال عکس واریزی")===false &&
+    strpos($keyboardSource,"📩 ارسال پیامک واریزی")===false,'remove ارسال from both buttons');
+assertCard(strpos($keyboardSource,"['text' => '📷 عکس واریزی'") <
+    strpos($keyboardSource,"['text' => '📩 پیامک واریزی'"),'photo followed by SMS in same row');
 echo "Random card-to-card payment rules: PASS\n";
