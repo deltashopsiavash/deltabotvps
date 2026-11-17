@@ -438,6 +438,15 @@ function deltaCardReceiptCancelKeys() {
         [['text'=>'❌ لغو ارسال رسید','callback_data'=>'deltaCardReceiptCancel']]
     ]],JSON_UNESCAPED_UNICODE);
 }
+/**
+ * Recovery action for users stuck in awaitingPayChoice. Unlike the generic
+ * receipt prompt this short, dedicated button sits directly under the error.
+ */
+function deltaCardAwaitChoiceCancelKeys() {
+    return json_encode(['inline_keyboard'=>[
+        [['text'=>'❌ لغو','callback_data'=>'deltaCardReceiptCancel']]
+    ]],JSON_UNESCAPED_UNICODE);
+}
 function deltaCardPhotoPrompt() {
     return (string)getSettingValue('MAINVALUE_payment_photo_prompt',
         "📷 لطفاً عکس رسید واریزی را ارسال کنید.\n\nجهت لغو روی دکمه زیر بزنید.");
