@@ -106,6 +106,10 @@ function deltaCardAdminCancelKeys() {
 function deltaCardHandle() {
     global $data,$text,$userInfo,$from_id,$admin,$update,$message_id,$buttonValues;
     $cb=(string)($data??''); $step=(string)($userInfo['step']??'');
+    if(strpos($cb,'deltaCardSwitch')===0) {
+        deltaCardSwitchAction($cb);
+        return true;
+    }
     if($cb==='deltaCardReceiptCancel') {
         setUser('none','step'); setUser('','temp');
         sendMessage('❌ ارسال رسید لغو شد. برای ادامه، گزینه موردنظر را از منوی اصلی انتخاب کنید.',getMainKeys(),null);
@@ -211,7 +215,7 @@ function deltaCardPayOwned($hash) {
     $st->execute();$row=$st->get_result()->fetch_assoc();$st->close();
     return $row?:null;
 }
-function deltaCardChoosePresentation($hash,$uid) {
+function deltaCardChoosePresentation($hash,$uid,$previousNumber=null) {
     global $connection;
     if(!deltaCardEnsureTable()) throw new RuntimeException('Cannot create payment card assignments table');
     $cards=deltaCardPool();
@@ -219,7 +223,7 @@ function deltaCardChoosePresentation($hash,$uid) {
     $st=$connection->prepare('SELECT card_number FROM payment_card_displays WHERE hash_id=? ORDER BY id DESC LIMIT 1');
     $st->bind_param('s',$hash);$st->execute();
     $last=$st->get_result()->fetch_assoc();$st->close();
-    $pick=deltaCardPick($cards,$last['card_number']??'');
+    $pick=deltaCardPick($cards,$previousNumber===null ? ($last['card_number']??'') : (string)$previousNumber);
     if(!$pick) return null;
     $number=$pick['number'];$holder=$pick['holder'];$now=time();
     $st=$connection->prepare('INSERT INTO payment_card_displays (hash_id,user_id,card_number,holder_name,shown_at) VALUES (?,?,?,?,?)');
@@ -232,22 +236,37 @@ function deltaCardDefaultText() {
         "====================\n".
         "🔰 <code>ACCOUNT-NUMBER</code>\n".
         "👤 HOLDER-NAME\n".
-        "====================\n\n".
+        "====================\n".
+        "🔖 کد پیگیری: <code>TRACKING-CODE</code>\n\n".
         "پس از واریز، در صورت امکان با دکمه ارسال عکس واریزی، رسید را بفرستید. اگر اینترنت ضعیف است، از دکمه ارسال پیامک واریزی استفاده کنید. ⚠️\n\n".
         "❌ این تراکنش تا یک ساعت اعتبار دارد و پس از آن امکان پرداخت این تراکنش وجود ندارد.\n".
         "‼️ امکان برداشت وجه از کیف پول نیست.\n".
         "‼️ مسئولیت واریز اشتباهی با شماست.\n".
         "💵 بعد از تأیید پرداخت توسط مدیر، کیف پول شما شارژ می‌شود و در صورت داشتن سفارش، انجام خواهد شد.";
 }
-function deltaCardRenderText($number,$holder) {
+/**
+ * Replaces the three placeholders using the selected card and the same tracking code
+ * that was formerly shown in the glass button. Existing custom text lacking the new
+ * placeholder remains supported; the code is appended instead of disappearing.
+ */
+function deltaCardReplaceInvoiceTokens($template,$number,$holder,$trackingCode) {
+    $template=(string)$template;
+    if(strpos($template,'TRACKING-CODE')===false) {
+        $template.="\n\n🔖 کد پیگیری: <code>TRACKING-CODE</code>";
+    }
+    return str_replace(['ACCOUNT-NUMBER','HOLDER-NAME','TRACKING-CODE'],
+        [htmlspecialchars((string)$number,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
+         htmlspecialchars((string)$holder,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
+         htmlspecialchars((string)$trackingCode,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')],$template);
+}
+function deltaCardRenderText($number,$holder,$hashId) {
     $custom=trim((string)getSettingValue('MAINVALUE_card_to_card_text',''));
     // An old custom message may contain literal, now-invalid bank numbers.
     // Never display such a message in place of the selected card.
     $template=(strpos($custom,'ACCOUNT-NUMBER')!==false && strpos($custom,'HOLDER-NAME')!==false)
         ? $custom : deltaCardDefaultText();
-    return str_replace(['ACCOUNT-NUMBER','HOLDER-NAME'],
-        [htmlspecialchars((string)$number,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'),
-         htmlspecialchars((string)$holder,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')],$template);
+    $tracking=deltaTrackingCode((string)$hashId);
+    return deltaCardReplaceInvoiceTokens($template,$number,$holder,$tracking);
 }
 function deltaCardShowInvoice($pay) {
     global $from_id;
@@ -262,7 +281,7 @@ function deltaCardShowInvoice($pay) {
         $card=deltaCardChoosePresentation($hash,(int)$from_id);
         if(!$card) { sendMessage('⚠️ شماره کارت فعالی برای پرداخت ثبت نشده است. لطفاً با پشتیبانی تماس بگیرید.',null,null);return false; }
         $kb=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id']);
-        $sent=sendMessage(deltaCardRenderText($card['number'],$card['holder']),$kb,'HTML');
+        $sent=sendMessage(deltaCardRenderText($card['number'],$card['holder'],$hash),$kb,'HTML');
         return is_object($sent) && !empty($sent->ok);
     }catch(Throwable $e) {
         error_log('deltaCardShowInvoice: '.$e->getMessage());
@@ -270,6 +289,88 @@ function deltaCardShowInvoice($pay) {
         return false;
     }
 }
+
+/**
+ * Switch the displayed card on the same pending invoice without issuing another bill.
+ * The current presentation ID proves what was actually displayed in this message;
+ * the replacement is guaranteed to differ whenever multiple cards are available.
+ */
+function deltaCardSwitchAction($callback) {
+    global $from_id,$chat_id,$message_id,$update;
+    if(!preg_match('/^deltaCardSwitch(.+)~([0-9]+)$/D',(string)$callback,$match)) {
+        answerQuery('درخواست تغییر شماره کارت معتبر نیست.',true);
+        return false;
+    }
+    $hash=(string)$match[1];
+    $displayId=(int)$match[2];
+    if($displayId<=0 || !deltaCardEnsureTable()) {
+        answerQuery('اطلاعات شماره کارت پیدا نشد.',true);
+        return false;
+    }
+    $pay=deltaCardPayOwned($hash);
+    if(!$pay || (string)($pay['state']??'')!=='pending' || (int)($pay['special_offer_id']??0)>0) {
+        answerQuery('فاکتور دیگر قابل پرداخت نیست. لطفاً فاکتور جدید دریافت کنید.',true);
+        return false;
+    }
+    try {
+        global $connection;
+        $uid=(int)$from_id;
+        $stmt=$connection->prepare(
+            'SELECT card_number FROM payment_card_displays WHERE id=? AND hash_id=? AND user_id=? LIMIT 1'
+        );
+        if(!$stmt) throw new RuntimeException('Card lookup failed');
+        $stmt->bind_param('isi',$displayId,$hash,$uid);
+        $stmt->execute();
+        $shown=$stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if(!$shown) {
+            answerQuery('این شماره کارت متعلق به فاکتور شما نیست.',true);
+            return false;
+        }
+        $alternatives=array_filter(deltaCardPool(),function($card) use ($shown) {
+            return (string)$card['number']!==(string)$shown['card_number'];
+        });
+        if(!$alternatives) {
+            answerQuery('شماره کارت دیگری در حال حاضر موجود نیست.',true);
+            return false;
+        }
+        $card=deltaCardChoosePresentation($hash,$uid,$shown['card_number']);
+        if(!$card) throw new RuntimeException('No replacement card available');
+        $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
+        $keyboard=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id']);
+        $prepared=deltaPrepareEditableTextPayload($body,'HTML');
+        $payload=['chat_id'=>$chat_id,'message_id'=>$message_id,
+            'text'=>$prepared['text'],'reply_markup'=>$keyboard];
+        if(!empty($prepared['entities'])) {
+            $payload['entities']=json_encode($prepared['entities'],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        }elseif(!empty($prepared['parse_mode'])) {
+            $payload['parse_mode']=$prepared['parse_mode'];
+        }
+        $result=bot('editMessageText',$payload);
+        if(!is_object($result) || empty($result->ok)) {
+            // The replacement wasn't shown: don't leave it in card history.
+            $id=(int)$card['id'];
+            $stmt=$connection->prepare('DELETE FROM payment_card_displays WHERE id=? AND hash_id=? AND user_id=?');
+            if($stmt) {
+                $stmt->bind_param('isi',$id,$hash,$uid);
+                $stmt->execute();
+                $stmt->close();
+            }
+            answerQuery('تغییر شماره کارت انجام نشد. لطفاً دوباره تلاش کنید.',true);
+            return false;
+        }
+        if(isset($update->callback_query->id)) {
+            bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id,
+                'text'=>'✅ شماره کارت تغییر کرد.']);
+        }
+        return true;
+    }catch(Throwable $e) {
+        error_log('deltaCardSwitchAction: '.$e->getMessage());
+        answerQuery('خطا در تغییر شماره کارت. دوباره تلاش کنید.',true);
+        return false;
+    }
+}
+
 function deltaCardParseReceiptRef($raw) {
     $raw=(string)$raw;
     if(preg_match('/^(.+)~([0-9]+)$/D',$raw,$m)) return ['hash'=>$m[1],'id'=>(int)$m[2]];
