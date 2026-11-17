@@ -1011,8 +1011,20 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     exit;
 }
 
-if(preg_match('/^awaitingPayChoice\|(.+)$/', $userInfo['step'] ?? '', $m) && $text != ($buttonValues['cancel'] ?? '')){
-    sendMessage('لطفاً ابتدا یکی از دکمه‌های «ارسال عکس واریزی» یا «ارسال پیامک واریزی» را انتخاب کنید.');
+if(preg_match('/^awaitingPayChoice\|(.+)$/', $userInfo['step'] ?? '', $m)){
+    // The old "منصرف شدم" / mainMenu button on the original payment message must
+    // also work here; previously the awaiting-choice guard trapped this callback.
+    if(($data ?? '') === 'mainMenu' ||
+       trim((string)$text) === '/start' ||
+       ($text !== null && trim((string)$text) !== '' &&
+        (string)$text === (string)($buttonValues['cancel'] ?? ''))){
+        setUser('none','step');
+        setUser('','temp');
+        sendMessage($mainValues['reached_main_menu'] ?? 'به منوی اصلی برگشتید.',getMainKeys());
+        exit;
+    }
+    sendMessage('لطفاً ابتدا یکی از گزینه‌های «عکس واریزی» یا «پیامک واریزی» را انتخاب کنید. برای خروج، دکمه لغو زیر را بزنید.',
+        deltaCardAwaitChoiceCancelKeys());
     exit;
 }
 
