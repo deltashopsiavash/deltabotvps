@@ -62,6 +62,11 @@ function deltaResellerWebhookCandidates($rid,$motherWebhook,$configuredBase,$req
  * Verify the child has its own database and Telegram accepts the new webhook.
  * Never return ok=true just because the outbound HTTP request was attempted.
  */
+function deltaResellerWebhookSecret($token){
+    // config.php::check() recognizes this bot-specific Telegram secret before
+    // doing source-IP checks. This fixes silent /start behind CDN proxies.
+    return hash('sha256',(string)$token);
+}
 function deltaResellerWebhookSetup($rid){
     global $connection,$botUrl,$botToken;
     $rid=(int)$rid;
@@ -79,8 +84,12 @@ function deltaResellerWebhookSetup($rid){
         (string)($parentInfo['result']['url']??''):'';
     $host=(string)($_SERVER['HTTP_HOST']??'');
     $script=(string)($_SERVER['SCRIPT_NAME']??'');
+    $forwardedProto=strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PROTO']??'')));
     $https=(!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS']!=='off')
-        ||(int)($_SERVER['SERVER_PORT']??0)===443;
+        ||(int)($_SERVER['SERVER_PORT']??0)===443
+        // Reverse-proxy TLS termination may send the verified mother webhook
+        // over HTTP to PHP while presenting a public HTTPS hostname.
+        ||$forwardedProto==='https';
     // Optional explicit HTTPS override set by server owner, without changing botUrl.
     $custom=trim((string)(getenv('DELTA_RESELLER_WEBHOOK_BASE_URL')?:''));
     $bases=$custom!==''?[$custom,$botUrl]:[$botUrl];
@@ -95,7 +104,10 @@ function deltaResellerWebhookSetup($rid){
     $last='آدرس وب‌هوک قابل ثبت نیست';
     foreach($candidates as $url){
         $res=botWithToken((string)$row['bot_token'],'setWebhook',
-            ['url'=>$url,'drop_pending_updates'=>'false']);
+            ['url'=>$url,
+             'secret_token'=>deltaResellerWebhookSecret($row['bot_token']),
+             'drop_pending_updates'=>'false',
+             'allowed_updates'=>json_encode([])]);
         if(!is_array($res)||empty($res['ok'])){
             $last=(string)($res['description']??'درخواست تلگرام پاسخ موفق نداشت');
             continue;
@@ -114,7 +126,8 @@ function deltaResellerWebhookSetup($rid){
             'last_error'=>(string)($info['result']['last_error_message']??'')];
     }
     error_log("Reseller #".$rid." Telegram webhook failed; last error: ".$last);
-    if(stripos($last,'Failed to resolve host')!==false){
+    if(stripos($last,'Failed to resolve host')!==false ||
+       stripos($last,'Name or service not known')!==false){
         $last='دامنهٔ فعلی ربات از سمت تلگرام قابل دسترس نیست. دامنهٔ فعال ربات مادر یا آدرس HTTPS صحیح سرور باید برای اتصال استفاده شود.';
     }
     return ['ok'=>false,'error'=>$last];
