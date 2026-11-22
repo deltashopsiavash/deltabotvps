@@ -10,6 +10,7 @@ function bfAdminKeyboard($c){
          ['text'=>'👥 ظرفیت جدید: '.$c['new_capacity'],'callback_data'=>'bfEdit_new_capacity']],
         [['text'=>'📅 زمان شروع: '.bfClock($c['starts_at']),'callback_data'=>'bfEdit_starts_at']],
         [['text'=>'📅 زمان پایان: '.bfClock($c['ends_at']),'callback_data'=>'bfEdit_ends_at']],
+        [['text'=>'🎯 پلن‌های مشمول ('.(empty($c['eligible_plan_ids'])?'همه':count($c['eligible_plan_ids']).' عدد').')','callback_data'=>'bfEdit_eligible_plan_ids']],
         [['text'=>'💸 هزینه هر گیگ: '.number_format($c['gb_cost']),'callback_data'=>'bfEdit_gb_cost']],
         [['text'=>'📊 گزارش فروش و ظرفیت','callback_data'=>'bfReport']],
         [['text'=>'🔙 بازگشت به مدیریت','callback_data'=>'managePanel']]
@@ -32,7 +33,8 @@ function bfAdminMenu(){
         "خرید اول دوماهه: <b>{$c['new_percent']}٪</b>\n".
         "ظرفیت باقی‌مانده پیشنهاد ویژه: <b>{$remaining}</b> از {$c['new_capacity']}\n\n".
         "تخفیف‌ها با کدهای دیگر جمع نمی‌شوند، روی قیمت اصلی محاسبه می‌شوند و قیمت دائمی پلن‌ها را تغییر نمی‌دهند.\n".
-        "فقط پلن‌های عادی ۳۰ یا ۶۰ روزه مشمول‌اند؛ شارژ کیف پول، خرید سفارشی و نمایندگی مشمول نیستند.\n\n".
+        "فقط پلن‌های عادی ۳۰ یا ۶۰ روزه مشمول‌اند؛ شارژ کیف پول، خرید سفارشی و نمایندگی مشمول نیستند.\n".
+        "شناسه پلن‌های انتخاب‌شده: ".(empty($c['eligible_plan_ids'])?'همه پلن‌ها':implode(', ',$c['eligible_plan_ids']))."\n\n".
         "برای فعال‌شدن خودکار در زمان تعیین‌شده، ابتدا دکمه «فعال‌کردن جشنواره» را بزنید.";
     smartSendOrEdit($message_id,$txt,bfAdminKeyboard($c),'HTML');
 }
@@ -102,10 +104,11 @@ function bfHandleRequest(){
         if($c['ends_at']<=$c['starts_at']){answerQuery('زمان پایان باید بعد از شروع باشد.',true);return true;}
         bfSave($c);bfAdminMenu();return true;
     }
-    $fields=['one_percent','two_percent','new_percent','new_capacity','starts_at','ends_at','gb_cost'];
+    $fields=['one_percent','two_percent','new_percent','new_capacity','starts_at','ends_at','gb_cost','eligible_plan_ids'];
     if(preg_match('/^bfEdit_(\w+)$/D',$cb,$m) && in_array($m[1],$fields,true)){
         $field=$m[1];setUser('bfEdit_'.$field,'step');
-        if(in_array($field,['starts_at','ends_at'],true))
+        if($field==='eligible_plan_ids')$hint="🎯 شناسه پلن‌هایی که تخفیف می‌گیرند را با کاما بفرستید (مثال: 12, 15, 23).\nبرای همه پلن‌های یک‌ماهه و دوماهه، بنویسید: all";
+        elseif(in_array($field,['starts_at','ends_at'],true))
             $hint="📅 تاریخ و ساعت جدید را به وقت ایران وارد کنید.\nمثال: 2026-11-27 00:00";
         elseif($field==='gb_cost')$hint="💰 هزینه تمام‌شده هر گیگ (تومان) را عددی وارد کنید.";
         elseif($field==='new_capacity')$hint="👥 ظرفیت پیشنهاد ویژه را عددی از ۰ تا ۱۰۰۰۰ وارد کنید.";
@@ -117,7 +120,11 @@ function bfHandleRequest(){
         if($cb!=='' && $cb!=='bfAdmin'){setUser('none','step');return false;}
         if(!isset($update->message->text))return true;
         $field=$m[1];$input=trim((string)$text);$c=bfConfig();
-        if(in_array($field,['starts_at','ends_at'],true)){
+        if($field==='eligible_plan_ids'){
+            $ids=bfPlanIdInput($input);
+            if($ids===null){sendMessage('❌ شناسه‌ها معتبر نیستند؛ اعداد را با کاما جدا کنید یا all بفرستید.');return true;}
+            $c['eligible_plan_ids']=$ids;
+        }elseif(in_array($field,['starts_at','ends_at'],true)){
             $n=bfParseClock($input);
             if($n===null){sendMessage('❌ تاریخ معتبر نیست. مثال: 2026-11-27 00:00');return true;}
             $c[$field]=$n;
