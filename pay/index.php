@@ -2,6 +2,7 @@
 //==================================================
 require_once __DIR__ . "/../baseInfo.php";
 require_once __DIR__ . "/../config.php";
+require_once __DIR__ . "/../black_friday.php";
 
 //====================//  Get  //==============================
 $hash_id = trim((string)($_GET['hash_id'] ?? ''));
@@ -41,6 +42,14 @@ if(mysqli_num_rows($payInfo)==0){
     showForm("کد پرداخت یافت نشد");
 }else{
     $payParam = $payInfo->fetch_assoc();
+    // Prevent a new gateway checkout after the festival invoice's one-hour
+    // payment deadline. Provider callbacks already initiated in time remain
+    // independent, allowing legitimate settlements after the sale ends.
+    $festivalPay=bfFindInvoice($hash_id);
+    if($festivalPay && time()>(int)$festivalPay['reserved_until']){
+        showForm('مهلت یک‌ساعته پرداخت این فاکتور تمام شده است؛ لطفاً از ربات فاکتور جدید بگیرید.');
+        exit();
+    }
     // Special-offer invoices are intentionally wallet-only. Reject even old
     // gateway URLs which may still exist in a user's Telegram history.
     if((int)($payParam['special_offer_id'] ?? 0)>0){
