@@ -10,7 +10,7 @@ function bfDefaults(){
         'starts_at'=>(new DateTimeImmutable('2026-11-27 00:00',$tz))->getTimestamp(),
         'ends_at'=>(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp(),
         'one_percent'=>15,'two_percent'=>20,'new_percent'=>25,
-        'new_capacity'=>30,'gb_cost'=>1000
+        'new_capacity'=>30,'gb_cost'=>1000,'eligible_plan_ids'=>[]
     ];
 }
 function bfConfig(){
@@ -20,6 +20,8 @@ function bfConfig(){
     foreach(['enabled','starts_at','ends_at','one_percent','two_percent','new_percent','new_capacity','gb_cost'] as $key){
         $config[$key]=(int)$config[$key];
     }
+    $list=is_array($config['eligible_plan_ids'])?$config['eligible_plan_ids']:[];
+    $config['eligible_plan_ids']=array_values(array_unique(array_filter(array_map('intval',$list),function($n){return $n>0;})));
     return $config;
 }
 function bfWindow($config,$now=null){
@@ -172,7 +174,7 @@ function bfPlanForInvoice($pay){
     $group=bfDurationGroup($p['days']);
     if(!$group)return null;
     return ['group'=>$group,'base'=>(int)$p['price'],'days'=>(int)$p['days'],
-      'volume'=>(float)$p['volume'],'new_allowed'=>$newAllowed];
+      'volume'=>(float)$p['volume'],'new_allowed'=>$newAllowed,'plan_id'=>$plan];
 }
 /** Single locked reservation ensures the 30-new-customer limit is not oversold. */
 function bfApplyInvoice($hash){
@@ -201,7 +203,9 @@ function bfApplyInvoice($hash){
         $prior=bfFindInvoice($hash);
         if($prior){$connection->commit();$tx=false;return (int)$prior['discounted_price'];}
         $plan=bfPlanForInvoice($pay);
-        if(!$plan){$connection->rollback();$tx=false;return null;}
+        if(!$plan || (!empty($config['eligible_plan_ids']) && !in_array((int)$plan['plan_id'],$config['eligible_plan_ids'],true))){
+            $connection->rollback();$tx=false;return null;
+        }
         $uid=(int)$pay['user_id'];
         $percent=(int)$config[$plan['group']==='one'?'one_percent':'two_percent'];
         $vip=0;
@@ -265,6 +269,35 @@ function bfGuardPayment($callback){
     sendMessage('⌛ مهلت یک‌ساعته این فاکتور تمام شده است. لطفاً فاکتور جدید دریافت کنید.',getMainKeys());
     return true;
 }
+
+function bfCouponStepPayId($step){
+    $step=(string)$step;
+    if(preg_match('/^discountSelectPlan\d+_\d+_(\d+)$/D',$step,$m))return (int)$m[1];
+    if(preg_match('/^discountRenew\d+_(\d+)$/D',$step,$m))return (int)$m[1];
+    if(preg_match('/^discountCustomPlanDay(\d+)$/D',$step,$m))return (int)$m[1];
+    return 0;
+}
+function bfGuardCouponStep($step,$text){
+    $id=bfCouponStepPayId($step);
+    if(!$id || trim((string)$text)==='' || trim((string)$text)==='/start')return false;
+    if(!bfFindInvoiceId($id))return false;
+    setUser('none','step');
+    sendMessage('🖤 تخفیف بلک فرایدی از قبل روی فاکتور شما اعمال شده است و با کد تخفیف جمع نمی‌شود.',getMainKeys());
+    return true;
+}
+function bfPlanIdInput($raw){
+    $value=trim((string)$raw);
+    if($value==='all' || $value==='همه' || $value==='*')return [];
+    $parts=preg_split('/[\s,،]+/u',$value,-1,PREG_SPLIT_NO_EMPTY);
+    if(!$parts || count($parts)>100)return null;
+    $ids=[];
+    foreach($parts as $part){
+        if(!preg_match('/^\d+$/D',$part) || (int)$part<1)return null;
+        $ids[]=(int)$part;
+    }
+    return array_values(array_unique($ids));
+}
+
 function bfSaleStats(){
     global $connection;
     $data=['total'=>0,'new'=>0,'revenue'=>0,'regular'=>0,'discount'=>0,'gb'=>0,'cost'=>0,'margin'=>0];
