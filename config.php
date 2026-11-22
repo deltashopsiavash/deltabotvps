@@ -3506,7 +3506,7 @@ function getAdminKeys(){
     $rows[] = [
         ['text'=>'🔥 پیشنهادها و فروش محدود','callback_data'=>'adminSpecialOffers'],
     ];
-    $rows[] = [
+    if(empty($isChildBot)) $rows[] = [
         ['text'=>'🖤 مدیریت جشنواره بلک فرایدی','callback_data'=>'bfAdmin'],
     ];
 
