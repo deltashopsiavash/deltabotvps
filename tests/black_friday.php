@@ -12,6 +12,10 @@ bfAssert((int)$c['two_percent']===20,'two-month discount');
 bfAssert((int)$c['new_percent']===25,'newcomer discount');
 bfAssert((int)$c['new_capacity']===30,'newcomer capacity');
 bfAssert((int)$c['gb_cost']===1000,'default GB cost');
+bfAssert($c['eligible_plan_ids']===[],'all eligible monthly plans included by default');
+$key=bfCampaignKey($c);
+$future=$c;$future['starts_at']+=604800;$future['ends_at']+=604800;
+bfAssert(bfCampaignKey($future)!==$key,'future events have independent new-customer capacities and reports');
 bfAssert((int)$c['ends_at']-(int)$c['starts_at']===86400,'exactly 24 hours');
 bfAssert(bfClock($c['starts_at'])==='2026-11-27 00:00','Tehran start time');
 bfAssert(bfClock($c['ends_at'])==='2026-11-28 00:00','Tehran end time');
@@ -60,4 +64,10 @@ bfAssert(strpos($bot,'if(bfHandleRequest()) exit;')!==false,'campaign handlers r
 bfAssert(strpos($bot,'bfGuardCouponStep(')!==false,'coupon stacking guarded');
 bfAssert(strpos($bot,'bfGuardPayment(')!==false,'expired card payments guarded');
 bfAssert(substr_count($bot,'bfApplyInvoice($hash_id)')>=3,'buy and renew checkout pricing');
+bfAssert(strpos($bot,'$bfSale=$specialOffer?null:bfApplyInvoice($hash_id)')!==false,
+    'limited special offers cannot receive festival stacking');
+$gateway=file_get_contents(dirname(__DIR__).'/pay/index.php');
+bfAssert(strpos($gateway,'bfFindInvoice($hash_id)')!==false,
+    'gateway checkout checks festival invoice deadline');
+
 echo "Black Friday campaign rules: PASS\n";
