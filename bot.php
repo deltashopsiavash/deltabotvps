@@ -851,6 +851,7 @@ GOTOSTART:
 // Card pool administration and receipt cancellation are handled before legacy payment flows.
 if(deltaCardHandle()) exit;
 if(bfHandleRequest()) exit;
+if(bfGuardCouponStep((string)($userInfo['step']??''),(string)($text??''))) exit;
 if(bfGuardPayment((string)($data ?? ''))) exit;
 
 // A special-offer invoice owns its stock reservation for five minutes. Block
@@ -7392,7 +7393,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $stmt->execute();
             $rowId = $stmt->insert_id;
             $stmt->close();
-            $bfSale=bfApplyInvoice($hash_id);
+            $bfSale=$specialOffer?null:bfApplyInvoice($hash_id);
             if($bfSale!==null)$price=$bfSale;
         }else{
             $price = applyUserPercentDiscount($from_id, $afterDiscount);
