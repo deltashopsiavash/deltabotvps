@@ -312,6 +312,14 @@ function deltaCardSwitchAction($callback) {
         answerQuery('فاکتور دیگر قابل پرداخت نیست. لطفاً فاکتور جدید دریافت کنید.',true);
         return false;
     }
+    // Switching cards cannot extend an expired one-hour festival reservation.
+    if(function_exists('bfFindInvoice')){
+        $festival=bfFindInvoice($hash);
+        if($festival && time()>(int)$festival['reserved_until']){
+            answerQuery('مهلت پرداخت این فاکتور تمام شده است. فاکتور جدید بگیرید.',true);
+            return false;
+        }
+    }
     try {
         global $connection;
         $uid=(int)$from_id;

@@ -3434,6 +3434,13 @@ if(count($menuOrder) > 0){
         if($todayNotifyRow !== null) array_splice($mainKeys,1,0,[$todayNotifyRow]);
     }
 
+    // Keep seasonal campaign visible without replacing normal customer menus.
+    // The charity rows below remain first and authoritative.
+    if(function_exists('bfMainMenuRow')){
+        $bfRow=bfMainMenuRow();
+        if($bfRow!==null) array_unshift($mainKeys,$bfRow);
+    }
+
     // Charity rows are authoritative and always come before everything else.
     // Row 1: campaign button (when enabled)
     // Row 2: proof/report button (when enabled)
@@ -3498,6 +3505,9 @@ function getAdminKeys(){
 
     $rows[] = [
         ['text'=>'🔥 پیشنهادها و فروش محدود','callback_data'=>'adminSpecialOffers'],
+    ];
+    if(empty($isChildBot)) $rows[] = [
+        ['text'=>'🖤 مدیریت جشنواره بلک فرایدی','callback_data'=>'bfAdmin'],
     ];
 
     // Banned users
@@ -12281,6 +12291,7 @@ function pgRenewCreatePay($userId,$payType,$price){
     $stmt=$connection->prepare("INSERT INTO `pays` (`hash_id`,`user_id`,`type`,`plan_id`,`volume`,`day`,`price`,`request_date`,`state`) VALUES (?, ?, ?, 0, 0, 0, ?, ?, 'pending')");
     $stmt->bind_param('sisii',$hash,$userId,$payType,$price,$time);
     $stmt->execute(); $stmt->close();
+    if(function_exists('bfApplyInvoice')) bfApplyInvoice($hash);
     return $hash;
 }
 function pgRenewApply($orderId,$days,$volume,$fullReset=false,$fullPlanId=0){
