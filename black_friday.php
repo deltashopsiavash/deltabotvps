@@ -7,7 +7,7 @@ function bfDefaults(){
     $tz=new DateTimeZone('Asia/Tehran');
     return [
         'name'=>'بلک فرایدی دلتا ۱۴۰۵', 'enabled'=>0,
-        'starts_at'=>(new DateTimeImmutable('2026-11-27 00:00',$tz))->getTimestamp(),
+        'starts_at'=>(new DateTimeImmutable('2026-11-23 00:00',$tz))->getTimestamp(),
         'ends_at'=>(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp(),
         'one_percent'=>15,'two_percent'=>20,'new_percent'=>25,
         'new_capacity'=>30,'gb_cost'=>1000,'eligible_plan_ids'=>[]
@@ -217,7 +217,7 @@ function bfApplyInvoice($hash){
         $uid=(int)$pay['user_id'];
         $percent=(int)$config[$plan['group']==='one'?'one_percent':'two_percent'];
         $vip=0;
-        if($plan['group']==='two' && $plan['new_allowed'] && (int)$config['new_capacity']>0 &&
+        if($plan['new_allowed'] && (int)$config['new_capacity']>0 &&
            !bfHasPriorPurchase($uid,$hash) && !bfVipClaimedByUser($uid) &&
            bfVipReservedCount()<(int)$config['new_capacity']){
             $vip=1;$percent=(int)$config['new_percent'];
