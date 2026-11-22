@@ -7,7 +7,7 @@ function bfDefaults(){
     $tz=new DateTimeZone('Asia/Tehran');
     return [
         'name'=>'بلک فرایدی دلتا ۱۴۰۵', 'enabled'=>0,
-        'starts_at'=>(new DateTimeImmutable('2026-11-27 00:00',$tz))->getTimestamp(),
+        'starts_at'=>(new DateTimeImmutable('2026-11-23 00:00',$tz))->getTimestamp(),
         'ends_at'=>(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp(),
         'one_percent'=>15,'two_percent'=>20,'new_percent'=>25,
         'new_capacity'=>30,'gb_cost'=>1000,'eligible_plan_ids'=>[]
@@ -16,6 +16,16 @@ function bfDefaults(){
 function bfConfig(){
     $default=bfDefaults();
     $input=json_decode((string)getSettingValue('DELTA_BLACK_FRIDAY_V1',''),true);
+    // Upgrade only the original 24-hour default window; keep custom dates intact.
+    $tz=new DateTimeZone('Asia/Tehran');
+    $oldStart=(new DateTimeImmutable('2026-11-27 00:00',$tz))->getTimestamp();
+    $oldEnd=(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp();
+    if(is_array($input) && (int)($input['starts_at']??0)===$oldStart
+       && (int)($input['ends_at']??0)===$oldEnd && time()<$oldStart){
+        $input['starts_at']=$default['starts_at'];
+        $input['ends_at']=$default['ends_at'];
+        bfSave($input);
+    }
     $config=array_merge($default,is_array($input)?$input:[]);
     foreach(['enabled','starts_at','ends_at','one_percent','two_percent','new_percent','new_capacity','gb_cost'] as $key){
         $config[$key]=(int)$config[$key];
@@ -217,7 +227,7 @@ function bfApplyInvoice($hash){
         $uid=(int)$pay['user_id'];
         $percent=(int)$config[$plan['group']==='one'?'one_percent':'two_percent'];
         $vip=0;
-        if($plan['group']==='two' && $plan['new_allowed'] && (int)$config['new_capacity']>0 &&
+        if($plan['new_allowed'] && (int)$config['new_capacity']>0 &&
            !bfHasPriorPurchase($uid,$hash) && !bfVipClaimedByUser($uid) &&
            bfVipReservedCount()<(int)$config['new_capacity']){
             $vip=1;$percent=(int)$config['new_percent'];

@@ -16,8 +16,8 @@ bfAssert($c['eligible_plan_ids']===[],'all eligible monthly plans included by de
 $key=bfCampaignKey($c);
 $future=$c;$future['starts_at']+=604800;$future['ends_at']+=604800;
 bfAssert(bfCampaignKey($future)!==$key,'future events have independent new-customer capacities and reports');
-bfAssert((int)$c['ends_at']-(int)$c['starts_at']===86400,'exactly 24 hours');
-bfAssert(bfClock($c['starts_at'])==='2026-11-27 00:00','Tehran start time');
+bfAssert((int)$c['ends_at']-(int)$c['starts_at']===432000,'five days inclusive of Black Friday');
+bfAssert(bfClock($c['starts_at'])==='2026-11-23 00:00','Tehran start time');
 bfAssert(bfClock($c['ends_at'])==='2026-11-28 00:00','Tehran end time');
 bfAssert(bfWindow($c,$c['starts_at']+1)==='disabled','disabled overrides schedule');
 $c['enabled']=1;
@@ -30,8 +30,9 @@ bfAssert(bfDurationGroup(90)===null && bfDurationGroup(14)===null,'other periods
 bfAssert(bfPriceWithPercent(80000,15)===68000,'80k one month at 15%');
 bfAssert(bfPriceWithPercent(390000,20)===312000,'390k two month at 20%');
 bfAssert(bfPriceWithPercent(390000,25)===292500,'390k newcomer two month at 25%');
+bfAssert(bfPriceWithPercent(80000,25)===60000,'80k newcomer one month at 25%');
 bfAssert(bfPriceWithPercent(0,15)===0,'zero price remains zero');
-bfAssert(bfParseClock('2026-11-27 00:00')===$c['starts_at'],'parse Tehran time');
+bfAssert(bfParseClock('2026-11-23 00:00')===$c['starts_at'],'parse Tehran time');
 bfAssert(bfParseClock('2026-11-31 00:00')===null,'bad date rejected');
 bfAssert(bfParseClock('2026-11-27')===null,'incomplete date rejected');
 bfAssert(bfPlanIdInput('all')===[],'all plans');

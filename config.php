@@ -3483,6 +3483,11 @@ function getAdminKeys(){
         ['text'=>$buttonValues['user_reports'],'callback_data'=>"userReports"],
     ];
 
+    // Financial accounting is private to the main bot owner.
+    if(empty($isChildBot) && (int)$from_id===(int)$admin){
+        $rows[] = [['text'=>'📊 حسابداری و آمار جامع فروش','callback_data'=>'finDashboard']];
+    }
+
     // Users list + Discount users
     $rows[] = [
         ['text'=>'👥 لیست کاربران','callback_data'=>'adminUsersList0'],

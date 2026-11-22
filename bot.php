@@ -5,6 +5,7 @@ check();
 require_once __DIR__ . '/payment_card_rotation.php';
 require_once __DIR__ . '/black_friday.php';
 require_once __DIR__ . '/black_friday_ui.php';
+require_once __DIR__ . '/financial_reports.php';
 
 require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
@@ -851,6 +852,7 @@ GOTOSTART:
 // Card pool administration and receipt cancellation are handled before legacy payment flows.
 if(deltaCardHandle()) exit;
 if(bfHandleRequest()) exit;
+if(finHandleRequest()) exit;
 if(bfGuardCouponStep((string)($userInfo['step']??''),(string)($text??''))) exit;
 if(bfGuardPayment((string)($data ?? ''))) exit;
 
