@@ -264,7 +264,7 @@ function bfInvoiceNote($hash){
 }
 function bfGuardPayment($callback){
     global $connection,$from_id;
-    if(!preg_match('/^(?:payWithCartToCart|payCustomWithCartToCart|payRenewWithCartToCart|pgRenewPayCart|payWithWallet|payCustomWithWallet|payRenewWithWallet|payPhotoReceipt|payTextReceipt)(.+)$/D',(string)$callback,$m))return false;
+    if(!preg_match('/^(?:payWithCartToCart|payCustomWithCartToCart|payRenewWithCartToCart|pgRenewPayCart|payWithWallet|payCustomWithWallet|payRenewWithWallet|payWithTronWallet|payWithWeSwap|payWithUsdt|payPhotoReceipt|payTextReceipt)(.+)$/D',(string)$callback,$m))return false;
     $hash=explode('~',(string)$m[1],2)[0];
     $r=bfFindInvoice($hash);
     if(!$r || time()<=(int)$r['reserved_until'])return false;
