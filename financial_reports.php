@@ -197,6 +197,7 @@ function finReportKeyboard($period,$section='overview'){
        ['text'=>'👥 مشتری‌های برتر','callback_data'=>'finView_customers_'.$k]],
       [['text'=>'📅 روند روزانه','callback_data'=>'finView_daily_'.$k],
        ['text'=>'💸 هزینه‌ها و سود','callback_data'=>'finView_expenses_'.$k]],
+      [['text'=>'➕ ثبت هزینه / تنظیم نرخ حجم','callback_data'=>'finExpenseMenu']],
       [['text'=>'📆 انتخاب بازه زمانی','callback_data'=>'finPeriods'],
        ['text'=>'🔄 تازه‌سازی','callback_data'=>'finView_'.$section.'_'.$k]],
       [['text'=>'🔙 مدیریت ربات','callback_data'=>'managePanel']]
