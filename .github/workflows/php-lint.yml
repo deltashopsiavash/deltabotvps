@@ -25,6 +25,8 @@ jobs:
           php -l payment_card_rotation.php
           php -l black_friday.php
           php -l black_friday_ui.php
+          php -l financial_reports.php
+          php -l tests/financial_reports.php
           php -l pay/index.php
           php -l tests/black_friday.php
           php -l tests/payment_card_rotation.php
@@ -44,6 +46,7 @@ jobs:
           php tests/phone_registration.php
           php tests/payment_card_rotation.php
           php tests/black_friday.php
+          php tests/financial_reports.php
           php tests/service_subscription_rules.php
           php tests/service_ui_gradient.php
           php tests/reseller_webhook.php
