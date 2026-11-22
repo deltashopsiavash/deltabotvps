@@ -59,7 +59,8 @@ function bfAdminReport(){
     smartSendOrEdit($message_id,$txt,$keys,'HTML');
 }
 function bfLanding(){
-    global $message_id;
+    global $message_id,$isChildBot;
+    if(!empty($isChildBot))return;
     $c=bfConfig();
     $status=bfWindow($c);
     if($status==='disabled' || $status==='ended'){
@@ -85,6 +86,8 @@ function bfLanding(){
     smartSendOrEdit($message_id,$txt,$keys,'HTML');
 }
 function bfMainMenuRow(){
+    global $isChildBot;
+    if(!empty($isChildBot))return null;
     $c=bfConfig();$status=bfWindow($c);
     if($status==='upcoming')return [['text'=>'🖤 بلک فرایدی دلتا | به‌زودی','callback_data'=>'bfLanding']];
     if($status==='active')return [['text'=>'🖤 بلک فرایدی دلتا | تا '.$c['new_percent'].'٪ تخفیف','callback_data'=>'bfLanding']];
@@ -94,6 +97,9 @@ function bfHandleRequest(){
     global $data,$text,$userInfo,$from_id,$admin,$update;
     $cb=(string)($data??'');$step=(string)($userInfo['step']??'');
     if($cb==='bfLanding'){bfLanding();return true;}
+    if(strpos($step,'bfEdit_')===0 && (trim((string)$text)==='/start' || $cb==='mainMenu' || $cb==='managePanel')){
+        setUser('none','step');return false;
+    }
     if(strpos($cb,'bf')!==0 && strpos($step,'bfEdit_')!==0)return false;
     $allowed=(int)$from_id===(int)$admin || !empty($userInfo['isAdmin']);
     if(!$allowed){if(isset($update->callback_query))answerQuery('دسترسی ندارید.',true);return true;}
