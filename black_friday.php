@@ -16,6 +16,16 @@ function bfDefaults(){
 function bfConfig(){
     $default=bfDefaults();
     $input=json_decode((string)getSettingValue('DELTA_BLACK_FRIDAY_V1',''),true);
+    // Upgrade only the original 24-hour default window; keep custom dates intact.
+    $tz=new DateTimeZone('Asia/Tehran');
+    $oldStart=(new DateTimeImmutable('2026-11-27 00:00',$tz))->getTimestamp();
+    $oldEnd=(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp();
+    if(is_array($input) && (int)($input['starts_at']??0)===$oldStart
+       && (int)($input['ends_at']??0)===$oldEnd && time()<$oldStart){
+        $input['starts_at']=$default['starts_at'];
+        $input['ends_at']=$default['ends_at'];
+        bfSave($input);
+    }
     $config=array_merge($default,is_array($input)?$input:[]);
     foreach(['enabled','starts_at','ends_at','one_percent','two_percent','new_percent','new_capacity','gb_cost'] as $key){
         $config[$key]=(int)$config[$key];
