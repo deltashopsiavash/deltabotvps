@@ -84,6 +84,9 @@ function finEnsureSchema(){
         INDEX idx_fin_expense_date (spent_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     if(!$ok){error_log('finEnsureSchema: '.$connection->error);return false;}
+    // The PasarGuard volume-renewal plan table is optional until first use.
+    // Ensure it exists before cost-estimate queries join it.
+    if(function_exists('pgRenewEnsureTables'))pgRenewEnsureTables();
     $done=true;return true;
 }
 function finCostPerGb(){
