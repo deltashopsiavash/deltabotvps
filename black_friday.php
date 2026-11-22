@@ -24,6 +24,10 @@ function bfConfig(){
     $config['eligible_plan_ids']=array_values(array_unique(array_filter(array_map('intval',$list),function($n){return $n>0;})));
     return $config;
 }
+function bfCampaignKey($config){
+    // Reservations and reports are isolated by their scheduled start/end.
+    return substr(sha1((string)$config['starts_at'].':'.(string)$config['ends_at']),0,40);
+}
 function bfWindow($config,$now=null){
     $now=$now===null?time():(int)$now;
     if(empty($config['enabled']))return 'disabled';
@@ -61,6 +65,7 @@ function bfEnsureSchema(){
     if(isset($ready[$db]))return true;
     $ok=$connection->query("CREATE TABLE IF NOT EXISTS black_friday_invoices (
         hash_id VARCHAR(128) NOT NULL PRIMARY KEY,
+        campaign_key VARCHAR(40) NOT NULL,
         user_id BIGINT NOT NULL,
         period_days INT NOT NULL,
         volume_gb DECIMAL(12,3) NOT NULL DEFAULT 0,
@@ -70,7 +75,7 @@ function bfEnsureSchema(){
         new_customer TINYINT(1) NOT NULL DEFAULT 0,
         created_at BIGINT NOT NULL,
         reserved_until BIGINT NOT NULL,
-        KEY bf_new_slot (new_customer,reserved_until),
+        KEY bf_new_slot (campaign_key,new_customer,reserved_until),
         KEY bf_user (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
     if($ok)$ready[$db]=true;
@@ -92,7 +97,9 @@ function bfHasPriorPurchase($uid,$excludeHash=''){
     $exists=$st->get_result()->num_rows>0;$st->close();
     if($exists)return true;
     $states="'approved','paid','paid_with_wallet','paid_with_gateway','completed','success','delivered'";
-    $st=$connection->prepare("SELECT id FROM pays WHERE user_id=? AND hash_id<>? AND state IN ($states) LIMIT 1");
+    $st=$connection->prepare("SELECT id FROM pays WHERE user_id=? AND hash_id<>? AND state IN ($states)
+      AND (type='BUY_SUB' OR type='RENEW_ACCOUNT' OR type='RENEW_SCONFIG'
+           OR type LIKE 'PG_RENEW_FULL_%') LIMIT 1");
     if(!$st)return true;
     $st->bind_param('is',$uid,$excludeHash);$st->execute();
     $exists=$st->get_result()->num_rows>0;$st->close();
@@ -119,11 +126,12 @@ function bfVipReservedCount(){
     global $connection;
     if(!bfEnsureSchema())return 0;
     $states=bfCountedStatesSql();
-    $now=time();
+    $now=time();$key=bfCampaignKey(bfConfig());
     $st=$connection->prepare("SELECT COUNT(DISTINCT b.user_id) AS n FROM black_friday_invoices b
       JOIN pays p ON p.hash_id=b.hash_id
-      WHERE b.new_customer=1 AND (p.state IN ($states) OR (p.state='pending' AND b.reserved_until>?))");
-    $st->bind_param('i',$now);$st->execute();
+      WHERE b.campaign_key=? AND b.new_customer=1 AND
+        (p.state IN ($states) OR (p.state='pending' AND b.reserved_until>?))");
+    $st->bind_param('si',$key,$now);$st->execute();
     $r=$st->get_result()->fetch_assoc();$st->close();
     return (int)($r['n']??0);
 }
@@ -131,11 +139,11 @@ function bfVipClaimedByUser($uid){
     global $connection;
     if(!bfEnsureSchema())return true;
     $states=bfCountedStatesSql();
-    $now=time();$uid=(int)$uid;
+    $now=time();$uid=(int)$uid;$key=bfCampaignKey(bfConfig());
     $st=$connection->prepare("SELECT b.hash_id FROM black_friday_invoices b JOIN pays p ON p.hash_id=b.hash_id
-      WHERE b.new_customer=1 AND b.user_id=?
+      WHERE b.campaign_key=? AND b.new_customer=1 AND b.user_id=?
         AND (p.state IN ($states) OR (p.state='pending' AND b.reserved_until>?)) LIMIT 1");
-    $st->bind_param('ii',$uid,$now);$st->execute();
+    $st->bind_param('sii',$key,$uid,$now);$st->execute();
     $row=$st->get_result()->fetch_assoc();$st->close();
     return (bool)$row;
 }
@@ -218,11 +226,12 @@ function bfApplyInvoice($hash){
         if($percent<=0 || $base<=0){$connection->rollback();$tx=false;return null;}
         $price=bfPriceWithPercent($base,$percent);
         $now=time();$reserved=$now+3600;$days=(int)$plan['days'];$gb=(float)$plan['volume'];
+        $campaignKey=bfCampaignKey($config);
         $st=$connection->prepare('INSERT INTO black_friday_invoices
-          (hash_id,user_id,period_days,volume_gb,regular_price,discount_percent,discounted_price,new_customer,created_at,reserved_until)
-          VALUES (?,?,?,?,?,?,?,?,?,?)');
+          (hash_id,campaign_key,user_id,period_days,volume_gb,regular_price,discount_percent,discounted_price,new_customer,created_at,reserved_until)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)');
         if(!$st)throw new RuntimeException('Cannot prepare promotion record');
-        $st->bind_param('siidiiiiii',$hash,$uid,$days,$gb,$base,$percent,$price,$vip,$now,$reserved);
+        $st->bind_param('ssiidiiiiii',$hash,$campaignKey,$uid,$days,$gb,$base,$percent,$price,$vip,$now,$reserved);
         if(!$st->execute())throw new RuntimeException('Cannot save promotion reservation');
         $st->close();
         $st=$connection->prepare("UPDATE pays SET price=? WHERE hash_id=? AND state='pending'");
@@ -302,8 +311,13 @@ function bfSaleStats(){
     global $connection;
     $data=['total'=>0,'new'=>0,'revenue'=>0,'regular'=>0,'discount'=>0,'gb'=>0,'cost'=>0,'margin'=>0];
     if(!bfEnsureSchema())return $data;
-    $rows=$connection->query('SELECT b.*,p.state FROM black_friday_invoices b JOIN pays p ON p.hash_id=b.hash_id');
-    if(!$rows)return $data;
+    $key=bfCampaignKey(bfConfig());
+    $st=$connection->prepare('SELECT b.*,p.state FROM black_friday_invoices b
+      JOIN pays p ON p.hash_id=b.hash_id WHERE b.campaign_key=?');
+    if(!$st)return $data;
+    $st->bind_param('s',$key);$st->execute();
+    $rows=$st->get_result();
+    if(!$rows){$st->close();return $data;}
     foreach($rows as $row){
         if(!in_array((string)$row['state'],bfFinalStates(),true))continue;
         $data['total']++;
@@ -313,6 +327,7 @@ function bfSaleStats(){
         $data['discount']+=(int)$row['regular_price']-(int)$row['discounted_price'];
         $data['gb']+=(float)$row['volume_gb'];
     }
+    $st->close();
     $data['cost']=(int)round($data['gb']*(int)bfConfig()['gb_cost']);
     $data['margin']=$data['revenue']-$data['cost'];
     return $data;
