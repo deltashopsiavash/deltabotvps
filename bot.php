@@ -3,6 +3,8 @@ include_once 'config.php';
 
 check();
 require_once __DIR__ . '/payment_card_rotation.php';
+require_once __DIR__ . '/black_friday.php';
+require_once __DIR__ . '/black_friday_ui.php';
 
 require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
@@ -848,6 +850,8 @@ GOTOSTART:
 
 // Card pool administration and receipt cancellation are handled before legacy payment flows.
 if(deltaCardHandle()) exit;
+if(bfHandleRequest()) exit;
+if(bfGuardPayment((string)($data ?? ''))) exit;
 
 // A special-offer invoice owns its stock reservation for five minutes. Block
 // every customer-side payment entry point once that reservation has expired.
@@ -6950,6 +6954,8 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $stmt->execute();
         $rowId = $stmt->insert_id;
         $stmt->close();
+        $bfCustom=bfApplyInvoice($hash_id);
+        if($bfCustom!==null)$price=$bfCustom;
     }
     
     
@@ -6974,6 +6980,9 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
     setUser();
 }
 if(preg_match('/^haveDiscount(.+?)_(.*)/',$data,$match)){
+    if(preg_match('/_(\d+)$/D',(string)$data,$bfCouponRow) && bfFindInvoiceId((int)$bfCouponRow[1])){
+        answerQuery('تخفیف جشنواره قبلاً روی فاکتور اعمال شده و قابل جمع با کد تخفیف دیگر نیست.',true); exit;
+    }
     delMessage();
     sendMessage($mainValues['insert_discount_code'],$cancelKey);
     if($match[1] == "Custom") setUser('discountCustomPlanDay' . $match[2]);
@@ -7383,6 +7392,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $stmt->execute();
             $rowId = $stmt->insert_id;
             $stmt->close();
+            $bfSale=bfApplyInvoice($hash_id);
+            if($bfSale!==null)$price=$bfSale;
         }else{
             $price = applyUserPercentDiscount($from_id, $afterDiscount);
         }
@@ -7402,7 +7413,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
     if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
         }
         
-        if(!$specialOffer && !preg_match('/^discountSelectPlan/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountSelectPlan_" . $match[1] . "_" . $match[2] . "_" . $rowId]];
+        if(!$specialOffer && !bfFindInvoice($hash_id) && !preg_match('/^discountSelectPlan/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountSelectPlan_" . $match[1] . "_" . $match[2] . "_" . $rowId]];
 
     }
     if($specialOffer && !empty($hash_id) && !preg_match('/^discountSelectPlan/', (string)($userInfo['step'] ?? ''))){
@@ -7502,7 +7513,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $mainValues['buy_subscription_detail']
         );
     }
-    sendMessage(deltaAppendTracking($msg,$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    sendMessage(deltaAppendTracking($msg.bfInvoiceNote($hash_id),$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/payCustomWithWallet(.*)/',$data, $match)){
     setUser();
@@ -9354,11 +9365,12 @@ if(preg_match('/^pgRenewBuyFull_(\d+)_(\d+)$/', $data, $m)){
     $stmt->bind_param('ii',$pid,$sid); $stmt->execute(); $plan=$stmt->get_result()->fetch_assoc(); $stmt->close();
     if(!$plan){ alert('پلن تمدید کلی معتبر نیست'); exit; }
     $hash=pgRenewCreatePay($from_id, 'PG_RENEW_FULL_'.$oid.'_'.$pid, (int)$plan['price']);
+    $pgFinal=bfInvoicePrice($hash,(int)$plan['price']);
     $vlabel=((float)$plan['volume']>0)?rtrim(rtrim(number_format((float)$plan['volume'],2,'.',''),'0'),'.').' گیگ':'نامحدود';
-    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
+    $msg="🔁 فاکتور تمدید کلی\n\n🔮 سرویس: {$order['remark']}\n📦 حجم جدید: {$vlabel}\n⏰ مدت جدید: {$plan['days']} روز\n💰 مبلغ: ".number_format($pgFinal)." تومان\n\n⚠️ با پرداخت این فاکتور، حجم و زمان باقی‌مانده قبلی حذف و پلن جدید از صفر روی همین لینک فعال می‌شود.";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
-    $msg = deltaAppendTracking($msg,$hash);
-    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price']),"HTML"); exit;
+    $msg = deltaAppendTracking($msg.bfInvoiceNote($hash),$hash);
+    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, $pgFinal),"HTML"); exit;
 }
 if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     $oid=(int)$m[1]; $pid=(int)$m[2]; pgRenewEnsureTables();
@@ -9369,11 +9381,12 @@ if(preg_match('/^pgRenewBuyCustom_(\d+)_(\d+)$/', $data, $m)){
     if(!$order || !$plan){ alert('سرویس یا پلن پیدا نشد'); exit; }
     $kind=$plan['kind']; $type = $kind=='volume' ? 'PG_RENEW_VOLUME_' : 'PG_RENEW_DAY_';
     $hash=pgRenewCreatePay($from_id, $type.$oid.'_'.$pid, (int)$plan['price']);
+    $pgFinal=bfInvoicePrice($hash,(int)$plan['price']);
     $unit=$kind=='volume'?'گیگ':'روز';
-    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format((int)$plan['price'])." تومان";
+    $msg="🔁 فاکتور تمدید\n\n🔮 سرویس: {$order['remark']}\n➕ مقدار: {$plan['amount']} {$unit}\n💰 مبلغ: ".number_format($pgFinal)." تومان";
     if(!empty($plan['descr'])) $msg .= "\n\n{$plan['descr']}";
-    $msg = deltaAppendTracking($msg,$hash);
-    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, (int)$plan['price']),"HTML"); exit;
+    $msg = deltaAppendTracking($msg.bfInvoiceNote($hash),$hash);
+    smartSendOrEdit($message_id, $msg, pgRenewPaymentKeyboard($hash, $pgFinal),"HTML"); exit;
 }
 
 // Pay a PasarGuard full/volume renewal from the user's GB quota.
@@ -11591,6 +11604,8 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     $stmt->execute();
     $rowId = $stmt->insert_id;
     $stmt->close();
+    $bfRenewS=bfApplyInvoice($hash_id);
+    if($bfRenewS!==null)$price=$bfRenewS;
 
     
     if($botState['cartToCartState'] == "on") $keyboard[] = [['text' => $buttonValues['cart_to_cart'],  'callback_data' => "payWithCartToCart$hash_id"]];
@@ -11615,7 +11630,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
         [$name, number_format($basePrice).' تومان', number_format($price).' تومان', $desc, number_format($currentWallet), number_format($walletAfter), ($respd['volume']??0), ($respd['days']??0), number_format($discountAmount), $discountPercent],
         $mainValues['buy_subscription_detail']
     );
-    sendMessage(deltaAppendTracking($msg,$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
+    sendMessage(deltaAppendTracking($msg.bfInvoiceNote($hash_id),$hash_id), json_encode(['inline_keyboard'=>$keyboard]), "HTML");
 }
 if(preg_match('/sConfigUpdate(\d+)/', $data,$match)){
     alert($mainValues['please_wait_message']);
@@ -13688,6 +13703,8 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
         $stmt->execute();
         $rowId = $stmt->insert_id;
         $stmt->close();
+        $bfRenew=bfApplyInvoice($hash_id);
+        if($bfRenew!==null)$price=$bfRenew;
     }else $price = $afterDiscount;
 
     if($price == 0) $price = "رایگان";
@@ -13702,13 +13719,13 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
     if($botState['tronWallet'] == "on") $keyboard[] = [['text' => $buttonValues['tron_gateway'],  'callback_data' => "payWithTronWallet" . $hash_id]];
     if(($botState['usdtState'] ?? 'off') == "on" && !empty($paymentKeys['usdtwallet'])) $keyboard[] = [['text' => '💵 پرداخت ارزی (USDT)', 'callback_data' => "payWithUsdt" . $hash_id]];
 
-    if(!preg_match('/^discountRenew/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountRenew_" . $match[1] . "_" . $rowId]];
+    if(!bfFindInvoice($hash_id) && !preg_match('/^discountRenew/', $userInfo['step'])) $keyboard[] = [['text' => " 🎁 نکنه کد تخفیف داری؟ ",  'callback_data' => "haveDiscountRenew_" . $match[1] . "_" . $rowId]];
 
     $keyboard[] = [['text'=>$buttonValues['cancel'], 'callback_data'=> "mainMenu"]];
 
 
 
-    sendMessage(deltaAppendTracking("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :",$hash_id),json_encode([
+    sendMessage(deltaAppendTracking("لطفا با یکی از روش های زیر اکانت خود را تمدید کنید :".bfInvoiceNote($hash_id),$hash_id),json_encode([
             'inline_keyboard' => $keyboard
         ]),"HTML");
 }
