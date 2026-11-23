@@ -184,6 +184,9 @@ function bfRedirectToCheckout($planId){
     if(!$plan)return true;
     // Re-use normal service provisioning and all available payment methods.
     setUser('none','step');
+    // Also reset the in-memory user state for this SAME webhook request.
+    $userInfo['step']='none';
+    $GLOBALS['userInfo']['step']='none';
     $data='selectPlan'.$planId.'_'.(int)$plan['catid'].'_bf';
     $GLOBALS['data']=$data;
     return false; // Continue into existing buy handler.
