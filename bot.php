@@ -5,6 +5,7 @@ check();
 require_once __DIR__ . '/payment_card_rotation.php';
 require_once __DIR__ . '/black_friday.php';
 require_once __DIR__ . '/black_friday_ui.php';
+require_once __DIR__ . '/black_friday_storefront.php';
 require_once __DIR__ . '/financial_reports.php';
 
 require_once __DIR__ . '/admin_service_manager.php';
@@ -7277,7 +7278,13 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
     $name = $catname." ".$respd['title'];
     $desc = $respd['descr'];
 	$sid = $respd['server_id'];
-    $specialOffer = specialOfferCurrentForPlan($id, $match['buyType'] ?? '');
+    $bfDedicated=(($match['buyType']??'')==='bf');
+    if($bfDedicated && !bfIsCheckoutPlanAllowed((int)$id,(int)$from_id)){
+        sendMessage('❌ این پلن دیگر در جشنواره فعال یا قابل خرید نیست. از بخش بلک فرایدی دوباره انتخاب کن.');
+        setUser('none','step');
+        exit();
+    }
+    $specialOffer = $bfDedicated ? null : specialOfferCurrentForPlan($id, $match['buyType'] ?? '');
     if($specialOffer){
         $existingInvoice=specialOfferFindPendingInvoice((int)$specialOffer['id'],$from_id);
         if($existingInvoice){
@@ -7316,6 +7323,8 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         }
         $freeVolumeQuota = userHasFreeVolumeQuota($from_id, $requestedVolume, $freeVolumeRemain);
     }
+    // Festival discount replaces, and does not stack with, free quota.
+    if($bfDedicated)$freeVolumeQuota=false;
 	$keyboard = array();
     $price =  $respd['price'];
     if(isset($accountCount)) $price *= $accountCount;
@@ -7344,7 +7353,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         if($npvPublicKeyForPay === '' && preg_match('/__NPV_PUBLIC_KEY__=([^\r\n]+)/u', (string)($userInfo['temp'] ?? ''), $dm)) $npvPublicKeyForPay = trim($dm[1]);
         $payDescription = function_exists('npvBuildPayDescription') ? npvBuildPayDescription($remark, $npvPublicKeyForPay) : $remark;
     }
-    if(($price == 0 or ($from_id == $admin)) && !$specialOffer){
+    if(($price == 0 or ($from_id == $admin)) && !$specialOffer && !$bfDedicated){
         if(!empty($freeVolumeQuota)){
             $hash_id = RandomString();
             $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0");
@@ -7379,7 +7388,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             
             // Special offers already received their exact campaign price above.
             // Normal purchases still use the account-level percentage discount.
-            if(!$specialOffer) $price = applyUserPercentDiscount($from_id, $price);
+            if(!$specialOffer && !$bfDedicated) $price = applyUserPercentDiscount($from_id, $price);
 
             $time = time();
             if(isset($accountCount)){
@@ -7395,7 +7404,14 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
             $stmt->execute();
             $rowId = $stmt->insert_id;
             $stmt->close();
-            $bfSale=$specialOffer?null:bfApplyInvoice($hash_id);
+            $bfSale=$bfDedicated?bfApplyInvoice($hash_id,true):null;
+            if($bfDedicated && $bfSale===null){
+                // Fail closed rather than displaying a fake festival invoice at normal price.
+                $cleanup=$connection->prepare("DELETE FROM pays WHERE hash_id=? AND state='pending'");
+                if($cleanup){$cleanup->bind_param('s',$hash_id);$cleanup->execute();$cleanup->close();}
+                sendMessage('❌ صدور فاکتور تخفیف‌دار ممکن نبود؛ شاید ظرفیت تمام شده یا جشنواره پایان یافته است. از فروشگاه بلک فرایدی دوباره انتخاب کن.');
+                exit();
+            }
             if($bfSale!==null)$price=$bfSale;
         }else{
             $price = applyUserPercentDiscount($from_id, $afterDiscount);
@@ -7484,7 +7500,12 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         $keyboard[]=[['text'=>'🔄 بروزرسانی تایمر','callback_data'=>'specialOfferInvoice'.$hash_id]];
         $keyboard[]=[['text'=>$buttonValues['back_to_main'],'callback_data'=>'mainMenu']];
     }else{
-        $keyboard[] = [['text' => '🔁 تغییر پلن', 'callback_data' => "selectCategory{$call_id}_{$sid}_{$match['buyType']}"]];
+        if($bfDedicated){
+            $bfPeriod=bfDurationGroup($respd['days'])?:'one';
+            $keyboard[] = [['text'=>'🖤 انتخاب پلن دیگر جشنواره','callback_data'=>"bfCatalog_{$bfPeriod}_0"]];
+        }else{
+            $keyboard[] = [['text' => '🔁 تغییر پلن', 'callback_data' => "selectCategory{$call_id}_{$sid}_{$match['buyType']}"]];
+        }
 	    $keyboard[] = [['text' => $buttonValues['back_to_main'], 'callback_data' => "mainMenu"]];
     }
     $priceC = ($price == 0) ? 'رایگان' : number_format($price).' تومان ';
@@ -8177,7 +8198,7 @@ if(preg_match('/accCustom(.*)/',$data, $match) and $text != $buttonValues['cance
     $stmt->execute();
     $order = $stmt->get_result();
     $stmt->close();
-    sendToAdmins(deltaDeliveryReportText($match[1],$uid,$remark,$volume,$days,$price),null,'HTML');
+    sendToAdmins(deltaDeliveryReportText($match[1],$uid,$remark,$volume,$days,$price).bfAdminSaleSummary($match[1]),null,'HTML');
 
 
     unset($markup[count($markup)-1]);
@@ -9069,7 +9090,7 @@ if(preg_match('/^accept(.+)$/',$data, $match) and $text != $buttonValues['cancel
             $deliveryRemarks[]=$remark;
         }
         sendMessage(deltaTrackingLine($payProvisionHash),null,'HTML',$uid);
-        sendToAdmins(deltaDeliveryReportText($payProvisionHash,$uid,$deliveryRemarks?:[$remark??''],$volume,$days,$price),null,'HTML');
+        sendToAdmins(deltaDeliveryReportText($payProvisionHash,$uid,$deliveryRemarks?:[$remark??''],$volume,$days,$price).bfAdminSaleSummary($payProvisionHash),null,'HTML');
         if($inbound_id == 0) {
             $stmt = $connection->prepare("UPDATE `server_info` SET `ucount` = `ucount` - ? WHERE `id`=?");
             $stmt->bind_param("ii", $remainingCount, $server_id);
