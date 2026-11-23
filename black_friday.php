@@ -22,9 +22,10 @@ function bfConfig(){
     $oldEnd=(new DateTimeImmutable('2026-11-28 00:00',$tz))->getTimestamp();
     if(is_array($input) && (int)($input['starts_at']??0)===$oldStart
        && (int)($input['ends_at']??0)===$oldEnd && time()<$oldStart){
+        // Read-only upgrade: write only after a deliberate administrator action.
+        // In particular, opening the admin panel must not mutate the settings DB.
         $input['starts_at']=$default['starts_at'];
         $input['ends_at']=$default['ends_at'];
-        bfSave($input);
     }
     $config=array_merge($default,is_array($input)?$input:[]);
     foreach(['enabled','starts_at','ends_at','one_percent','two_percent','new_percent','new_capacity','gb_cost'] as $key){
