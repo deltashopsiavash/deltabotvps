@@ -55,3 +55,38 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check 'cryptography>=41,<47'
           python3 tests/test_npvs_public_key.py
+
+
+  black-friday-collation:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_test_password
+          MYSQL_DATABASE: delta_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci_test_password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up PHP + MySQL client
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli
+          coverage: none
+      - name: Verify Black Friday joins across MySQL collations
+        env:
+          DELTA_CI_MYSQL_HOST: 127.0.0.1
+          DELTA_CI_MYSQL_PORT: '3306'
+          DELTA_CI_MYSQL_USER: root
+          DELTA_CI_MYSQL_PASSWORD: ci_test_password
+          DELTA_CI_MYSQL_DB: delta_ci
+        run: |
+          php -l tests/black_friday_collation_mysql.php
+          php tests/black_friday_collation_mysql.php
