@@ -157,7 +157,7 @@ function bfShowCatalog($group,$page=0){
         $percentage=(int)$cfg[$group==='one'?'one_percent':'two_percent'];
         $price=bfPriceWithPercent((int)$p['price'],$percentage);
         $name=bfPlanLabel($p);
-        $keys[]=[['text'=>"🛍 $name | ".number_format($price)." تومان",'callback_data'=>'bfBuy_'.$id]];
+        $keys[]=[['text'=>"🛍 $name | ".number_format($price)." ت (قبل ".number_format((int)$p['price']).")",'callback_data'=>'bfBuy_'.$id]];
         $shown++;
     }
     $pages=(int)ceil($data['total']/$data['per_page']);
