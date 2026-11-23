@@ -25,6 +25,7 @@ jobs:
           php -l payment_card_rotation.php
           php -l black_friday.php
           php -l black_friday_ui.php
+          php -l black_friday_storefront.php
           php -l financial_reports.php
           php -l tests/financial_reports.php
           php -l pay/index.php
@@ -89,3 +90,5 @@ jobs:
         run: |
           php -l tests/black_friday_collation_mysql.php
           php tests/black_friday_collation_mysql.php
+          php -l tests/black_friday_storefront_mysql.php
+          php tests/black_friday_storefront_mysql.php
