@@ -142,7 +142,7 @@ function finSummary($period){
     if(function_exists('bfEnsureSchema') && bfEnsureSchema()){
         $discount=finQueryRow("SELECT COUNT(*) AS n,
           COALESCE(SUM(GREATEST(b.regular_price-b.discounted_price,0)),0) AS amount
-          FROM black_friday_invoices b INNER JOIN pays p ON p.hash_id=b.hash_id
+          FROM black_friday_invoices b INNER JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci=b.hash_id
           WHERE $when AND p.state IN ($paid)");
     }
     $cost=finEstimateVolumeCost($period);
