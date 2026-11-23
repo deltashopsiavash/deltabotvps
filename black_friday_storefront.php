@@ -16,6 +16,38 @@ function bfPlanLabel($p){
     $size=$vol>0?number_format($vol,($vol==floor($vol)?0:1)).' گیگ':'نامحدود';
     return $size.' | '.($name!==''?mb_substr($name,0,45):'پلن #'.(int)$p['id']);
 }
+/**
+ * Shop-facing formatting deliberately excludes internal plan titles:
+ * titles may contain long strings, emoji and redundant "GB" labels.
+ */
+function bfShopFaDigits($value){
+    return strtr((string)$value,[
+        '0'=>'۰','1'=>'۱','2'=>'۲','3'=>'۳','4'=>'۴',
+        '5'=>'۵','6'=>'۶','7'=>'۷','8'=>'۸','9'=>'۹',','=>'٬'
+    ]);
+}
+function bfShopPersianEndDate($timestamp){
+    // jdf.php is loaded by config.php. Both date and clock use Tehran time.
+    $timestamp=(int)$timestamp;
+    $date=jdate('j F Y',$timestamp,'','Asia/Tehran');
+    $clock=(new DateTimeImmutable('@'.$timestamp))
+        ->setTimezone(new DateTimeZone('Asia/Tehran'))->format('H:i');
+    return bfShopFaDigits($date.'، ساعت '.$clock);
+}
+function bfShopPlanButton($plan,$discountedPrice,$duplicateVolume=false){
+    $vol=(float)($plan['volume']??0);
+    $size=$vol>0
+        ?bfShopFaDigits(number_format($vol,($vol==floor($vol)?0:1))).' گیگ'
+        :'نامحدود';
+    $extra='';
+    // Different plans can share an identical data quota. Disambiguate only
+    // those rows; never expose the long source title to customers.
+    if($duplicateVolume){
+        $server=trim((string)($plan['server_title']??''));
+        $extra=' • '.($server!==''?mb_substr($server,0,12):'#'.bfShopFaDigits((int)$plan['id']));
+    }
+    return '📦 '.$size.$extra.' | '.bfShopFaDigits(number_format((int)$discountedPrice)).' ت';
+}
 function bfSelectedCount($cfg,$group){
     if(!bfGroupPeriod($group))return 0;
     $ids=array_values(array_filter($cfg['eligible_plan_ids']??[],function($id){return (int)$id>0;}));
@@ -129,13 +161,18 @@ function bfStorefrontLanding(){
         smartSendOrEdit($message_id,'⌛️ فروشگاه بلک فرایدی فعلاً فعال نیست.',
         json_encode(['inline_keyboard'=>[[['text'=>'🔙 منوی اصلی','callback_data'=>'mainMenu']]]],JSON_UNESCAPED_UNICODE));return;
     }
-    $title=$status==='active'?'🟢 جشنواره فعال است':'🕒 جشنواره به‌زودی شروع می‌شود';
-    $txt="🖤 <b>فروشگاه اختصاصی بلک فرایدی دلتا</b>\n\n$title\n".
-      "✅ فقط خرید اشتراک جدید | تمدید شامل تخفیف نیست.\n".
-      "🔥 یک‌ماهه: {$cfg['one_percent']}٪ | دوماهه: {$cfg['two_percent']}٪\n".
-      "🎁 خرید اول ۳۰ مشتری جدید: {$cfg['new_percent']}٪ (در صورت ظرفیت)\n".
-      "⏰ پایان: <code>".bfClock($cfg['ends_at'])."</code>\n\n".
-      "یکی از دو مدت اشتراک را انتخاب کن؛ مستقیم پلن‌های تخفیف‌خورده نمایش داده می‌شوند.";
+    $title=$status==='active'?'🟢 فعال':'🕒 به‌زودی';
+    $one=bfShopFaDigits($cfg['one_percent']);
+    $two=bfShopFaDigits($cfg['two_percent']);
+    $vip=bfShopFaDigits($cfg['new_percent']);
+    $capacity=bfShopFaDigits($cfg['new_capacity']);
+    $endDate=bfShopPersianEndDate($cfg['ends_at']);
+    $txt="🖤 <b>بلک فرایدی دلتا</b> | $title\n\n".
+      "🔥 یک‌ماهه {$one}٪  |  دوماهه {$two}٪\n".
+      "🎁 خرید اول {$capacity} مشتری جدید: {$vip}٪\n".
+      "📅 پایان: <b>{$endDate}</b>\n\n".
+      "فقط خرید جدید؛ تمدید مشمول تخفیف نیست.\n".
+      "👇 مدت اشتراک رو انتخاب کن.";
     $keys=['inline_keyboard'=>[
         [['text'=>'📦 اشتراک یک‌ماهه','callback_data'=>'bfCatalog_one_0']],
         [['text'=>'📦 اشتراک دوماهه','callback_data'=>'bfCatalog_two_0']],
@@ -150,14 +187,20 @@ function bfShowCatalog($group,$page=0){
     if($state==='disabled'||$state==='ended'){bfStorefrontLanding();return;}
     $data=bfListPlanRows($group,$page,true,$cfg);
     $keys=[];$shown=0;
+    $volumeCounts=[];
+    foreach($data['items'] as $p){
+        $volumeKey=(string)(float)($p['volume']??0);
+        $volumeCounts[$volumeKey]=($volumeCounts[$volumeKey]??0)+1;
+    }
     foreach($data['items'] as $p){
         if((int)$from_id!==(int)$admin &&
            function_exists('userCanAccessServer') && !userCanAccessServer($from_id,(int)$p['server_id']))continue;
         $id=(int)$p['id'];
         $percentage=(int)$cfg[$group==='one'?'one_percent':'two_percent'];
         $price=bfPriceWithPercent((int)$p['price'],$percentage);
-        $name=bfPlanLabel($p);
-        $keys[]=[['text'=>"🛍 $name | ".number_format($price)." ت (قبل ".number_format((int)$p['price']).")",'callback_data'=>'bfBuy_'.$id]];
+        $sameVolume=($volumeCounts[(string)(float)($p['volume']??0)]??0)>1;
+        $label=bfShopPlanButton($p,$price,$sameVolume);
+        $keys[]=[['text'=>$label,'callback_data'=>'bfBuy_'.$id]];
         $shown++;
     }
     $pages=(int)ceil($data['total']/$data['per_page']);
@@ -166,10 +209,12 @@ function bfShowCatalog($group,$page=0){
     if($page+1<$pages)$nav[]=['text'=>'بعدی ➡️','callback_data'=>'bfCatalog_'.$group.'_'.($page+1)];
     if($nav)$keys[]=$nav;
     $keys[]=[['text'=>'🔙 انتخاب مدت اشتراک','callback_data'=>'bfLanding']];
-    $txt="🖤 <b>پلن‌های منتخب ".$period[2]." بلک فرایدی</b>\n\n".
-      "قیمت‌های فهرست با تخفیف {$cfg[$group==='one'?'one_percent':'two_percent']}٪ هستند.\n".
-      "🎁 تخفیف ۲۵٪ خرید اول، اگر ظرفیت باقی مانده باشد، هنگام صدور فاکتور اعمال می‌شود.\n".
-      "روی پلن موردنظر بزن تا فاکتور خرید بسازی.";
+    $standard=bfShopFaDigits($cfg[$group==='one'?'one_percent':'two_percent']);
+    $vip=bfShopFaDigits($cfg['new_percent']);
+    $txt="🖤 <b>اشتراک‌های ".$period[2]."</b>\n\n".
+      "🔥 قیمت‌ها با {$standard}٪ تخفیف\n".
+      "🎁 خرید اول: {$vip}٪ در فاکتور (در صورت ظرفیت)\n\n".
+      "👇 پلنت رو انتخاب کن:";
     if($shown===0)$txt.="\n\nفعلاً پلن تخفیف‌خورده قابل خرید در این دسته وجود ندارد.";
     smartSendOrEdit($message_id,$txt,json_encode(['inline_keyboard'=>$keys],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'HTML');
 }

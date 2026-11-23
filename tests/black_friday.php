@@ -3,6 +3,7 @@
 require_once dirname(__DIR__).'/black_friday.php';
 require_once dirname(__DIR__).'/black_friday_ui.php';
 require_once dirname(__DIR__).'/black_friday_storefront.php';
+require_once dirname(__DIR__).'/settings/jdf.php';
 function bfAssert($test,$label){
     if(!$test){fwrite(STDERR,"FAIL: $label\n");exit(1);}
 }
@@ -43,6 +44,20 @@ bfAssert(bfPlanIdInput('12,abcd')===null,'reject invalid plan selection');
 bfAssert(bfGroupPeriod('one')[0]===28 && bfGroupPeriod('two')[1]===62,'both supported periods');
 bfAssert(bfGroupPeriod('renew')===null,'renewals have no storefront');
 bfAssert(strpos(bfPlanLabel(['id'=>12,'title'=>'Delta','volume'=>20]),'20 گیگ')!==false,'plan labels expose volume');
+
+$festivalEnd=bfParseClock('2026-11-27 23:59');
+$dateLabel=bfShopPersianEndDate($festivalEnd);
+bfAssert(strpos($dateLabel,'آذر')!==false,'festival end uses Jalali month name');
+bfAssert(strpos($dateLabel,'۱۴۰۵')!==false,'festival end uses Iranian year');
+bfAssert(strpos($dateLabel,'۲۳:۵۹')!==false,'festival end uses Tehran 23:59 clock');
+bfAssert(strpos($dateLabel,'2026')===false,'Gregorian year is not shown to customers');
+$uglyPlan=['id'=>401,'title'=>'😡 30 گیگ کاربر نامحدود 😡','volume'=>30,'server_title'=>'Germany'];
+$compactLabel=bfShopPlanButton($uglyPlan,178500);
+bfAssert($compactLabel==='📦 ۳۰ گیگ | ۱۷۸٬۵۰۰ ت','customer plan button has short Persian volume and final price');
+bfAssert(strpos($compactLabel,'نامحدود')===false && strpos($compactLabel,'قبل')===false,'no noisy source title or prior price in plan button');
+bfAssert(strpos(bfShopPlanButton($uglyPlan,178500,true),'Germany')!==false,'same-volume plans include disambiguating server');
+bfAssert(strpos(bfShopPlanButton(['id'=>1,'volume'=>0],90000),'نامحدود')!==false,'unlimited plan remains identifiable');
+
 bfAssert(bfCouponStepPayId('discountSelectPlan123_6_789')===789,'protect buy coupon path');
 bfAssert(bfCouponStepPayId('discountRenew100_900')===900,'protect renew coupon path');
 bfAssert(bfCouponStepPayId('discountCustomPlanDay19')===19,'protect custom buy coupon path');
