@@ -160,32 +160,14 @@ function bfVipClaimedByUser($uid){
 }
 function bfPlanForInvoice($pay){
     global $connection;
-    $type=(string)($pay['type']??'');$uid=(int)($pay['user_id']??0);
-    $plan=0;$newAllowed=false;
-    if($type==='BUY_SUB'){
-        if((int)($pay['agent_bought']??0)!==0 || (int)($pay['agent_count']??1)>1)return null;
-        if((int)($pay['volume']??0)!==0 || (int)($pay['day']??0)!==0)return null;
-        $plan=(int)$pay['plan_id'];$newAllowed=true;
-    }elseif($type==='RENEW_SCONFIG'){
-        $plan=(int)$pay['plan_id'];
-    }elseif($type==='RENEW_ACCOUNT'){
-        $orderId=(int)$pay['plan_id'];
-        $st=$connection->prepare('SELECT fileid,agent_bought FROM orders_list WHERE id=? AND userid=? LIMIT 1');
-        if(!$st)return null;
-        $st->bind_param('ii',$orderId,$uid);$st->execute();
-        $order=$st->get_result()->fetch_assoc();$st->close();
-        if(!$order || (int)($order['agent_bought']??0)!==0)return null;
-        $plan=(int)$order['fileid'];
-    }elseif(preg_match('/^PG_RENEW_FULL_(\d+)_(\d+)$/D',$type,$m)){
-        $orderId=(int)$m[1];$plan=(int)$m[2];
-        $st=$connection->prepare('SELECT id FROM orders_list WHERE id=? AND userid=? LIMIT 1');
-        if(!$st)return null;
-        $st->bind_param('ii',$orderId,$uid);$st->execute();
-        $order=$st->get_result()->fetch_assoc();$st->close();
-        if(!$order)return null;
-    }else return null;
+    // Festival discounts are reserved for NEW service purchases only.
+    if((string)($pay['type']??'')!=='BUY_SUB')return null;
+    if((int)($pay['agent_bought']??0)!==0 || (int)($pay['agent_count']??1)>1)return null;
+    if((int)($pay['volume']??0)!==0 || (int)($pay['day']??0)!==0)return null;
+    $plan=(int)($pay['plan_id']??0);
+    $newAllowed=true;
     if($plan<=0)return null;
-    $st=$connection->prepare('SELECT price,days,volume FROM server_plans WHERE id=? LIMIT 1');
+    $st=$connection->prepare('SELECT price,days,volume FROM server_plans WHERE id=? AND active=1 LIMIT 1');
     if(!$st)return null;
     $st->bind_param('i',$plan);$st->execute();
     $p=$st->get_result()->fetch_assoc();$st->close();
@@ -196,9 +178,10 @@ function bfPlanForInvoice($pay){
       'volume'=>(float)$p['volume'],'new_allowed'=>$newAllowed,'plan_id'=>$plan];
 }
 /** Single locked reservation ensures the 30-new-customer limit is not oversold. */
-function bfApplyInvoice($hash){
+function bfApplyInvoice($hash,$dedicatedCheckout=false){
     global $connection,$isChildBot;
-    if(!empty($isChildBot))return null;
+    // Never discount ordinary purchases, renewals or forged checkout paths.
+    if(!$dedicatedCheckout || !empty($isChildBot))return null;
     $config=bfConfig();
     if(bfWindow($config)!=='active' || !bfEnsureSchema())return null;
     $hash=(string)$hash;
@@ -222,7 +205,8 @@ function bfApplyInvoice($hash){
         $prior=bfFindInvoice($hash);
         if($prior){$connection->commit();$tx=false;return (int)$prior['discounted_price'];}
         $plan=bfPlanForInvoice($pay);
-        if(!$plan || (!empty($config['eligible_plan_ids']) && !in_array((int)$plan['plan_id'],$config['eligible_plan_ids'],true))){
+        if(!$plan || !in_array((int)$plan['plan_id'],$config['eligible_plan_ids'],true)){
+            // An empty selection means NO eligible plans, not every plan.
             $connection->rollback();$tx=false;return null;
         }
         $uid=(int)$pay['user_id'];
@@ -316,6 +300,47 @@ function bfPlanIdInput($raw){
         $ids[]=(int)$part;
     }
     return array_values(array_unique($ids));
+}
+
+/** Festival-specific section appended to the existing successful-delivery admin report. */
+function bfAdminSaleSummary($hash){
+    global $connection;
+    $festival=bfFindInvoice((string)$hash);
+    if(!$festival)return '';
+    $s=$connection->prepare('SELECT p.user_id,p.plan_id,p.state,p.request_date,
+        sp.title AS plan_title,sp.days,sp.volume,
+        si.title AS server_title,u.name AS customer_name,u.username
+        FROM pays p LEFT JOIN server_plans sp ON sp.id=p.plan_id
+        LEFT JOIN server_info si ON si.id=sp.server_id
+        LEFT JOIN users u ON u.userid=p.user_id
+        WHERE p.hash_id=? LIMIT 1');
+    if(!$s)return '';
+    $s->bind_param('s',$hash);$s->execute();
+    $row=$s->get_result()->fetch_assoc();$s->close();
+    if(!$row || (string)$row['state']==='pending')return '';
+    $esc=static function($v){return htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');};
+    $percent=(int)$festival['discount_percent'];
+    $original=(int)$festival['regular_price'];$paid=(int)$festival['discounted_price'];
+    $saving=max(0,$original-$paid);
+    $gb=(float)$festival['volume_gb'];
+    $unit=(int)bfConfig()['gb_cost'];
+    $estimated=(int)round($gb*$unit);
+    $user=(int)$row['user_id'];
+    $method=$row['state']==='paid_with_wallet'?'کیف پول':'پرداخت تأییدشده (روش دقیق در فاکتور مشخص نیست)';
+    return "\n\n🖤 <b>گزارش ویژه فروش بلک فرایدی</b>\n".
+        "👤 خریدار: ".$esc($row['customer_name']??'')." | <code>$user</code>\n".
+        "🔗 نام کاربری: ".$esc($row['username']??'ثبت نشده')."\n".
+        "📦 پلن: ".$esc($row['plan_title']??('#'.(int)$row['plan_id']))."\n".
+        "🌐 سرور: ".$esc($row['server_title']??'نامشخص')."\n".
+        "⏳ مدت: ".(int)($row['days']??$festival['period_days'])." روز | حجم: ".number_format($gb,2)." گیگ\n".
+        "🎟 نوع تخفیف: ".($festival['new_customer']?'خرید اول ویژه':'عادی')." ({$percent}٪)\n".
+        "💵 قیمت اصلی: ".number_format($original)." تومان\n".
+        "✅ مبلغ دریافت‌شده: ".number_format($paid)." تومان\n".
+        "🎁 مبلغ تخفیف: ".number_format($saving)." تومان\n".
+        "📉 هزینه تخمینی حجم: ".number_format($estimated)." تومان\n".
+        "📈 مانده تخمینی قبل از سایر هزینه‌ها: ".number_format($paid-$estimated)." تومان\n".
+        "💳 ".$esc($method)."\n".
+        "🧾 شناسه: <code>".$esc($hash)."</code>";
 }
 
 function bfSaleStats(){
