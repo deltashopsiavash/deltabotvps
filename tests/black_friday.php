@@ -71,4 +71,42 @@ $gateway=file_get_contents(dirname(__DIR__).'/pay/index.php');
 bfAssert(strpos($gateway,'bfFindInvoice($hash_id)')!==false,
     'gateway checkout checks festival invoice deadline');
 
+
+// Regression: opening Black Friday management must not touch the database schema
+// or count VIP invoice reservations. It should paint the menu immediately.
+$bfCaptured=null;
+$bfFakeConfigError=false;
+$bfNotifyMessage='';
+function getSettingValue($type,$default=null){
+    global $bfFakeConfigError;
+    if($bfFakeConfigError)throw new RuntimeException('simulated settings database failure');
+    return $default;
+}
+function smartSendOrEdit($id,$text,$keys=null,$mode=null){
+    global $bfCaptured;
+    $bfCaptured=['id'=>$id,'text'=>$text,'keys'=>$keys,'mode'=>$mode];
+    return true;
+}
+function sendMessage($txt,$keys=null,$mode=null,$to=null){
+    global $bfNotifyMessage;
+    $bfNotifyMessage=(string)$txt;
+    return true;
+}
+$GLOBALS['message_id']=321;
+$GLOBALS['data']='bfAdmin';
+$GLOBALS['userInfo']=['step'=>'none','isAdmin'=>0];
+$GLOBALS['from_id']=9876;
+$GLOBALS['admin']=9876;
+$GLOBALS['update']=(object)[];
+bfAssert(bfHandleRequest()===true,'festival admin callback handled');
+bfAssert(is_array($bfCaptured),'festival menu rendered without requiring MySQL');
+bfAssert(strpos($bfCaptured['text'],'مدیریت جشنواره دلتا')!==false,'festival management text');
+bfAssert(strpos($bfCaptured['text'],'۲۵')===false || strpos($bfCaptured['text'],'25')!==false || strpos($bfCaptured['text'],'٪')!==false,'festival discount text');
+bfAssert(strpos($bfCaptured['text'],'ظرفیت کل خرید اول ویژه')!==false,'quota presented without a live DB count');
+$bfFakeConfigError=true;
+$bfNotifyMessage='';
+bfAssert(bfHandleRequest()===true,'festival DB failure handled');
+bfAssert(strpos($bfNotifyMessage,'BF-')!==false,'festival DB failure returns diagnostic code');
+$bfFakeConfigError=false;
+
 echo "Black Friday campaign rules: PASS\n";
