@@ -82,8 +82,8 @@ bfAssert(strpos($bot,'bfApplyInvoice($hash_id,true)')!==false,'only dedicated ne
 bfAssert(strpos($bot,'$bfDedicated?bfApplyInvoice($hash_id,true):null')!==false,'festival invoice requires explicit checkout');
 bfAssert(strpos($bot,"require_once __DIR__ . '/black_friday_storefront.php';")!==false,'new BF direct storefront is loaded');
 bfAssert(strpos($bot,'bfAdminSaleSummary($match[1])')!==false,'admin receives festival-specific purchase report');
-bfAssert(strpos($bot,'$bfSale=$specialOffer?null:bfApplyInvoice($hash_id)')!==false,
-    'limited special offers cannot receive festival stacking');
+bfAssert(strpos($bot,'$specialOffer = $bfDedicated ? null : specialOfferCurrentForPlan(')!==false,
+    'festival and limited special offers cannot stack');
 $gateway=file_get_contents(dirname(__DIR__).'/pay/index.php');
 bfAssert(strpos($gateway,'bfFindInvoice($hash_id)')!==false,
     'gateway checkout checks festival invoice deadline');
