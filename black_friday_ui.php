@@ -66,6 +66,7 @@ function bfMainMenuRow(){
     global $isChildBot;
     if(!empty($isChildBot))return null;
     $c=bfConfig();$status=bfWindow($c);
+    if(empty($c['eligible_plan_ids']))return null;
     if($status==='upcoming')return [['text'=>'🖤 بلک فرایدی دلتا | به‌زودی','callback_data'=>'bfLanding']];
     if($status==='active')return [['text'=>'🖤 بلک فرایدی دلتا | تا '.$c['new_percent'].'٪ تخفیف','callback_data'=>'bfLanding']];
     return null;
@@ -95,7 +96,12 @@ function bfHandleRequestCore(){
         bfToggleSelectedPlan($m[1],(int)$m[2],(int)$m[3]);return true;
     }
     if($cb==='bfToggle'){
-        $c=bfConfig();$c['enabled']=empty($c['enabled'])?1:0;
+        $c=bfConfig();
+        if(empty($c['enabled']) && empty($c['eligible_plan_ids'])){
+            sendMessage('❌ اول از بخش انتخاب پلن‌های یک‌ماهه و دوماهه، پلن‌های تخفیف‌دار را با ✅ مشخص کنید.');
+            return true;
+        }
+        $c['enabled']=empty($c['enabled'])?1:0;
         if($c['ends_at']<=$c['starts_at']){answerQuery('زمان پایان باید بعد از شروع باشد.',true);return true;}
         bfSave($c);bfAdminMenu();return true;
     }
