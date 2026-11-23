@@ -457,11 +457,11 @@ function finHandleRequest(){
     $cb=(string)($data??'');
     $step=(string)($userInfo['step']??'');
     if(strpos($cb,'fin')!==0 && strpos($step,'fin')!==0)return false;
-    // Answer callback before expensive DB operations to stop Telegram's loading indicator.
-    if(strpos($cb,'fin')===0 && isset($update->callback_query->id)){
-        bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);
-    }
     try{
+        // Answer callback before expensive DB operations to stop Telegram's loading indicator.
+        if(strpos($cb,'fin')===0 && isset($update->callback_query->id)){
+            bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);
+        }
         return finHandleRequestCore();
     }catch(Throwable $error){
         $diagnostic='FIN-'.strtoupper(substr(sha1($error->getMessage()),0,8));
