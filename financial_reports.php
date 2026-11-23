@@ -58,14 +58,20 @@ function finPeriodClause($p,$alias='p',$field='request_date'){
 }
 function finQueryRow($sql){
     global $connection;
-    $r=$connection->query($sql);
-    if(!$r){error_log('finQueryRow: '.$connection->error);return [];}
+    try{$r=$connection->query($sql);}catch(Throwable $err){
+        error_log('finQueryRow: '.$err->getMessage());
+        throw new RuntimeException('FIN_REPORT_DB_QUERY',0,$err);
+    }
+    if(!$r){error_log('finQueryRow: '.$connection->error);throw new RuntimeException('FIN_REPORT_DB_QUERY');}
     $out=$r->fetch_assoc() ?: [];$r->free();return $out;
 }
 function finQueryRows($sql){
     global $connection;
-    $r=$connection->query($sql);
-    if(!$r){error_log('finQueryRows: '.$connection->error);return [];}
+    try{$r=$connection->query($sql);}catch(Throwable $err){
+        error_log('finQueryRows: '.$err->getMessage());
+        throw new RuntimeException('FIN_REPORT_DB_QUERY',0,$err);
+    }
+    if(!$r){error_log('finQueryRows: '.$connection->error);throw new RuntimeException('FIN_REPORT_DB_QUERY');}
     $out=[];while($row=$r->fetch_assoc())$out[]=$row;
     $r->free();return $out;
 }
@@ -73,7 +79,7 @@ function finEnsureSchema(){
     global $connection;
     static $done=false;
     if($done)return true;
-    $ok=$connection->query("CREATE TABLE IF NOT EXISTS delta_finance_expenses (
+    try{$ok=$connection->query("CREATE TABLE IF NOT EXISTS delta_finance_expenses (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         amount BIGINT UNSIGNED NOT NULL,
         category VARCHAR(24) NOT NULL,
@@ -83,10 +89,16 @@ function finEnsureSchema(){
         created_by BIGINT NOT NULL,
         INDEX idx_fin_expense_date (spent_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+    }catch(Throwable $err){error_log('finEnsureSchema: '.$err->getMessage());return false;}
     if(!$ok){error_log('finEnsureSchema: '.$connection->error);return false;}
     // The PasarGuard volume-renewal plan table is optional until first use.
     // Ensure it exists before cost-estimate queries join it.
-    if(function_exists('pgRenewEnsureTables'))pgRenewEnsureTables();
+    if(function_exists('pgRenewEnsureTables')){
+        try{pgRenewEnsureTables();}catch(Throwable $err){
+            // The optional renewal table must not take down the entire dashboard.
+            error_log('finEnsureSchema pgRenewEnsureTables: '.$err->getMessage());
+        }
+    }
     $done=true;return true;
 }
 function finCostPerGb(){
@@ -298,6 +310,27 @@ function finShowReport($section,$periodKey){
     }else{$section='overview';$txt=$head.'گزارش یافت نشد.';}
     smartSendOrEdit($message_id,$txt,finReportKeyboard($p,$section),'HTML');
 }
+/** Fast landing menu: never fetch all history on the first button press. */
+function finShowHome(){
+    global $message_id;
+    $buttons=[
+        [['text'=>'📊 گزارش ۷ روز اخیر','callback_data'=>'finView_overview_week']],
+        [['text'=>'💰 فروش امروز','callback_data'=>'finView_overview_today'],
+         ['text'=>'📆 ماه شمسی جاری','callback_data'=>'finView_overview_jmonth']],
+        [['text'=>'📚 کل تاریخچه فروش','callback_data'=>'finView_overview_all']],
+        [['text'=>'📋 انتخاب بازه و جزئیات','callback_data'=>'finPeriods']],
+        [['text'=>'💸 مدیریت هزینه‌ها','callback_data'=>'finExpenseMenu']],
+        [['text'=>'🔙 بازگشت به مدیریت','callback_data'=>'managePanel']]
+    ];
+    $text="📊 <b>حسابداری و آمار جامع فروش دلتا</b>\n\n".
+      "برای دیدن گزارش یکی از بازه‌ها را انتخاب کنید.\n".
+      "✅ تعداد فروش، درآمد، خریداران، تمدید و جزئیات\n".
+      "✅ حجم فروخته‌شده و برآورد هزینه و سود\n".
+      "✅ ثبت هزینه‌ها و بررسی وضعیت مالی\n\n".
+      "⚠️ سود، برآورد بر اساس نرخ حجم و هزینه‌های ثبت‌شده است؛ سود قطعی حسابداری نیست.";
+    smartSendOrEdit($message_id,$text,json_encode(['inline_keyboard'=>$buttons],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),'HTML');
+}
+
 function finShowPeriods(){
     global $message_id;
     $items=['today'=>'امروز','yesterday'=>'دیروز','week'=>'۷ روز اخیر',
@@ -320,7 +353,7 @@ function finShowExpenseMenu(){
       "نرخ فعلی هر گیگ: <b>".finCurrency(finCostPerGb())."</b>\n".
       "⚠️ هزینه خرید حجم را دوباره به‌صورت دستی وارد نکنید.",json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE),'HTML');
 }
-function finHandleRequest(){
+function finHandleRequestCore(){
     global $data,$text,$userInfo,$from_id,$admin,$isChildBot,$message_id,$update,$connection;
     $cb=(string)($data??'');$step=(string)($userInfo['step']??'');
     if(strpos($cb,'fin')!==0 && strpos($step,'fin')!==0)return false;
@@ -331,8 +364,8 @@ function finHandleRequest(){
     if($step!=='' && strpos($step,'fin')===0 && ($cb==='managePanel'||$cb==='mainMenu'||trim((string)$text)==='/start')){
         setUser('none','step');return false;
     }
-    if(!finEnsureSchema()){sendMessage('❌ دسترسی به دیتابیس حسابداری ممکن نیست.');return true;}
-    if($cb==='finDashboard'){finShowReport('overview','all');return true;}
+    if($cb==='finDashboard'){finShowHome();return true;}
+    if(!finEnsureSchema()){sendMessage('❌ ساخت جدول حسابداری ناموفق بود. مجوز دیتابیس و لاگ PHP را بررسی کنید.');return true;}
     if($cb==='finPeriods'){finShowPeriods();return true;}
     if($cb==='finExpenseMenu'){finShowExpenseMenu();return true;}
     if(preg_match('/^finView_(overview|types|plans|customers|daily|expenses)_(all|today|yesterday|week|month30|jmonth|c[0-9]{10}-[0-9]{10})$/D',$cb,$m)){
@@ -415,4 +448,27 @@ function finHandleRequest(){
     }
     if(strpos($cb,'fin')===0){sendMessage('گزینه مالی معتبر نیست.');return true;}
     return false;
+}
+
+
+/** A broken report must not leave Telegram stuck or interrupt other bot features. */
+function finHandleRequest(){
+    global $data,$userInfo,$update;
+    $cb=(string)($data??'');
+    $step=(string)($userInfo['step']??'');
+    if(strpos($cb,'fin')!==0 && strpos($step,'fin')!==0)return false;
+    // Answer callback before expensive DB operations to stop Telegram's loading indicator.
+    if(strpos($cb,'fin')===0 && isset($update->callback_query->id)){
+        bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);
+    }
+    try{
+        return finHandleRequestCore();
+    }catch(Throwable $error){
+        $diagnostic='FIN-'.strtoupper(substr(sha1($error->getMessage()),0,8));
+        error_log('DELTA finance '.$diagnostic.' '.$error->getMessage().' at '.$error->getFile().':'.$error->getLine());
+        sendMessage('❌ خطایی هنگام تهیه گزارش مالی رخ داد. بخش‌های دیگر ربات فعال هستند.'.
+            "\nکد خطا: <code>".$diagnostic."</code>\n".
+            'لطفاً لاگ PHP سرور را با این کد بررسی کنید.',null,'HTML');
+        return true;
+    }
 }
