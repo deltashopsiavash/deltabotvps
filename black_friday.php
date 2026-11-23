@@ -128,7 +128,7 @@ function bfFindInvoice($hash){
 function bfFindInvoiceId($id){
     global $connection;
     if((int)$id<=0 || !bfEnsureSchema())return null;
-    $st=$connection->prepare('SELECT b.* FROM black_friday_invoices b JOIN pays p ON p.hash_id=b.hash_id WHERE p.id=? LIMIT 1');
+    $st=$connection->prepare('SELECT b.* FROM black_friday_invoices b JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci = b.hash_id WHERE p.id=? LIMIT 1');
     $st->bind_param('i',$id);$st->execute();
     $row=$st->get_result()->fetch_assoc();$st->close();
     return $row?:null;
@@ -139,7 +139,7 @@ function bfVipReservedCount(){
     $states=bfCountedStatesSql();
     $now=time();$key=bfCampaignKey(bfConfig());
     $st=$connection->prepare("SELECT COUNT(DISTINCT b.user_id) AS n FROM black_friday_invoices b
-      JOIN pays p ON p.hash_id=b.hash_id
+      JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci = b.hash_id
       WHERE b.campaign_key=? AND b.new_customer=1 AND
         (p.state IN ($states) OR (p.state='pending' AND b.reserved_until>?))");
     $st->bind_param('si',$key,$now);$st->execute();
@@ -151,7 +151,7 @@ function bfVipClaimedByUser($uid){
     if(!bfEnsureSchema())return true;
     $states=bfCountedStatesSql();
     $now=time();$uid=(int)$uid;$key=bfCampaignKey(bfConfig());
-    $st=$connection->prepare("SELECT b.hash_id FROM black_friday_invoices b JOIN pays p ON p.hash_id=b.hash_id
+    $st=$connection->prepare("SELECT b.hash_id FROM black_friday_invoices b JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci = b.hash_id
       WHERE b.campaign_key=? AND b.new_customer=1 AND b.user_id=?
         AND (p.state IN ($states) OR (p.state='pending' AND b.reserved_until>?)) LIMIT 1");
     $st->bind_param('sii',$key,$uid,$now);$st->execute();
@@ -324,7 +324,7 @@ function bfSaleStats(){
     if(!bfEnsureSchema())return $data;
     $key=bfCampaignKey(bfConfig());
     $st=$connection->prepare('SELECT b.*,p.state FROM black_friday_invoices b
-      JOIN pays p ON p.hash_id=b.hash_id WHERE b.campaign_key=?');
+      JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci = b.hash_id WHERE b.campaign_key=?');
     if(!$st)return $data;
     $st->bind_param('s',$key);$st->execute();
     $rows=$st->get_result();
