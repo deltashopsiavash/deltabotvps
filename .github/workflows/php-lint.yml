@@ -90,3 +90,5 @@ jobs:
         run: |
           php -l tests/black_friday_collation_mysql.php
           php tests/black_friday_collation_mysql.php
+          php -l tests/black_friday_storefront_mysql.php
+          php tests/black_friday_storefront_mysql.php
