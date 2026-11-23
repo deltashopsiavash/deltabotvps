@@ -3434,13 +3434,9 @@ if(count($menuOrder) > 0){
         if($todayNotifyRow !== null) array_splice($mainKeys,1,0,[$todayNotifyRow]);
     }
 
-    // Keep seasonal campaign visible without replacing normal customer menus.
-    // The charity rows below remain first and authoritative.
-    if(function_exists('bfMainMenuRow')){
-        $bfRow=bfMainMenuRow();
-        if($bfRow!==null) array_unshift($mainKeys,$bfRow);
-    }
-
+    // The festival has its own direct storefront and must be the TOP menu button.
+    // Place it after normal button-layout reflow so it stays a full-width row.
+    // Charity entries remain visible immediately beneath it.
     // Charity rows are authoritative and always come before everything else.
     // Row 1: campaign button (when enabled)
     // Row 2: proof/report button (when enabled)
@@ -3449,6 +3445,11 @@ if(count($menuOrder) > 0){
         if(is_array($charityRows) && count($charityRows) > 0){
             array_splice($mainKeys, 0, 0, $charityRows);
         }
+    }
+
+    if(function_exists('bfMainMenuRow')){
+        $bfRow=bfMainMenuRow();
+        if($bfRow!==null)array_unshift($mainKeys,$bfRow);
     }
 
     deltaApplyInlineButtonStyles($mainKeys);
