@@ -21,8 +21,8 @@ function bfAdminMenu(){
     $c=bfConfig();
     $states=['disabled'=>'🔴 غیرفعال','upcoming'=>'🕒 آماده شروع','active'=>'🟢 فعال','ended'=>'⚫ پایان‌یافته'];
     $state=$states[bfWindow($c)]??'نامشخص';
-    $used=bfVipReservedCount();
-    $remaining=max(0,(int)$c['new_capacity']-$used);
+    // No runtime SQL/schema creation on initial admin menu: keep it instant.
+    // Live quota is available from the dedicated report button.
     $txt="🖤 <b>مدیریت جشنواره دلتا</b>\n\n".
         "وضعیت: <b>{$state}</b>\n".
         "شروع: <code>".bfClock($c['starts_at'])."</code>\n".
@@ -31,7 +31,8 @@ function bfAdminMenu(){
         "یک‌ماهه: <b>{$c['one_percent']}٪</b>\n".
         "دوماهه: <b>{$c['two_percent']}٪</b>\n".
         "خرید اول یک‌ماهه یا دوماهه: <b>{$c['new_percent']}٪</b>\n".
-        "ظرفیت باقی‌مانده پیشنهاد ویژه: <b>{$remaining}</b> از {$c['new_capacity']}\n\n".
+        "ظرفیت کل خرید اول ویژه: <b>{$c['new_capacity']}</b> نفر\n".
+        "📊 ظرفیت باقی‌مانده را در «گزارش فروش و ظرفیت» مشاهده کنید.\n\n".
         "تخفیف‌ها با کدهای دیگر جمع نمی‌شوند، روی قیمت اصلی محاسبه می‌شوند و قیمت دائمی پلن‌ها را تغییر نمی‌دهند.\n".
         "فقط پلن‌های عادی ۳۰ یا ۶۰ روزه مشمول‌اند؛ شارژ کیف پول، خرید سفارشی و نمایندگی مشمول نیستند.\n".
         "شناسه پلن‌های انتخاب‌شده: ".(empty($c['eligible_plan_ids'])?'همه پلن‌ها':implode(', ',$c['eligible_plan_ids']))."\n\n".
@@ -93,7 +94,7 @@ function bfMainMenuRow(){
     if($status==='active')return [['text'=>'🖤 بلک فرایدی دلتا | تا '.$c['new_percent'].'٪ تخفیف','callback_data'=>'bfLanding']];
     return null;
 }
-function bfHandleRequest(){
+function bfHandleRequestCore(){
     global $data,$text,$userInfo,$from_id,$admin,$update;
     $cb=(string)($data??'');$step=(string)($userInfo['step']??'');
     if($cb==='bfLanding'){bfLanding();return true;}
@@ -152,4 +153,35 @@ function bfHandleRequest(){
         return true;
     }
     return false;
+}
+
+
+/**
+ * Catch festival admin errors at the webhook boundary. Even if MySQL rejects
+ * a query, the manager receives a diagnostic instead of an unresponsive button.
+ */
+function bfHandleRequest(){
+    global $data,$text,$userInfo,$update;
+    $cb=(string)($data??'');
+    $step=(string)($userInfo['step']??'');
+    if($cb!=='bfLanding' && strpos($cb,'bf')!==0 && strpos($step,'bfEdit_')!==0)return false;
+    try{
+        if(strpos($cb,'bf')===0 && isset($update->callback_query->id)){
+            // Close Telegram's spinner before any SQL work.
+            bot('answerCallbackQuery',['callback_query_id'=>$update->callback_query->id]);
+        }
+        return bfHandleRequestCore();
+    }catch(Throwable $e){
+        $code='BF-'.strtoupper(substr(sha1(get_class($e).':'.$e->getMessage()),0,8));
+        error_log('DELTA black friday '.$code.': '.$e->getMessage().' at '.$e->getFile().':'.$e->getLine());
+        try{
+            sendMessage("❌ بخش مدیریت بلک فرایدی هنگام اجرا خطا داد.\n".
+                "کد خطا: <code>".$code."</code>\n".
+                "از روی این کد لاگ PHP سرور قابل بررسی است. خریدهای معمولی تغییری نکرده‌اند.",
+                null,'HTML');
+        }catch(Throwable $notifyError){
+            error_log('DELTA black friday notification failed: '.$notifyError->getMessage());
+        }
+        return true;
+    }
 }
