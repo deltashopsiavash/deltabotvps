@@ -303,7 +303,7 @@ function bfPlanIdInput($raw){
 }
 
 /** Festival-specific section appended to the existing successful-delivery admin report. */
-function bfAdminSaleSummary($hash){
+function bfAdminSaleSummaryCore($hash){
     global $connection;
     $festival=bfFindInvoice((string)$hash);
     if(!$festival)return '';
@@ -341,6 +341,15 @@ function bfAdminSaleSummary($hash){
         "📈 مانده تخمینی قبل از سایر هزینه‌ها: ".number_format($paid-$estimated)." تومان\n".
         "💳 ".$esc($method)."\n".
         "🧾 شناسه: <code>".$esc($hash)."</code>";
+}
+
+/** Reporting must never interrupt successful service delivery. */
+function bfAdminSaleSummary($hash){
+    try{return bfAdminSaleSummaryCore($hash);}
+    catch(Throwable $e){
+        error_log('DELTA Black Friday admin delivery report '.$hash.': '.$e->getMessage());
+        return "\n\n🖤 گزارش تخفیف این فاکتور به دلیل خطای موقت دیتابیس در دسترس نبود.";
+    }
 }
 
 function bfSaleStats(){
