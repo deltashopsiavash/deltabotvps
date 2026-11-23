@@ -67,4 +67,8 @@ $thrown=false;
 try{finQueryRow('SELECT 1');}catch(RuntimeException $e){$thrown=($e->getMessage()==='FIN_REPORT_DB_QUERY');}
 finAssert($thrown,'database exceptions propagate to handler for user-visible error');
 unset($GLOBALS['connection']);
+// The finance discount summary joins the two tables with different collations.
+$financeSource=file_get_contents(dirname(__DIR__).'/financial_reports.php');
+finAssert(strpos($financeSource,'INNER JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci=b.hash_id')!==false,'mixed-collation festival discount report uses explicit comparison');
+
 echo "Financial dashboard tests: PASS\n";

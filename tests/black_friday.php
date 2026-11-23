@@ -58,6 +58,14 @@ bfAssert(in_array('bfEdit_new_percent',$callbacks,true),'admin can edit newcomer
 bfAssert(in_array('bfEdit_new_capacity',$callbacks,true),'admin can edit capacity');
 bfAssert(in_array('bfEdit_starts_at',$callbacks,true) && in_array('bfEdit_ends_at',$callbacks,true),'admin can edit dates');
 bfAssert(in_array('bfEdit_eligible_plan_ids',$callbacks,true),'admin can limit eligible plans');
+// Regression: the existing pays table may use utf8mb4_0900_ai_ci while
+// black_friday_invoices uses utf8mb4_unicode_ci. All comparisons must
+// explicitly normalize the pays-side column before comparing invoice IDs.
+$bfSource=file_get_contents(dirname(__DIR__).'/black_friday.php');
+$collationJoin='JOIN pays p ON p.hash_id COLLATE utf8mb4_unicode_ci=b.hash_id';
+bfAssert(substr_count($bfSource,$collationJoin)===4,'all four festival joins use compatible collation');
+bfAssert(strpos($bfSource,'JOIN pays p ON p.hash_id=b.hash_id')===false,'no remaining incompatible festival joins');
+
 // Verify checkout and coupon interception wiring remains reachable.
 $bot=file_get_contents(dirname(__DIR__).'/bot.php');
 bfAssert(strpos($bot,"require_once __DIR__ . '/black_friday.php'")!==false,'campaign loaded by bot');
