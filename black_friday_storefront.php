@@ -88,8 +88,9 @@ function bfShowPlanPicker($group,$page=0){
         $id=(int)$plan['id'];
         $tick=in_array($id,$selected,true)?'✅':'⬜';
         $name=bfPlanLabel($plan);
+        $server=mb_substr((string)($plan['server_title']??'سرور نامشخص'),0,20);
         $price=number_format((int)$plan['price']);
-        $keys[]=[['text'=>"$tick $name | $price",'callback_data'=>"bfPick_{$group}_{$id}_{$page}"]];
+        $keys[]=[['text'=>"$tick $name | $server | #$id | $price",'callback_data'=>"bfPick_{$group}_{$id}_{$page}"]];
     }
     $pages=(int)ceil($data['total']/$data['per_page']);
     $nav=[];
