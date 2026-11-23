@@ -29,14 +29,14 @@ function bfSelectedCount($cfg,$group){
 function bfListPlanRows($group,$page=0,$selectedOnly=false,$cfg=null){
     global $connection;
     $range=bfGroupPeriod($group);
-    if(!$range)return ['total'=>0,'items'=>[]];
+    if(!$range)return ['total'=>0,'items'=>[],'page'=>0,'per_page'=>8];
     [$lo,$hi]=$range;
     $page=max(0,min((int)$page,99));$limit=8;$offset=$page*$limit;
     $where="sp.active=1 AND sp.price>0 AND sp.days BETWEEN $lo AND $hi";
     if($selectedOnly){
         $cfg=$cfg??bfConfig();
         $ids=array_values(array_filter(array_map('intval',$cfg['eligible_plan_ids']??[]),function($id){return $id>0;}));
-        if(!$ids)return ['total'=>0,'items'=>[]];
+            if(!$ids)return ['total'=>0,'items'=>[],'page'=>$page,'per_page'=>8];
         $where.=" AND sp.id IN (".implode(',',$ids).") AND si.active=1 AND si.state=1
           AND ( (sp.inbound_id=0 AND si.ucount>0) OR (sp.inbound_id<>0 AND sp.acount>0))";
     }
