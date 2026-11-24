@@ -145,6 +145,18 @@ do
    			url3="${bot_url}install/install.php?updateBot"
 			curl $url3
 
+			# Existing mother install ONLY: refresh its private SMS Bridge if it
+			# was previously installed. The bridge remains outside the bot tree.
+			# NEVER install/enable it for a child or reseller (bid>0).
+			MOTHER_SMS_SETUP="/var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh"
+			if [ -f "/etc/delta-sms-bridge.php" ] && [ -f "$MOTHER_SMS_SETUP" ]; then
+				echo "[Mother SMS Bridge] Checking previously installed bridge..."
+				if ! bash "$MOTHER_SMS_SETUP" --non-interactive; then
+					echo "[Mother SMS Bridge] Update skipped (private GitHub access or server check required)."
+					echo "[Mother SMS Bridge] Existing bot/bridge runtime left unchanged."
+				fi
+			fi
+
    			echo -e "\n\e[92mUpdating ...\033[0m\n"
       
 			sleep 2
