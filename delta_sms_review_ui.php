@@ -66,10 +66,53 @@ function deltaSmsReviewHandle(string $data): void {
             foreach(array_slice($events,0,8,true) as $e){
                 $rows[]=[['text'=>strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600).' ایران','callback_data'=>'smsReviewLinkAsk'.$id.'_'.substr($e['event_id'],0,16)]];
             }
+        }elseif($b&&in_array($p['state'],['paid','approved'],true)){
+            $events=deltaSmsReviewClosedCandidates($p,$b);
+            $text.="\n\nپرداخت قبلاً تأیید شده است. فقط پیامک همان واریزی را ثبت کنید؛ سرویس دوباره تحویل نمی‌شود.";
+            foreach(array_slice($events,0,8,true) as $e){
+                $rows[]=[['text'=>'ثبت واریز قبلی | '.strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600),'callback_data'=>'smsReviewClosedAsk'.$id.'_'.substr($e['event_id'],0,16)]];
+            }
         }else $text.="\n\nپیامک قابل اتصال ثبت نشده یا رسید هنوز ارسال نشده است.";
+        if($p['state']==='declined'&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
+        if($p['state']==='have_sent')$rows[]=[['text'=>'⚠️ نمایش عوامل تداخل','callback_data'=>'smsReviewConflicts'.$id.'_0']];
         if(in_array($p['state'],['pending','have_sent'],true)&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'❌ رد این فاکتور پس از بررسی','callback_data'=>'smsReviewRejectAsk'.$id]];
         $rows[]=[['text'=>'فهرست فاکتورها','callback_data'=>'smsReviewList0']];$rows[]=$home;
         deltaSmsReviewRender($text,$rows);return;
+    }
+    if(preg_match('/^smsReviewConflicts(\d+)_(\d{1,6})$/D',$data,$m)){
+        $id=(int)$m[1];$page=(int)$m[2];$p=deltaSmsReviewPay($id);
+        if(!$p){alert('فاکتور پیدا نشد.',true);return;}
+        $items=deltaSmsReviewConflicts($p);$rows=[];
+        foreach(array_slice($items,$page*8,8) as $r)$rows[]=[['text'=>deltaTrackingCode($r['hash_id']).' | '.$r['state'].' | '.number_format((int)$r['price']),'callback_data'=>'smsReviewInvoice'.(int)$r['id']]];
+        $nav=[];if($page>0)$nav[]=['text'=>'قبلی','callback_data'=>'smsReviewConflicts'.$id.'_'.($page-1)];if(count($items)>($page+1)*8)$nav[]=['text'=>'بعدی','callback_data'=>'smsReviewConflicts'.$id.'_'.($page+1)];if($nav)$rows[]=$nav;
+        $rows[]=[['text'=>'بازگشت به فاکتور','callback_data'=>'smsReviewInvoice'.$id]];$rows[]=$home;
+        deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\nعوامل تداخل قابل نمایش: ".count($items)."\nخالی بودن فهرست لزوماً به معنی قابل تأیید بودن نیست.",$rows);return;
+    }
+    if(preg_match('/^smsReviewNoPay(Ask|Do)(\d+)$/D',$data,$m)){
+        $id=(int)$m[2];$p=deltaSmsReviewPay($id);
+        if(!$p||$p['state']!=='declined'){alert('فاکتور ردشده پیدا نشد.',true);return;}
+        if($m[1]==='Ask'){
+            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n⚠️ فقط پس از بررسی گردش حساب و اطمینان از اینکه تا همین لحظه هیچ واریزی متعلق به این فاکتور نیست، تأیید کنید. واریزی‌های بعدی همچنان نیازمند بررسی هستند.",[
+                [['text'=>'تأیید بررسی؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayDo'.$id]],
+                [['text'=>'انصراف','callback_data'=>'smsReviewInvoice'.$id]]
+            ]);return;
+        }
+        if(!deltaSmsReviewNoPayment($id,(int)$from_id)){alert('ثبت انجام نشد.',true);return;}
+        deltaSmsReviewRender('✅ عدم پرداخت تا زمان بررسی ثبت شد؛ فاکتور و سوابق باقی می‌مانند.',[[['text'=>'بازگشت به فاکتور','callback_data'=>'smsReviewInvoice'.$id]],$home]);return;
+    }
+    if(preg_match('/^smsReviewClosed(Ask|Do)(\d+)_([a-f0-9]{16})$/D',$data,$m)){
+        $id=(int)$m[2];$prefix=$m[3];$p=deltaSmsReviewPay($id);$b=$p?deltaSmsReviewBinding($p):null;
+        if(!$p||!$b){alert('فاکتور یا اتصال موجود نیست.',true);return;}
+        if($m[1]==='Ask'){
+            $hits=array_filter(deltaSmsReviewClosedCandidates($p,$b),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
+            if(count($hits)!==1){alert('پیامک معتبر موجود نیست.',true);return;}$e=reset($hits);
+            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n🏦 ".deltaSmsReviewEsc($e['bank'])." | ".number_format((int)$e['amount_irr'])." ریال\n🕒 ".gmdate('Y-m-d H:i:s',(int)$e['received_at']+12600)." ایران\nحساب: ".deltaSmsReviewEsc($e['account_hint']??'-')."\n⚠️ فقط اگر این دقیقاً واریز قبلاً تأییدشده همین مشتری است، ثبت کنید. تحویل مجدد انجام نمی‌شود.",[
+                [['text'=>'✅ ثبت واریز قبلی بدون تحویل','callback_data'=>'smsReviewClosedDo'.$id.'_'.$prefix]],
+                [['text'=>'انصراف','callback_data'=>'smsReviewInvoice'.$id]]
+            ]);return;
+        }
+        if(!deltaSmsReviewRecordClosed($id,$prefix,(int)$from_id)){alert('ثبت انجام نشد؛ پیامک یا فاکتور دوباره بررسی شود.',true);return;}
+        deltaSmsReviewRender('✅ واریز قبلی ثبت شد؛ پیامک مصرف‌شده و سفارش دوباره تحویل نمی‌شود.',[[['text'=>'بازگشت به فاکتور','callback_data'=>'smsReviewInvoice'.$id]],$home]);return;
     }
     if(preg_match('/^smsReviewLink(Ask|Do)(\d+)_([a-f0-9]{16})$/D',$data,$m)){
         $id=(int)$m[2];$prefix=$m[3];$p=deltaSmsReviewPay($id);

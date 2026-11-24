@@ -156,6 +156,31 @@ $connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($now-30)."
 ok(deltaSmsClaimInvoice($pb,$bb,'sms',$events),'second sequential receipt claims separate SMS');
 ok(!deltaSmsClaimInvoice($pb,$bb,'sms',$events),'replay blocked');
 ok(deltaSmsReviewPay(13)['state']==='pending','other same-price invoice remains open');
+
+// Previously approved and declined invoices require explicit reconciliation.
+$now=time();
+$connection->query("INSERT INTO pays VALUES (21,'closed-a',601,89000,'approved'),(22,'closed-b',602,89000,'declined'),(23,'closed-c',603,89000,'have_sent')");
+foreach([[21,'closed-a',601,$now-500],[22,'closed-b',602,$now-400],[23,'closed-c',603,$now-200]] as [$id,$hash,$uid,$shown]){
+    $expires=$shown+3600;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',890000,89000,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);
+    deltaMarkReceiptSubmitted($hash,$shown+60);
+}
+$ec=['event_id'=>str_repeat('3',64),'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>890000,'received_at'=>$now-460,'ingested_at'=>$now-450];
+$ed=array_replace($ec,['event_id'=>str_repeat('4',64),'received_at'=>$now-150,'ingested_at'=>$now-140]);
+$evs=[$ec,$ed];
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,$ed['received_at'],$ed['event_id'],$evs),'unreconciled closed invoices compete');
+ok(!deltaSmsReviewRecordClosed(22,substr($ec['event_id'],0,16),123,$evs),'declined cannot be linked as paid');
+ok(deltaSmsReviewRecordClosed(21,substr($ec['event_id'],0,16),123,$evs),'record earlier independently verified paid SMS without delivery');
+ok(deltaSmsReviewPay(21)['state']==='approved','reconcile preserves approved state');
+ok(!deltaSmsReviewRecordClosed(21,substr($ec['event_id'],0,16),123,$evs),'duplicate paid reconciliation blocked');
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,$ed['received_at'],$ed['event_id'],$evs),'unverified declined still competes');
+ok(!deltaSmsReviewNoPayment(23,123),'open receipt cannot be excluded');
+ok(deltaSmsReviewNoPayment(22,123),'owner verifies declined unpaid');
+ok(!deltaSmsHasCompetingInvoice('closed-c',89000,$ed['received_at'],$ed['event_id'],$evs),'verified old conflicts cleared');
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,time()+60,str_repeat('5',64),$evs),'later deposits remain protected');
+ok(deltaSmsReviewPay(22)['state']==='declined','declined state preserved');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
