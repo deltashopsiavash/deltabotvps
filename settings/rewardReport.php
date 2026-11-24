@@ -96,7 +96,9 @@ if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 
 // Mother: main switch is authoritative; SMS/manual mode cannot use legacy
 // exceptions. Reseller behavior is intentionally unchanged.
-if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExists)){
+$receiptMode=deltaReceiptApprovalMode($botState,!empty($isChildBot));
+$smsMode=$receiptMode==='sms';
+if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExists)){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
     $autoFrom = function_exists('deltaAutoApproveFrom') ? deltaAutoApproveFrom() : 0;
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' ORDER BY `id` ASC");
@@ -131,11 +133,16 @@ if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExi
 
         $policy=function_exists('deltaAutoApprovePolicy') ? deltaAutoApprovePolicy($user_id) : 'normal';
         if($policy==='never') continue;
-        $forcedAuto = $policy==='always';
+        $forcedAuto = !$smsMode && $policy==='always';
         $receiptAt = function_exists('deltaReceiptSubmittedAt')
             ? deltaReceiptSubmittedAt($payInfo['hash_id'] ?? '', (int)$payInfo['request_date'])
             : (int)$payInfo['request_date'];
-        if($forcedAuto){
+        $smsBinding=null;
+        if($smsMode){
+            try{$smsBinding=deltaSmsFindBinding($payInfo,$receiptAt);}
+            catch(Throwable $e){error_log('Delta SMS matching unavailable');continue;}
+            if(!$smsBinding) continue;
+        }elseif($forcedAuto){
             // Enabling the per-user exception must never sweep in that user's older receipts.
             $forceFrom = function_exists('deltaForceAutoApproveFrom') ? deltaForceAutoApproveFrom($user_id) : 0;
             if($forceFrom > 0 && $receiptAt < $forceFrom) continue;
@@ -148,32 +155,27 @@ if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExi
             if($autoFrom > 0 && $receiptAt < $autoFrom) continue;
         }
 
-        if(!$forcedAuto){
+        if(!$smsMode && !$forcedAuto){
             if($userinfo['is_agent'] == 1 && ($botState['cartToCartAutoAcceptType']??2) == 1) continue;
             elseif($userinfo['is_agent'] != 1 && ($botState['cartToCartAutoAcceptType']??2) == 0) continue;
         }
         
         $agentBought = $payInfo['agent_bought'];
         
-        // Recheck persisted mode immediately before claiming a mother invoice.
-        // A stale cron snapshot must not bypass SMS-only/manual isolation.
+        // Mother mode and event claims are checked atomically at the invoice claim.
         if(empty($isChildBot)){
-            $freshState=json_decode((string)getSettingValue('BOT_STATES','{}'),true);
-            if(!is_array($freshState) || deltaReceiptApprovalMode($freshState)!=='legacy') continue;
+            if(!deltaSmsClaimInvoice($payInfo,$smsBinding,$receiptMode)) continue;
+        }else{
+            $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =? AND `state`='have_sent'");
+            $stmt->bind_param("i", $rowId);$stmt->execute();
+            $claimed=$stmt->affected_rows===1;$stmt->close();
+            if(!$claimed) continue;
         }
-
-        // Claim once even if two cron runs overlap or an admin acts at once.
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =? AND `state`='have_sent'");
-        $stmt->bind_param("i", $rowId);
-        $stmt->execute();
-        $claimed=$stmt->affected_rows===1;
-        $stmt->close();
-        if(!$claimed) continue;
 
         $autoReport=null;
         unset($remark);
         $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
-        $mode = $forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی';
+        $mode = $smsMode ? 'تأیید پیامکی Delta SMS Bridge' : ($forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی');
         $receiptKind = getSettingValue('RECEIPT_KIND_'.sha1((string)$payInfo['hash_id']),'photo')==='text'?'متنی / پیامک':'تصویری';
         $nm = trim((string)($userinfo['name'] ?? ''));
         $un = trim((string)($userinfo['username'] ?? ''));
@@ -206,6 +208,7 @@ if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExi
             "💰 مبلغ: ".number_format((int)$price)." تومان\n".
             "🔖 کد پیگیری: <code>{$track}</code>\n".
             "⚙️ روش تأیید: {$mode}\n".
+            ($smsMode ? "💳 مبلغ واقعی واریز: ".number_format((int)$smsBinding['amount_irr'])." ریال\n" : "").
             "📨 نوع رسید: {$receiptKind}\n".
             "📌 وضعیت: تأیید شد و سفارش انجام شد\n".
             "🕒 زمان: ".date('Y-m-d H:i:s');
@@ -690,6 +693,7 @@ if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExi
         
 
         if($payType==='BUY_SUB' && !empty($remark)) $autoReport.="\n🔮 ریمارک سرویس: ".htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        if($smsMode) $autoReport.="\n📲 منبع تأیید: پیامک بانکی ثبت‌شده در Delta SMS Bridge";
         sendToAdmins($autoReport,null,'HTML');
         if(trim((string)$rewaredChannel)!=='' && !in_array((int)$rewaredChannel,getAllAdminIds(),true)){
             sendMessage($autoReport,null,'HTML',$rewaredChannel);
