@@ -180,7 +180,7 @@ function deltaSmsReviewClearList(int $actor): ?array {
 function deltaSmsReviewClosedCandidates(array $pay,array $b,?array $trustedEvents=null): array {
     if(!in_array($pay['state']??'',['paid','approved'],true))return [];
     $pay['state']='have_sent';
-    return deltaSmsReviewCandidates($pay,$b,$trustedEvents);
+    return deltaSmsReviewCandidates($pay,$b,$trustedEvents??deltaSmsMatchingEvents());
 }
 function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false): bool {
     global $connection,$isChildBot;
@@ -200,7 +200,7 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
         if($used)throw new RuntimeException('already linked');
         if($automatic){
             if(getSettingValue('AUTOAPPROVE_FAILED_'.$id,'0')==='1'||deltaIsUsdtInvoice($hash))throw new RuntimeException('not settled card payment');
-            $events=$trustedEvents??deltaSmsApprovalEvents();
+            $events=$trustedEvents??deltaSmsMatchingEvents();
             $receipt=deltaReceiptSubmittedAt($hash,0);
             $hits=[];
             foreach($events as $candidate){
@@ -226,8 +226,8 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
 function deltaSmsReconcileSettled(?array $trustedEvents=null): int {
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsReviewSchema())return 0;
-    $events=$trustedEvents??deltaSmsApprovalEvents();if(!$events)return 0;
-    $from=time()-7200;
+    $events=$trustedEvents??deltaSmsMatchingEvents();if(!$events)return 0;
+    $from=time()-deltaSmsReconciliationLookbackSeconds();
     $s=$connection->prepare("SELECT DISTINCT p.* FROM pays p JOIN delta_sms_invoice_bindings b ON BINARY b.hash_id=BINARY p.hash_id WHERE p.state IN ('paid','approved') AND b.event_id IS NULL AND b.shown_at>=? ORDER BY p.id ASC");
     $s->bind_param('i',$from);$s->execute();$rows=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
     $count=0;
@@ -260,7 +260,7 @@ function deltaSmsReviewNoPayment(int $id,int $actor): bool {
 // Same matcher as automatic approval; list actual competitors for the chosen receipt.
 function deltaSmsReviewConflicts(array $p): array {
     $b=deltaSmsReviewBinding($p);if(!$b||!empty($b['event_id']))return [];
-    $events=deltaSmsApprovalEvents();$receipt=deltaReceiptSubmittedAt($p['hash_id'],0);$now=time();$epoch=deltaSmsApprovalEpoch();$out=[];
+    $events=deltaSmsMatchingEvents();$receipt=deltaReceiptSubmittedAt($p['hash_id'],0);$now=time();$epoch=deltaSmsApprovalEpoch();$out=[];
     global $connection;
     foreach($events as $e){
         if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
