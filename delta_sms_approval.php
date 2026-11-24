@@ -170,12 +170,12 @@ function deltaSmsEventAlreadyUsed(string $id): bool {
 // Small allowance for SMS delivery delay; later events cannot match a
 // previously submitted receipt indefinitely. Receipt time alone is NOT proof.
 function deltaSmsReceiptGraceSeconds(): int {return 120;}
-function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $epoch,int $now): bool {
+function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $epoch,int $now,bool $settledReconciliation=false): bool {
     $shown=(int)($binding['shown_at']??0);$expires=(int)($binding['expires_at']??0);
     $received=$event['received_at']??null;$ingested=$event['ingested_at']??null;
     return $epoch>0 && $shown >= $epoch && $expires>$shown
       && $receiptAt >= $shown && $receiptAt <= $expires
-      && $now <= $expires+900
+      && ($settledReconciliation || $now <= $expires+900)
       && ($event['source']??'')==='sms'
       && preg_match('/^[a-f0-9]{64}$/D',(string)($event['event_id']??''))
       && (deltaSmsSenderReservation($binding)
@@ -200,7 +200,8 @@ function deltaSmsApprovalEvents(): array {
     }
     return $events;
 }
-function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=null): ?array {
+function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=null,bool $settledReconciliation=false): ?array {
+    if($settledReconciliation&&!in_array($pay['state']??'',['paid','approved'],true))return null;
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsApprovalSchema())return null;
     $hash=(string)$pay['hash_id'];$id=(int)getSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),'0');$uid=(int)$pay['user_id'];
@@ -213,7 +214,7 @@ function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=nul
     if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
     $events=$trustedEvents??deltaSmsApprovalEvents();
-    foreach($events as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now)&&!deltaSmsEventAlreadyUsed($event['event_id']))$hits[$event['event_id']]=$event;
+    foreach($events as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now,$settledReconciliation)&&!deltaSmsEventAlreadyUsed($event['event_id']))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);
     $b['matched_event_at']=(int)$hits[$b['matched_event']]['received_at'];

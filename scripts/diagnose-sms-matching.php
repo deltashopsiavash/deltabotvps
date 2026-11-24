@@ -48,6 +48,9 @@ try{
         if(!empty($b['event_id'])){output('BLOCKER','EVENT_ALREADY_CLAIMED');continue;}
         if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==$price*10){output('BLOCKER','OLD_OR_WRONG_AMOUNT_BINDING');continue;}
         $hits=[];$sameAmount=0;$usedCount=0;
+        $settled=in_array($pay['state'],['paid','approved'],true);
+        output('MATCH_MODE',$settled?'SETTLED_RECONCILIATION':'NEW_PAYMENT');
+        output('ACTIVE_APPROVAL_DEADLINE_UTC',gmdate('c',(int)$b['expires_at']+900));
         foreach($events as $e){
             if((int)($e['amount_irr']??0)!==(int)$b['amount_irr'])continue;
             $sameAmount++;
@@ -58,9 +61,9 @@ try{
                 'received_utc'=>gmdate('c',(int)($e['received_at']??0)),
                 'ingested_utc'=>gmdate('c',(int)($e['ingested_at']??0)),
                 'already_reserved_or_used'=>$used,
-                'passes_time_source_checks'=>deltaSmsEventMatches($b,$e,$receipt,$epoch,time())
+                'passes_time_source_checks'=>deltaSmsEventMatches($b,$e,$receipt,$epoch,time(),$settled)
             ]);
-            if(!$used&&deltaSmsEventMatches($b,$e,$receipt,$epoch,time()))$hits[$e['event_id']]=$e;
+            if(!$used&&deltaSmsEventMatches($b,$e,$receipt,$epoch,time(),$settled))$hits[$e['event_id']]=$e;
         }
         output('SAME_AMOUNT_EVENTS',$sameAmount);output('USED_SAME_AMOUNT_EVENTS',$usedCount);output('ELIGIBLE_UNUSED_EVENTS',count($hits));
         if(count($hits)!==1){output('BLOCKER',count($hits)>1?'AMBIGUOUS_BANK_EVENTS':'NO_ELIGIBLE_BANK_EVENT');continue;}

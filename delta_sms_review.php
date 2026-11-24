@@ -204,7 +204,7 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
             $receipt=deltaReceiptSubmittedAt($hash,0);
             $hits=[];
             foreach($events as $candidate){
-                if(deltaSmsEventMatches($b,$candidate,$receipt,deltaSmsApprovalEpoch(),time())&&!deltaSmsEventAlreadyUsed($candidate['event_id']))$hits[$candidate['event_id']]=$candidate;
+                if(deltaSmsEventMatches($b,$candidate,$receipt,deltaSmsApprovalEpoch(),time(),true)&&!deltaSmsEventAlreadyUsed($candidate['event_id']))$hits[$candidate['event_id']]=$candidate;
             }
             if(count($hits)!==1)throw new RuntimeException('no unique earlier SMS');
             $candidate=reset($hits);
@@ -235,7 +235,7 @@ function deltaSmsReconcileSettled(?array $trustedEvents=null): int {
         $hash=(string)$p['hash_id'];
         if(deltaIsUsdtInvoice($hash)||getSettingValue('AUTOAPPROVE_FAILED_'.(int)$p['id'],'0')==='1')continue;
         $receipt=deltaReceiptSubmittedAt($hash,0);
-        $b=deltaSmsFindBinding($p,$receipt,$events);
+        $b=deltaSmsFindBinding($p,$receipt,$events,true);
         if($b&&deltaSmsReviewRecordClosed((int)$p['id'],substr($b['matched_event'],0,16),0,$events,true))$count++;
     }
     return $count;

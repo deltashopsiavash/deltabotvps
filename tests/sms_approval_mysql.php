@@ -242,6 +242,31 @@ ok(deltaSmsReconcileSettled($fixture)===0,'reconciliation idempotent');
 $next=deltaSmsReviewPay(32);$bind=deltaSmsFindBinding($next,$now-40,$fixture);
 ok($bind&&$bind['matched_event']===$ef['event_id'],'new receipt matches SMS arriving after receipt');
 ok(deltaSmsClaimInvoice($next,$bind,'sms',$fixture),'next independent payment approved');
+
+// Production regression: the oldest approved receipt passed the live
+// fulfillment deadline before its missing bank link was repaired.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-7200));mode('off','on');
+$connection->query("INSERT INTO pays VALUES (41,'expired-settled',801,92000,'approved'),(42,'middle-settled',802,92000,'approved'),(43,'new-open',803,92000,'have_sent')");
+foreach([[41,'expired-settled',801,$now-4700,$now-4500],[42,'middle-settled',802,$now-2300,$now-2200],[43,'new-open',803,$now-200,$now-140]] as [$id,$hash,$uid,$shown,$receipt]){
+    $expires=$shown+3600;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',920000,92000,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$receipt);
+}
+$x=['event_id'=>str_repeat('9',64),'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>920000,'received_at'=>$now-4600,'ingested_at'=>$now-4599];
+$y=array_replace($x,['event_id'=>str_repeat('a',63).'1','received_at'=>$now-2250,'ingested_at'=>$now-2249]);
+$z=array_replace($x,['event_id'=>str_repeat('b',63).'1','bank'=>'khavar','received_at'=>$now-150,'ingested_at'=>$now-149]);
+$chain=[$x,$y,$z];
+$old=deltaSmsReviewPay(41);
+ok(deltaSmsFindBinding($old,$now-4500,$chain)===null,'normal expired payment cannot be fulfilled');
+ok(deltaSmsFindBinding($old,$now-4500,$chain,true)!==null,'expired approved receipt can be reconciled historically');
+ok(deltaSmsFindBinding(deltaSmsReviewPay(43),$now-140,$chain,true)===null,'historical mode cannot be used on an open invoice');
+ok(deltaSmsReconcileSettled($chain)===2,'expired approved invoice and subsequent approved invoice reconciled in order');
+ok(deltaSmsReviewPay(41)['state']==='approved'&&deltaSmsReviewPay(42)['state']==='approved','historical reconciliation cannot change financial state');
+ok(deltaSmsReviewEventUsed($x['event_id'])&&deltaSmsReviewEventUsed($y['event_id']),'old evidence consumed once');
+$open=deltaSmsReviewPay(43);$bind=deltaSmsFindBinding($open,$now-140,$chain);
+ok($bind&&$bind['matched_event']===$z['event_id'],'new khavar payment unblocked');
+ok(deltaSmsClaimInvoice($open,$bind,'sms',$chain),'current live invoice claimed once');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
