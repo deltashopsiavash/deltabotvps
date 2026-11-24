@@ -70,17 +70,19 @@ function deltaSmsPresentationText(?array $binding): string {
 // A prior invoice stops competing only if it was actually linked to a
 // different, earlier trusted SMS, and its payment state is settled.
 function deltaSmsCompetitionRowsSql(): array {
-    $fields="p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint,COALESCE(n.value,0) AS no_payment_through";
+    $fields="p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint,COALESCE(n.value,0) AS no_payment_through,COALESCE(m.value,'') AS early_verified_event";
     return [
       "SELECT DISTINCT BINARY d.hash_id AS hash_id,$fields FROM payment_card_displays d
         JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY d.hash_id AND c.event_id IS NOT NULL
         LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(d.hash_id))
+        LEFT JOIN setting m ON BINARY m.type=BINARY CONCAT('SMS_EARLY_RECONCILE_',SHA1(d.hash_id))
         WHERE BINARY d.hash_id<>BINARY ? AND p.price=? AND d.shown_at BETWEEN ? AND ?",
       "SELECT DISTINCT BINARY b.hash_id AS hash_id,$fields FROM delta_sms_invoice_bindings b
         LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY b.hash_id AND c.event_id IS NOT NULL
         LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(b.hash_id))
+        LEFT JOIN setting m ON BINARY m.type=BINARY CONCAT('SMS_EARLY_RECONCILE_',SHA1(b.hash_id))
         WHERE BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at BETWEEN ? AND ?"
     ];
 }
@@ -119,7 +121,9 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
               && in_array($e['bank']??'',['melli','pasargad','khavar'],true)
               && is_string($e['sender']??null)&&trim($e['sender'])!==''
               && is_int($e['amount_irr']??null)&&$e['amount_irr']===(int)$r['amount_irr']
-              && is_int($at)&&$at>=(int)$r['shown_at']&&$at<=(int)$r['expires_at']&&$at<$eventAt
+              && is_int($at)&&($at>=(int)$r['shown_at'] ||
+                  (($r['early_verified_event']??'')===$id && $at>=(int)$r['shown_at']-300))
+              && $at<=(int)$r['expires_at']&&$at<$eventAt
               && is_int($ing)&&$ing>=(int)$r['shown_at']&&$ing>=$at-300;
         }
         if(count($group)===1){
