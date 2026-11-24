@@ -53,6 +53,10 @@ expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-50,$now),'Reject old acti
 expectFeature(!deltaSmsEventMatches($b,$e,$now+3600,$now-120,$now),'Reject expired receipt');
 expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-120,$now+4501),'Reject expired processing window');
 
+$timedBinding=array_replace($senderBinding,['shown_at'=>$now-900,'expires_at'=>$now+900]);
+$timedEvent=array_replace($senderEvent,['received_at'=>$now-380,'ingested_at'=>$now-370]);
+expectFeature(deltaSmsEventMatches($timedBinding,$timedEvent,$now-500,$now-1000,$now),'120 second SMS delay allowance');
+expectFeature(!deltaSmsEventMatches($timedBinding,array_replace($timedEvent,['received_at'=>$now-379]),$now-500,$now-1000,$now),'later unrelated deposits excluded from earlier receipt');
 $old = time() - 20;
 deltaMarkReceiptSubmitted('receipt-new', $old);
 expectFeature(deltaReceiptHasSubmissionMarker('receipt-new'), 'New receipt needs a submission marker');
