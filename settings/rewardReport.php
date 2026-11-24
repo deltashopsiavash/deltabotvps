@@ -94,7 +94,9 @@ $deltaForcedExists = false;
 $deltaForcedQ = $connection->query("SELECT id FROM setting WHERE type LIKE 'USER_FORCE_AUTOAPPROVE_%' AND value='1' LIMIT 1");
 if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 
-if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
+// Mother: main switch is authoritative; SMS/manual mode cannot use legacy
+// exceptions. Reseller behavior is intentionally unchanged.
+if(deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExists)){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
     $autoFrom = function_exists('deltaAutoApproveFrom') ? deltaAutoApproveFrom() : 0;
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `state` = 'have_sent' ORDER BY `id` ASC");
@@ -153,6 +155,13 @@ if(($botState['cartToCartAutoAcceptState']??'off')=="on" || $deltaForcedExists){
         
         $agentBought = $payInfo['agent_bought'];
         
+        // Recheck persisted mode immediately before claiming a mother invoice.
+        // A stale cron snapshot must not bypass SMS-only/manual isolation.
+        if(empty($isChildBot)){
+            $freshState=json_decode((string)getSettingValue('BOT_STATES','{}'),true);
+            if(!is_array($freshState) || deltaReceiptApprovalMode($freshState)!=='legacy') continue;
+        }
+
         // Claim once even if two cron runs overlap or an admin acts at once.
         $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid' WHERE `id` =? AND `state`='have_sent'");
         $stmt->bind_param("i", $rowId);
