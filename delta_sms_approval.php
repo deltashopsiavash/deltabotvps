@@ -69,17 +69,18 @@ function deltaSmsPresentationText(?array $binding): string {
 // manually approved, declined, or has an earlier customer receipt.
 // A prior invoice stops competing only if it was actually linked to a
 // different, earlier trusted SMS, and its payment state is settled.
-function deltaSmsCompetitionRowsSql(): string {
-    return "SELECT x.hash_id,p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint
-      FROM (
-        SELECT BINARY d.hash_id AS hash_id FROM payment_card_displays d
-          JOIN pays p0 ON BINARY p0.hash_id=BINARY d.hash_id
-          WHERE BINARY d.hash_id<>BINARY ? AND p0.price=? AND d.shown_at BETWEEN ? AND ?
-        UNION
-        SELECT BINARY b.hash_id AS hash_id FROM delta_sms_invoice_bindings b
-          WHERE BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at BETWEEN ? AND ?
-      ) x LEFT JOIN pays p ON BINARY p.hash_id=x.hash_id
-      LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=x.hash_id AND c.event_id IS NOT NULL";
+function deltaSmsCompetitionRowsSql(): array {
+    $fields="p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint";
+    return [
+      "SELECT DISTINCT BINARY d.hash_id AS hash_id,$fields FROM payment_card_displays d
+        JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id
+        LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY d.hash_id AND c.event_id IS NOT NULL
+        WHERE BINARY d.hash_id<>BINARY ? AND p.price=? AND d.shown_at BETWEEN ? AND ?",
+      "SELECT DISTINCT BINARY b.hash_id AS hash_id,$fields FROM delta_sms_invoice_bindings b
+        LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id
+        LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY b.hash_id AND c.event_id IS NOT NULL
+        WHERE BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at BETWEEN ? AND ?"
+    ];
 }
 function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $eventId): array {
     $byHash=[];$byEvent=[];
@@ -87,13 +88,13 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
         $id=(string)($e['event_id']??'');
         if(preg_match('/^[a-f0-9]{64}$/D',$id))$byEvent[$id]=$e;
     }
-    foreach($rows as $row)$byHash[(string)$row['hash_id']][]=$row;
+    foreach($rows as $row)$byHash[(string)$row['hash_id']][serialize($row)]=$row;
     $out=[];
     foreach($byHash as $hash=>$group){
         $settled=false;
         // Multiple claims or missing evidence are not automatically resolved.
         if(count($group)===1&&$eventId!==''){
-            $r=$group[0];$id=(string)($r['event_id']??'');$e=$byEvent[$id]??null;
+            $r=reset($group);$id=(string)($r['event_id']??'');$e=$byEvent[$id]??null;
             $at=$e['received_at']??null;$ing=$e['ingested_at']??null;
             $settled=in_array($r['state']??'',['paid','approved'],true)
               && $id!=='' && $id!==$eventId && is_array($e)
@@ -113,9 +114,12 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
 function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null): bool {
     global $connection;
     $from=$eventAt-3600;
-    $st=$connection->prepare(deltaSmsCompetitionRowsSql());
-    $st->bind_param('siiisiii',$hash,$price,$from,$eventAt,$hash,$price,$from,$eventAt);
-    $st->execute();$rows=$st->get_result()->fetch_all(MYSQLI_ASSOC);$st->close();
+    $rows=[];
+    foreach(deltaSmsCompetitionRowsSql() as $sql){
+        $st=$connection->prepare($sql);
+        $st->bind_param('siii',$hash,$price,$from,$eventAt);
+        $st->execute();$rows=array_merge($rows,$st->get_result()->fetch_all(MYSQLI_ASSOC));$st->close();
+    }
     return (bool)deltaSmsCompetingHashes($rows,$events??[],$eventAt,$eventId);
 }
 function deltaSmsEventAlreadyUsed(string $id): bool {
