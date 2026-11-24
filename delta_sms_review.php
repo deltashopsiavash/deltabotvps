@@ -182,25 +182,63 @@ function deltaSmsReviewClosedCandidates(array $pay,array $b,?array $trustedEvent
     $pay['state']='have_sent';
     return deltaSmsReviewCandidates($pay,$b,$trustedEvents);
 }
-function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null): bool {
+function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false): bool {
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsReviewSchema()||!preg_match('/^[a-f0-9]{16}$/D',$prefix))return false;
     $connection->begin_transaction();
     try{
-        $connection->query("SELECT value FROM setting WHERE type='BOT_STATES' LIMIT 1 FOR UPDATE");
+        $lock=$connection->query("SELECT value FROM setting WHERE type='BOT_STATES' LIMIT 1 FOR UPDATE");
+        if($automatic){
+            $state=$lock?json_decode((string)($lock->fetch_assoc()['value']??''),true):null;
+            if(!is_array($state)||deltaReceiptApprovalMode($state)!=='sms')throw new RuntimeException('SMS mode changed');
+        }
         $s=$connection->prepare('SELECT * FROM pays WHERE id=? FOR UPDATE');$s->bind_param('i',$id);$s->execute();$p=$s->get_result()->fetch_assoc();$s->close();
         if(!$p||!in_array($p['state'],['paid','approved'],true))throw new RuntimeException('not settled');
         $b=deltaSmsReviewBinding($p);if(!$b||!deltaSmsSenderReservation($b))throw new RuntimeException('no nominal binding');
         $hash=(string)$p['hash_id'];
         $s=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? AND event_id IS NOT NULL LIMIT 1');$s->bind_param('s',$hash);$s->execute();$used=(bool)$s->get_result()->fetch_row();$s->close();
         if($used)throw new RuntimeException('already linked');
-        $hits=array_filter(deltaSmsReviewClosedCandidates($p,$b,$trustedEvents),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
+        if($automatic){
+            if(getSettingValue('AUTOAPPROVE_FAILED_'.$id,'0')==='1'||deltaIsUsdtInvoice($hash))throw new RuntimeException('not settled card payment');
+            $events=$trustedEvents??deltaSmsApprovalEvents();
+            $receipt=deltaReceiptSubmittedAt($hash,0);
+            $hits=[];
+            foreach($events as $candidate){
+                if(deltaSmsEventMatches($b,$candidate,$receipt,deltaSmsApprovalEpoch(),time())&&!deltaSmsEventAlreadyUsed($candidate['event_id']))$hits[$candidate['event_id']]=$candidate;
+            }
+            if(count($hits)!==1)throw new RuntimeException('no unique earlier SMS');
+            $candidate=reset($hits);
+            if(substr($candidate['event_id'],0,16)!==$prefix||
+                deltaSmsHasCompetingInvoice($hash,(int)$p['price'],(int)$candidate['received_at'],$candidate['event_id'],$events,(int)$b['shown_at']))throw new RuntimeException('competing ownership');
+        }else{
+            $hits=array_filter(deltaSmsReviewClosedCandidates($p,$b,$trustedEvents),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
+        }
         if(count($hits)!==1)throw new RuntimeException('ambiguous evidence');
         $e=reset($hits);$eid=$e['event_id'];$display=(int)$b['display_id'];$now=time();
         $s=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND BINARY hash_id=BINARY ? AND event_id IS NULL');$s->bind_param('siis',$eid,$now,$display,$hash);$s->execute();$ok=$s->affected_rows===1;$s->close();
-        if(!$ok||!deltaSmsReviewAudit('reconcile',$actor,$p,$b,$e,'done','owner verified previously settled deposit; no delivery'))throw new RuntimeException('cannot reconcile');
+        if(!$ok||!deltaSmsReviewAudit('reconcile',$actor,$p,$b,$e,'done',$automatic?'unique stored SMS for settled payment; no delivery':'owner verified previously settled deposit; no delivery'))throw new RuntimeException('cannot reconcile');
         $connection->commit();return true;
     }catch(Throwable $e){$connection->rollback();return false;}
+}
+// Resolve older manually settled invoices before processing new receipts.
+// Reconciliation only attaches unused, unambiguous bank evidence. It never
+// credits a wallet, creates a service or changes a payment state.
+function deltaSmsReconcileSettled(?array $trustedEvents=null): int {
+    global $connection,$isChildBot;
+    if(!empty($isChildBot)||!deltaSmsReviewSchema())return 0;
+    $events=$trustedEvents??deltaSmsApprovalEvents();if(!$events)return 0;
+    $from=time()-7200;
+    $s=$connection->prepare("SELECT DISTINCT p.* FROM pays p JOIN delta_sms_invoice_bindings b ON BINARY b.hash_id=BINARY p.hash_id WHERE p.state IN ('paid','approved') AND b.event_id IS NULL AND b.shown_at>=? ORDER BY p.id ASC");
+    $s->bind_param('i',$from);$s->execute();$rows=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
+    $count=0;
+    foreach($rows as $p){
+        $hash=(string)$p['hash_id'];
+        if(deltaIsUsdtInvoice($hash)||getSettingValue('AUTOAPPROVE_FAILED_'.(int)$p['id'],'0')==='1')continue;
+        $receipt=deltaReceiptSubmittedAt($hash,0);
+        $b=deltaSmsFindBinding($p,$receipt,$events);
+        if($b&&deltaSmsReviewRecordClosed((int)$p['id'],substr($b['matched_event'],0,16),0,$events,true))$count++;
+    }
+    return $count;
 }
 // Explicit owner attestation, never inferred from a declined state alone.
 function deltaSmsReviewNoPayment(int $id,int $actor): bool {
