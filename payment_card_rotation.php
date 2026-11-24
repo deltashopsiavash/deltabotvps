@@ -280,8 +280,13 @@ function deltaCardShowInvoice($pay) {
         $hash=(string)$pay['hash_id'];
         $card=deltaCardChoosePresentation($hash,(int)$from_id);
         if(!$card) { sendMessage('⚠️ شماره کارت فعالی برای پرداخت ثبت نشده است. لطفاً با پشتیبانی تماس بگیرید.',null,null);return false; }
-        $kb=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id']);
-        $sent=sendMessage(deltaCardRenderText($card['number'],$card['holder'],$hash),$kb,'HTML');
+        global $botState,$isChildBot;
+        $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
+        $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
+        $kb=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
+        $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
+        if($smsMode)$body.=deltaSmsPresentationText($binding);
+        $sent=sendMessage($body,$kb,'HTML');
         return is_object($sent) && !empty($sent->ok);
     }catch(Throwable $e) {
         error_log('deltaCardShowInvoice: '.$e->getMessage());
@@ -344,8 +349,12 @@ function deltaCardSwitchAction($callback) {
         }
         $card=deltaCardChoosePresentation($hash,$uid,$shown['card_number']);
         if(!$card) throw new RuntimeException('No replacement card available');
+        global $botState,$isChildBot;
+        $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
+        $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
         $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
-        $keyboard=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id']);
+        if($smsMode)$body.=deltaSmsPresentationText($binding);
+        $keyboard=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
         $prepared=deltaPrepareEditableTextPayload($body,'HTML');
         $payload=['chat_id'=>$chat_id,'message_id'=>$message_id,
             'text'=>$prepared['text'],'reply_markup'=>$keyboard];

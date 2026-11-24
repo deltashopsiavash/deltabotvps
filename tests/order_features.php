@@ -20,6 +20,30 @@ expectFeature(deltaDiscountAllowedForUser('VIP-ONE', 6166906522), 'Private disco
 expectFeature(!deltaDiscountAllowedForUser('VIP-ONE', 123456789), 'Private discount must reject other users');
 expectFeature(deltaDiscountAllowedForUser('PUBLIC', 123456789), 'Ordinary discount should stay public');
 
+// All four mother switch combinations; forced-user policies cannot bypass
+// the main switch in SMS-only/manual mode. Child behavior stays unchanged.
+foreach([['off','off','manual'],['off','on','sms'],['on','off','legacy'],['on','on','legacy']] as [$main,$sms,$expected]){
+    $state=['cartToCartAutoAcceptState'=>$main,'cartToCartSmsAcceptState'=>$sms];
+    expectFeature(deltaReceiptApprovalMode($state)===$expected,'Incorrect mother approval priority');
+    foreach([false,true] as $forced){
+        expectFeature(deltaLegacyReceiptWorkerAllowed($state,false,$forced)===($main==='on'),'Forced user must not bypass mother switch');
+        expectFeature(deltaLegacyReceiptWorkerAllowed($state,true,$forced)===($main==='on'||$forced),'Reseller approval behavior must stay unchanged');
+    }
+    expectFeature(deltaReceiptApprovalMode($state,true)===($main==='on'?'legacy':'manual'),'SMS mode must not reach resellers');
+}
+expectFeature(deltaReceiptApprovalMode([])==='manual','Missing switches must fail closed');
+
+$now=time();
+$b=['shown_at'=>$now-60,'expires_at'=>$now+3500,'bank'=>'melli','account_hint'=>'00001','amount_irr'=>800001];
+$e=['event_id'=>str_repeat('a',64),'bank'=>'melli','source'=>'sms','account_hint'=>'00001','amount_irr'=>800001,'received_at'=>$now-30,'ingested_at'=>$now-20];
+expectFeature(deltaSmsEventMatches($b,$e,$now-10,$now-120,$now),'Exact trusted SMS should match reserved invoice');
+foreach(['amount_irr'=>800000,'account_hint'=>'00002','bank'=>'pasargad','source'=>'notification','received_at'=>$now-61,'ingested_at'=>$now+1] as $key=>$bad){
+    expectFeature(!deltaSmsEventMatches($b,array_replace($e,[$key=>$bad]),$now-10,$now-120,$now),'Reject mismatching SMS field '.$key);
+}
+expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-50,$now),'Reject old activation epoch');
+expectFeature(!deltaSmsEventMatches($b,$e,$now+3600,$now-120,$now),'Reject expired receipt');
+expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-120,$now+4501),'Reject expired processing window');
+
 $old = time() - 20;
 deltaMarkReceiptSubmitted('receipt-new', $old);
 expectFeature(deltaReceiptHasSubmissionMarker('receipt-new'), 'New receipt needs a submission marker');

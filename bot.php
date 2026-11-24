@@ -3606,8 +3606,19 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
 }
 if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     if($data!="botSettings"){
+        if($match[1]==='cartToCartSmsAcceptState' && !empty($isChildBot)){
+            alert('این تنظیم فقط برای ربات مادر است.',true);
+            exit;
+        }
         if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
-        else $newValue = $botState[$match[1]]=="on"?"off":"on";
+        else $newValue = ($botState[$match[1]]??'off')=="on"?"off":"on";
+        $oldApprovalMode=deltaReceiptApprovalMode($botState,!empty($isChildBot));
+        // Reset the SMS epoch BEFORE switching into SMS mode, so no historical
+        // invoices or deposits can become eligible through a settings race.
+        $nextState=$botState;$nextState[$match[1]]=$newValue;
+        if(empty($isChildBot) && $oldApprovalMode!=='sms' && deltaReceiptApprovalMode($nextState)==='sms'){
+            upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)time());
+        }
         setSettings($match[1], $newValue);
         if($match[1] === 'cartToCartAutoAcceptType') upsertSettingValue('AUTOAPPROVE_TYPE_SELECTED','1');
         if($match[1] === 'cartToCartAutoAcceptState' && $newValue === 'on'){
@@ -4988,7 +4999,7 @@ if(preg_match('/increaseWalletWithCartToCart(.*)/',$userInfo['step'], $match) an
         $res = sendPhotoToAdmins($fileid, $msg, $keyboard, "HTML", $match[1]);
         $msgId = $res->result->message_id;
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -8337,7 +8348,7 @@ if(preg_match('/payWithWallet(.*)/',$data, $match)){
     }
 
     $payProvisionHash = (string)$match[1];
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state`='pending'");
     $stmt->bind_param("s", $payProvisionHash);
     $stmt->execute();
     if($stmt->affected_rows < 1){ $stmt->close(); exit(); }
@@ -8718,7 +8729,7 @@ if(preg_match('/payWithCartToCart(.*)/',$userInfo['step'], $match) and $text != 
         $msgId = $res->result->message_id;
         
         if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -9539,7 +9550,7 @@ if(preg_match('/^pgRenewPayCart(.+)$/', $userInfo['step'] ?? '', $m) && $text !=
     $keys=getReceiptAdminKeyboard('approvePgRenew'.$hash, 'decPgRenew'.$hash, $from_id);
     $res=sendPhotoToAdmins($fileid, deltaAppendTracking("🔁 درخواست تمدید پاسارگارد\n\n👤 کاربر: $from_id\n💰 مبلغ: ".number_format((int)$pay['price'])." تومان",$hash), $keys, 'HTML', $hash);
     $msgId = is_object($res) && isset($res->result->message_id) ? $res->result->message_id : 0;
-    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=?"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
+    $stmt=$connection->prepare("UPDATE `pays` SET `state`='have_sent', `message_id`=? WHERE `hash_id`=? AND `state`='pending'"); $stmt->bind_param('is',$msgId,$hash); $stmt->execute(); $stmt->close();
     if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
     exit;
 }
@@ -13831,7 +13842,7 @@ if(preg_match('/payRenewWithCartToCart(.*)/',$userInfo['step'],$match) and $text
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -13987,9 +13998,10 @@ if(preg_match('/payRenewWithWallet(.*)/', $data,$match)){
     
     if($payInfo['state'] == "paid_with_wallet" || $payInfo['state'] == "approved") exit();
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state`='pending'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    if($stmt->affected_rows!==1){ $stmt->close(); exit; }
     $stmt->close();
 
     $oid = $payInfo['plan_id'];
@@ -14714,7 +14726,7 @@ if(preg_match('/payIncreaseDayWithCartToCart(.*)/',$userInfo['step'], $match) an
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -14829,9 +14841,10 @@ if(preg_match('/payIncraseDayWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state`='pending'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    if($stmt->affected_rows!==1){ $stmt->close(); exit; }
     $stmt->close();
 
     preg_match('/^INCREASE_DAY_(\d+)_(\d+)/',$payType, $increaseInfo);
@@ -15093,7 +15106,7 @@ if(preg_match('/payIncreaseWithCartToCart(.*)/',$userInfo['step'],$match) and $t
         $msgId = $res->result->message_id;
         setUser();
         
-        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ?");
+        $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'have_sent', `message_id` = ?, `chat_id` = ? WHERE `hash_id` = ? AND `state` = 'pending'");
         $stmt->bind_param("iis", $msgId, $admin, $match[1]);
         $stmt->execute();
         $stmt->close();
@@ -15287,9 +15300,10 @@ if(preg_match('/payIncraseWithWallet(.*)/', $data,$match)){
     $payParam = $payInfo->fetch_assoc();
     $payType = $payParam['type'];
 
-    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state` NOT IN ('paid_with_wallet','approved')");
+    $stmt = $connection->prepare("UPDATE `pays` SET `state` = 'paid_with_wallet' WHERE `hash_id` = ? AND `state`='pending'");
     $stmt->bind_param("s", $match[1]);
     $stmt->execute();
+    if($stmt->affected_rows!==1){ $stmt->close(); exit; }
     $stmt->close();
 
 
