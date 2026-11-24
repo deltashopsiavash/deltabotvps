@@ -2,8 +2,9 @@
 function deltaSmsReviewKeys(array $rows): string {return json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE);}
 function deltaSmsReviewEsc($s): string{return htmlspecialchars((string)$s,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
 function deltaSmsReviewRender(string $text,array $rows): void {
-    global $message_id;
-    smartSendOrEdit($message_id,$text,deltaSmsReviewKeys($rows),'HTML');
+    global $message_id,$data;
+    if(!is_string($data)||!str_starts_with($data,'smsReview'))sendMessage($text,deltaSmsReviewKeys($rows),'HTML');
+    else smartSendOrEdit($message_id,$text,deltaSmsReviewKeys($rows),'HTML');
 }
 function deltaSmsReviewInvoiceText(array $p): string {
     $h=(string)$p['hash_id'];$uid=(int)$p['user_id'];
@@ -12,7 +13,7 @@ function deltaSmsReviewInvoiceText(array $p): string {
 function deltaSmsReviewHandle(string $data): void {
     global $connection,$from_id,$admin,$isChildBot;
     if(!empty($isChildBot)||(string)$from_id!==(string)$admin)return;
-    if(!deltaSmsReviewSchema()){alert('جدول مدیریت پیامکی آماده نیست.',true);return;}
+    if(!deltaCardEnsureTable()||!deltaSmsReviewSchema()){alert('جدول مدیریت پیامکی آماده نیست.',true);return;}
     $home=[['text'=>'بازگشت به مدیریت پیامکی','callback_data'=>'smsReviewHome']];
     if($data==='smsReviewHome'){
         $mode=deltaReceiptApprovalMode(json_decode((string)getSettingValue('BOT_STATES','{}'),true)?:[]);
@@ -20,11 +21,16 @@ function deltaSmsReviewHandle(string $data): void {
         $count=(int)($r->fetch_assoc()['c']??0);
         deltaSmsReviewRender("📲 <b>مدیریت تأیید پیامکی ربات مادر</b>\n\nحالت فعلی: ".deltaSmsReviewEsc($mode)."\nفاکتورهای کارت‌به‌کارت باز: $count\n\nمبلغ فاکتور تغییر نمی‌کند. پیامک هم‌مبلغ مبهم نیاز به بررسی مالک دارد. کد پیگیری، رسید را به فاکتور متصل می‌کند نه به بانک.",[
             [['text'=>'📋 فاکتورهای باز / بررسی و رد','callback_data'=>'smsReviewList0']],
+            [['text'=>'🔎 جستجو با کد پیگیری','callback_data'=>'smsReviewTrackAsk']],
             [['text'=>'📨 پیامک‌های ثبت‌شده اخیر','callback_data'=>'smsReviewEvents0']],
             [['text'=>'🔄 ریست مبدأ پیامکی','callback_data'=>'smsReviewResetAsk']],
             [['text'=>'📊 گزارش عملیات مدیریت','callback_data'=>'smsReviewLog0']],
             [['text'=>'بازگشت به تنظیمات','callback_data'=>'botSettings']]
         ]);return;
+    }
+    if($data==='smsReviewTrackAsk'){
+        global $cancelKey;
+        setUser('smsReviewTrack');sendMessage('کد پیگیری ۸ رقمی فاکتور را ارسال کنید.',$cancelKey);return;
     }
     if(preg_match('/^smsReviewList(\d{1,6})$/D',$data,$m)){
         $page=(int)$m[1];$offset=$page*8;
@@ -98,7 +104,7 @@ function deltaSmsReviewHandle(string $data): void {
         $page=(int)$m[1];$events=deltaSmsApprovalEvents();usort($events,static function($a,$b){return ($b['received_at']??0)<=>($a['received_at']??0);});
         $text="📨 پیامک‌های اخیر (حدود دو ساعت)\n";
         foreach(array_slice($events,$page*10,10) as $e){
-            $text.="\n".deltaSmsReviewEsc($e['bank']??'-')." | ".number_format((int)($e['amount_irr']??0))." ریال | ".gmdate('H:i:s',(int)($e['received_at']??0)+12600)."\n".(deltaSmsReviewEventUsed((string)$e['event_id'])?'رزرو/مصرف‌شده':'بدون اتصال ثبت‌شده')." | ".deltaSmsReviewEsc($e['source']??'-')."\n";
+            $text.="\n".deltaSmsReviewEsc($e['bank']??'-')." | ".number_format((int)($e['amount_irr']??0))." ریال | ".gmdate('H:i:s',(int)($e['received_at']??0)+12600)."\n".(deltaSmsReviewEventUsed((string)$e['event_id'])?'رزرو/مصرف‌شده':'بدون اتصال ثبت‌شده (پرداخت دستی قبلی را بررسی کنید)')." | ".deltaSmsReviewEsc($e['source']??'-')."\n";
         }
         $rows=[];$nav=[];if($page>0)$nav[]=['text'=>'قبلی','callback_data'=>'smsReviewEvents'.($page-1)];if(count($events)>($page+1)*10)$nav[]=['text'=>'بعدی','callback_data'=>'smsReviewEvents'.($page+1)];if($nav)$rows[]=$nav;$rows[]=$home;
         deltaSmsReviewRender($text,$rows);return;
