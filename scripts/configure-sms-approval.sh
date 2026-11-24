@@ -14,12 +14,16 @@ python3 - "$tmp" <<'PY'
 import json, re, sys
 from getpass import getpass
 cards={}
+tty=open('/dev/tty','r')
+def ask(prompt):
+    print(prompt,end='',flush=True)
+    return tty.readline().strip()
 while True:
     card=getpass('Full receiving card number (empty to finish): ').strip()
     if not card: break
     if not re.fullmatch(r'[0-9]{16}',card): print('Invalid card number.'); continue
-    bank=input('Bank (melli/pasargad/khavar): ').strip()
-    hint=input('Exact five-digit account hint from actual incoming SMS: ').strip()
+    bank=ask('Bank (melli/pasargad/khavar): ')
+    hint=ask('Exact five-digit account hint from actual incoming SMS: ')
     if bank not in ('melli','pasargad','khavar') or not re.fullmatch(r'[0-9]{5}',hint):
         print('Invalid bank or account hint.'); continue
     cards[card]={'bank':bank,'account_hint':hint}
