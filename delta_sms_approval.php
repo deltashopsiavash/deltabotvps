@@ -4,7 +4,7 @@
 // events are already filtered by the exact configured sender; no second
 // card/account mapping or server-side copy of those rules is required.
 function deltaSmsSenderReservation(array $binding): bool {
-    return ($binding['bank']??'')==='sender' && ($binding['account_hint']??'')==='00000';
+    return ($binding['bank']??'')==='nominal' && ($binding['account_hint']??'')==='00000';
 }
 function deltaSmsApprovalSchema(): bool {
     global $connection,$isChildBot;
@@ -18,10 +18,27 @@ function deltaSmsApprovalSchema(): bool {
       amount_irr BIGINT UNSIGNED NOT NULL, nominal_toman BIGINT UNSIGNED NOT NULL,
       shown_at BIGINT UNSIGNED NOT NULL, expires_at BIGINT UNSIGNED NOT NULL,
       event_id CHAR(64) DEFAULT NULL, claimed_at BIGINT UNSIGNED DEFAULT NULL,
-      UNIQUE KEY sms_amount (bank,account_hint,amount_irr),
+      KEY sms_amount (amount_irr,shown_at,expires_at),
       UNIQUE KEY sms_event (event_id), KEY sms_invoice (hash_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-    return $ready;
+    if(!$ready)return false;
+    // Existing installs have a unique amount index from the suffix version.
+    // Keep every old reservation and the unique event index intact.
+    $ready=false;
+    $lockResult=$connection->query("SELECT GET_LOCK(CONCAT('delta_sms_schema_',LEFT(SHA1(DATABASE()),32)),5) AS acquired");
+    if(!$lockResult || (int)($lockResult->fetch_assoc()['acquired']??0)!==1)return false;
+    try{
+        $index=$connection->query("SHOW INDEX FROM delta_sms_invoice_bindings WHERE Key_name='sms_amount'");
+        $row=$index?$index->fetch_assoc():null;
+        if(!$row)return false;
+        if((int)$row['Non_unique']===0){
+            if(!$connection->query("ALTER TABLE delta_sms_invoice_bindings DROP INDEX sms_amount, ADD INDEX sms_amount (amount_irr,shown_at,expires_at)"))return false;
+        }
+        $ready=true;
+        return true;
+    }finally{
+        $connection->query("SELECT RELEASE_LOCK(CONCAT('delta_sms_schema_',LEFT(SHA1(DATABASE()),32)))");
+    }
 }
 function deltaSmsApprovalEpoch(): int {
     return (int)getSettingValue('SMS_APPROVAL_FROM_TS','0');
@@ -37,27 +54,32 @@ function deltaSmsReservePresentation(array $pay,array $card): ?array {
         if($bf) $expires=min($expires,(int)$bf['reserved_until']);
     }
     if($expires<=$now || $now<deltaSmsApprovalEpoch()) return null;
-    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank='sender';$hint='00000';
-    // Without account mapping, each exact amount must be unique across ALL
-    // cards and banks, including reservations made by the previous version.
-    // The existing unique index on (bank,account_hint,amount_irr) serializes
-    // competing new sender reservations. Never recycle old amounts.
-    $offsets=range(1,9);shuffle($offsets);
-    foreach($offsets as $offset){
-        $rial=$price*10+$offset;
-        $check=$connection->prepare('SELECT 1 FROM delta_sms_invoice_bindings WHERE amount_irr=? LIMIT 1');
-        $check->bind_param('i',$rial);$check->execute();$used=(bool)$check->get_result()->fetch_row();$check->close();
-        if($used)continue;
-        $st=$connection->prepare('INSERT IGNORE INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
-        $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
-        $st->execute();$inserted=$st->affected_rows===1;$st->close();
-        if($inserted)return ['amount_irr'=>$rial,'expires_at'=>$expires];
-    }
-    return null;
+    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank='nominal';$hint='00000';
+    $rial=$price*10;
+    $st=$connection->prepare('INSERT INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
+    $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
+    $st->execute();$inserted=$st->affected_rows===1;$st->close();
+    return $inserted?['amount_irr'=>$rial,'expires_at'=>$expires]:null;
 }
 function deltaSmsPresentationText(?array $binding): string {
-    if(!$binding) return "\n\n⚠️ این فاکتور برای بررسی دستی است؛ مبلغ عادی را واریز کنید.";
-    return "\n\n📲 مبلغ اختصاصی تأیید پیامکی: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nلطفاً دقیقاً همین مبلغ را (با رقم آخر) کپی و واریز کنید. اختلاف کمتر از یک تومان است. اگر بانک مبلغ را گرد می‌کند، رسید برای بررسی دستی می‌ماند.";
+    if(!$binding) return "\n\n⚠️ این فاکتور برای بررسی دستی است؛ مبلغ اصلی فاکتور را واریز کنید.";
+    return "\n\n📲 مبلغ دقیق قابل پرداخت: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nپس از واریز، رسید را ارسال کنید. در صورت وجود فاکتور یا واریزی هم‌مبلغ دیگر، مدیریت پرداخت را بررسی می‌کند.";
+}
+// Include every other card presentation, including pending, approved,
+// declined and old-mode invoices. A manually paid invoice is still a possible
+// owner of the bank deposit. Don't count repeated displays of the SAME invoice.
+function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt): bool {
+    global $connection;
+    $from=$eventAt-3600;
+    $st=$connection->prepare('SELECT d.id FROM payment_card_displays d JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id WHERE BINARY d.hash_id<>BINARY ? AND p.price=? AND d.shown_at BETWEEN ? AND ? LIMIT 1');
+    $st->bind_param('siii',$hash,$price,$from,$eventAt);$st->execute();
+    $found=(bool)$st->get_result()->fetch_row();$st->close();
+    if($found)return true;
+    // Keep historical pricing evidence even if a pay row was repriced.
+    $st=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE BINARY hash_id<>BINARY ? AND nominal_toman=? AND shown_at BETWEEN ? AND ? LIMIT 1');
+    $st->bind_param('siii',$hash,$price,$from,$eventAt);$st->execute();
+    $found=(bool)$st->get_result()->fetch_row();$st->close();
+    return $found;
 }
 function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $epoch,int $now): bool {
     $shown=(int)($binding['shown_at']??0);$expires=(int)($binding['expires_at']??0);
@@ -99,11 +121,13 @@ function deltaSmsFindBinding(array $pay,int $receiptAt): ?array {
     if(!$b||(int)$b['nominal_toman']!==(int)$pay['price'])return null;
     // Older account-bound reservations cannot silently acquire broader
     // sender-only eligibility after the upgrade.
-    if(!deltaSmsSenderReservation($b))return null;
+    if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
     foreach(deltaSmsApprovalEvents() as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);
+    $b['matched_event_at']=(int)$hits[$b['matched_event']]['received_at'];
+    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at']))return null;
     return $b;
 }
 // Atomic invoice+event claim. No bank event is released on a panel failure;
@@ -120,8 +144,11 @@ function deltaSmsClaimInvoice(array $pay,?array $binding,string $mode): bool {
         if($mode==='sms'){
             if(!$binding||deltaSmsApprovalEpoch()>(int)$binding['shown_at']||deltaAutoApprovePolicy($uid)==='never')throw new RuntimeException('binding no longer eligible');
             $display=(int)$binding['display_id'];$event=(string)$binding['matched_event'];$now=time();
+            if(!deltaSmsSenderReservation($binding)||(int)($binding['amount_irr']??0)!==$price*10)throw new RuntimeException('old pricing mode');
+            $eventAt=(int)($binding['matched_event_at']??0);
+            if($eventAt<=0||deltaSmsHasCompetingInvoice($hash,$price,$eventAt))throw new RuntimeException('ambiguous amount');
             if((int)getSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),'0')!==$display)throw new RuntimeException('card changed');
-            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND event_id IS NULL');
+            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND bank=\'nominal\' AND account_hint=\'00000\' AND amount_irr=nominal_toman*10 AND event_id IS NULL');
             $st->bind_param('siisii',$event,$now,$display,$hash,$uid,$price);
             $st->execute();$ok=$st->affected_rows===1;$st->close();
             if(!$ok)throw new RuntimeException('event already used');
