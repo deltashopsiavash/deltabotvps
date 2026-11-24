@@ -230,7 +230,7 @@ function deltaSmsReviewConflicts(array $p): array {
         foreach(deltaSmsCompetitionRowsSql() as $sql){
             $s=$connection->prepare($sql);$s->bind_param('siii',$hash,$price,$from,$at);$s->execute();$rows=array_merge($rows,$s->get_result()->fetch_all(MYSQLI_ASSOC));$s->close();
         }
-        foreach(deltaSmsCompetingHashes($rows,$events,$at,$e['event_id']) as $h){
+        foreach(deltaSmsCompetingHashes($rows,$events,$at,$e['event_id'],deltaSmsCompetitionHistory($rows),(int)$b['shown_at']) as $h){
             $s=$connection->prepare('SELECT * FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1');$s->bind_param('s',$h);$s->execute();$r=$s->get_result()->fetch_assoc();$s->close();if($r)$out[(int)$r['id']]=$r;
         }
     }
