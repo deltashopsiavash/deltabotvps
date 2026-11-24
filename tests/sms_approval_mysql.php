@@ -106,6 +106,21 @@ ok(deltaSmsReviewQueuedBinding(deltaSmsReviewPay(8))===null,'reset blocks old qu
 ok(deltaSmsReviewEventUsed($third['event_id']),'reset preserves event reservation');
 ok(deltaSmsReviewPay(8)['state']==='have_sent','reset does not reject paid or pending invoice');
 ok((int)$connection->query("SELECT COUNT(*) AS c FROM delta_sms_admin_audit WHERE action='reject'")->fetch_assoc()['c']===1,'rejection audit retained');
+// Fresh open-list cutoff must not change payment states, SMS reservations or approval epoch.
+$before=deltaSmsReviewOpenCount(0,false);$epochBefore=deltaSmsApprovalEpoch();
+$archive=deltaSmsReviewClearList(123);
+ok(is_array($archive)&&$archive['count']===$before,'archive records open count');
+$cutoff=deltaSmsReviewListCutoff();
+ok(deltaSmsReviewOpenCount($cutoff,false)===0,'new list starts empty');
+ok(deltaSmsReviewOpenCount($cutoff,true)===$before,'old open invoices remain in archive');
+ok(count(deltaSmsReviewOpenRows($cutoff,true,0))===$before,'archive rows still accessible');
+ok(deltaSmsReviewPay(8)['state']==='have_sent','archive does not reject receipts');
+ok(deltaSmsReviewEventUsed($third['event_id']),'archive preserves SMS reservation');
+ok(deltaSmsApprovalEpoch()===$epochBefore,'list archive does not change auto approval epoch');
+$connection->query("INSERT INTO pays VALUES (9,'fresh-list',325,83000,'pending')");
+$connection->query("INSERT INTO payment_card_displays VALUES (9,'fresh-list',325,'0000000000000000',$now)");
+ok(deltaSmsReviewOpenCount($cutoff,false)===1,'new invoice appears in fresh list');
+ok(deltaSmsReviewOpenRows($cutoff,false,0)[0]['hash_id']==='fresh-list','only new invoice listed');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
