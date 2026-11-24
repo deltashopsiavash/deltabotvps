@@ -36,7 +36,8 @@ CHECK="$(php -r '
         || !preg_match("/^[a-z0-9.-]+$/i",(string)($u["host"]??""))
         || !preg_match("/^[0-9]+:[a-zA-Z0-9_-]+$/",(string)($botToken??""))
         || !ctype_digit((string)($admin??""))
-        || !preg_match("/^[a-zA-Z0-9_]+$/",(string)($dbName??""))) exit(2);
+        || !preg_match("/^[a-zA-Z0-9_]+$/",(string)($dbName??""))
+        || preg_match("/_rb[0-9]+$/i",(string)($dbName??""))) exit(2);
     echo strtolower((string)$u["host"]);
 ' "$MOTHER_CONFIG" 2>/dev/null)" || fail "Not a verified mother bot installation. Reseller bots are excluded."
 [ -n "$CHECK" ] || fail "Missing mother domain."
