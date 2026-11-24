@@ -139,7 +139,7 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
             : (int)$payInfo['request_date'];
         $smsBinding=null;
         if($smsMode){
-            try{$smsBinding=deltaSmsFindBinding($payInfo,$receiptAt);}
+            try{$smsBinding=deltaSmsReviewQueuedBinding($payInfo)??deltaSmsFindBinding($payInfo,$receiptAt);}
             catch(Throwable $e){error_log('Delta SMS matching unavailable');continue;}
             if(!$smsBinding) continue;
         }elseif($forcedAuto){
@@ -175,7 +175,7 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
         $autoReport=null;
         unset($remark);
         $track = function_exists('deltaTrackingCode') ? deltaTrackingCode($payInfo['hash_id'] ?? '') : ($payInfo['hash_id'] ?? '');
-        $mode = $smsMode ? 'تأیید پیامکی Delta SMS Bridge' : ($forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی');
+        $mode = $smsMode ? (!empty($smsBinding['admin_review'])?'تطبیق پیامک با کد پیگیری توسط مدیریت':'تأیید پیامکی Delta SMS Bridge') : ($forcedAuto ? 'استثنای همیشگی کاربر' : 'تأیید خودکار عمومی');
         $receiptKind = getSettingValue('RECEIPT_KIND_'.sha1((string)$payInfo['hash_id']),'photo')==='text'?'متنی / پیامک':'تصویری';
         $nm = trim((string)($userinfo['name'] ?? ''));
         $un = trim((string)($userinfo['username'] ?? ''));
@@ -693,7 +693,13 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
         
 
         if($payType==='BUY_SUB' && !empty($remark)) $autoReport.="\n🔮 ریمارک سرویس: ".htmlspecialchars((string)$remark,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
-        if($smsMode) $autoReport.="\n📲 منبع تأیید: پیامک بانکی ثبت‌شده در Delta SMS Bridge";
+        if($smsMode){
+            $autoReport.="\n📲 منبع تأیید: پیامک بانکی ثبت‌شده در Delta SMS Bridge";
+            if(!empty($smsBinding['admin_review'])){
+                $autoReport.="\n👤 بررسی‌کننده: <code>".(int)$smsBinding['actor_id']."</code>";
+                deltaSmsReviewDelivered($smsBinding);
+            }
+        }
         sendToAdmins($autoReport,null,'HTML');
         if(trim((string)$rewaredChannel)!=='' && !in_array((int)$rewaredChannel,getAllAdminIds(),true)){
             sendMessage($autoReport,null,'HTML',$rewaredChannel);
