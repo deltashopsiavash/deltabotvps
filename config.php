@@ -1991,12 +1991,12 @@ function getLastBoughtPlanId($userId){
     return 0;
 }
 
-function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMenu', $hashId = '', $displayId = 0){
+function getCopyPaymentButtons($amount, $bankAccount, $cancelCallback = 'mainMenu', $hashId = '', $displayId = 0, $exactRial = null){
     $rows = [];
     $copyRow = [];
     if((string)$amount !== '' && (int)$amount > 0){
         // مبلغ‌های ربات به تومان ذخیره/محاسبه می‌شوند؛ برای کپی مبلغ پرداخت، به ریال تبدیل می‌کنیم.
-        $copyAmountRial = (int)$amount * 10;
+        $copyAmountRial = $exactRial===null ? (int)$amount * 10 : (int)$exactRial;
         $copyRow[] = ['text' => '📋 کپی مبلغ', 'copy_text' => ['text' => (string)$copyAmountRial]];
     }
     if(trim((string)$bankAccount) !== ''){
@@ -4967,7 +4967,7 @@ function getBotSettingKeys(){
             ['text'=>'تأیید پیامکی','callback_data'=>'deltach']
         ]:[]),
         (empty($isChildBot) && deltaReceiptApprovalMode($botState)==='sms'?[
-            ['text'=>'⚠️ آزمایشی: فقط ثبت و گزارش، بدون تحویل خودکار','callback_data'=>'deltach']
+            ['text'=>'📲 فقط مبلغ اختصاصی و حساب تأییدشده','callback_data'=>'deltach']
         ]:[]),
         ($botState['cartToCartAutoAcceptState']=="on"?[
             ['text'=>($botState['cartToCartAutoAcceptType'] == "0"?"نماینده":($botState['cartToCartAutoAcceptType'] == "1"?"کاربر":"همه")),'callback_data'=>"changeBotcartToCartAutoAcceptType"],
