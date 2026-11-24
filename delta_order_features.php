@@ -43,6 +43,18 @@ if(!function_exists('deltaDiscountOwner')){
     function deltaDiscountAllowedForUser($code,$uid){ $owner=deltaDiscountOwner($code); return $owner<=0 || $owner===(int)$uid; }
     function deltaSetDiscountOwner($code,$uid){ return upsertSettingValue('DISCOUNT_OWNER_'.strtoupper(trim((string)$code)),(string)(int)$uid); }
 }
+if(!function_exists('deltaReceiptApprovalMode')){
+    // SMS mode is a separate, mother-only route. Until a verified payment
+    // binding exists, it is intentionally fail-closed (no legacy delivery).
+    function deltaReceiptApprovalMode(array $state, bool $child=false): string {
+        if(($state['cartToCartAutoAcceptState']??'off')==='on') return 'legacy';
+        if(!$child && ($state['cartToCartSmsAcceptState']??'off')==='on') return 'sms';
+        return 'manual';
+    }
+    function deltaLegacyReceiptWorkerAllowed(array $state, bool $child, bool $forced): bool {
+        return deltaReceiptApprovalMode($state,$child)==='legacy' || ($child && $forced);
+    }
+}
 if(!function_exists('deltaForceAutoApprove')){
     function deltaAutoApprovePolicy($uid){
         $uid=(int)$uid;
