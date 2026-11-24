@@ -4966,6 +4966,9 @@ function getBotSettingKeys(){
             ['text'=>(($botState['cartToCartSmsAcceptState']??'off')==='on'?$buttonValues['on']:$buttonValues['off']),'callback_data'=>'changeBotcartToCartSmsAcceptState'],
             ['text'=>'تأیید پیامکی','callback_data'=>'deltach']
         ]:[]),
+        (empty($isChildBot)?[
+            ['text'=>'📲 مدیریت تأیید پیامکی','callback_data'=>'smsReviewHome']
+        ]:[]),
         (empty($isChildBot) && deltaReceiptApprovalMode($botState)==='sms'?[
             ['text'=>'📲 پیامک سرشماره مجاز و مبلغ دقیق فاکتور','callback_data'=>'deltach']
         ]:[]),
