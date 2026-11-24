@@ -66,7 +66,15 @@ try{
         if(count($hits)!==1){output('BLOCKER',count($hits)>1?'AMBIGUOUS_BANK_EVENTS':'NO_ELIGIBLE_BANK_EVENT');continue;}
         $event=reset($hits);$at=(int)$event['received_at'];
         $rows=[];foreach(deltaSmsCompetitionRowsSql() as $sql)$rows=array_merge($rows,query($p,$sql,[$h,$price,$at-3600,$at]));
-        $competitors=deltaSmsCompetingHashes($rows,$events,$at,(string)$event['event_id']);
+        $history=[];
+        foreach($rows as $r){
+            $ch=(string)$r['hash_id'];
+            if(isset($history[$ch])||($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+            $latest=0;
+            foreach(deltaSmsCompetitionHistoryQueries() as $sql)$latest=max($latest,(int)(query($p,$sql,[$ch])[0]['latest']??0));
+            $history[$ch]=['receipt_at'=>(int)setting($p,'RECEIPT_AT_'.sha1($ch)),'latest_shown'=>$latest];
+        }
+        $competitors=deltaSmsCompetingHashes($rows,$events,$at,(string)$event['event_id'],$history,(int)$b['shown_at']);
         output('COMPETING_INVOICES',count($competitors));
         foreach($competitors as $ch){
             $cp=query($p,'SELECT id,hash_id,price,state,request_date FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1',[$ch])[0]??[];
