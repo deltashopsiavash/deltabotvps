@@ -65,5 +65,47 @@ $binding['matched_event']=$oldEvent;
 ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'consumed event from old version cannot be reused');
 $r=$connection->query("SELECT state FROM pays WHERE id=2")->fetch_assoc();ok($r['state']==='have_sent','failed claims leave invoice pending');
 mode('on','on');ok(deltaSmsClaimInvoice($c,null,'legacy'),'legacy has priority');
+
+// Owner review of real stored evidence, with two concurrent same-price invoices.
+ok(deltaSmsReviewSchema(),'admin review schema');
+mode('off','on');
+$now=time();$eventAt=$now-10;$epoch=$now-120;upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)$epoch);
+$connection->query("INSERT INTO pays VALUES (5,'review-a',321,81000,'have_sent'),(6,'review-b',322,81000,'have_sent'),(7,'review-reject',323,82000,'pending'),(8,'review-reset',324,83000,'have_sent')");
+foreach([[5,'review-a',321,81000],[6,'review-b',322,81000],[7,'review-reject',323,82000],[8,'review-reset',324,83000]] as [$id,$hash,$uid,$price]){
+    $pay=['id'=>$id,'hash_id'=>$hash,'user_id'=>$uid,'price'=>$price];
+    $shown=$now-60;$expires=$now+3540;$amount=$price*10;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',$amount,$price,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);
+    deltaMarkReceiptSubmitted($hash,$now-5);
+}
+$first=['event_id'=>str_repeat('b',64),'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>810000,'received_at'=>$eventAt,'ingested_at'=>$eventAt+1];
+$second=array_replace($first,['event_id'=>str_repeat('c',64)]);
+$third=array_replace($first,['event_id'=>str_repeat('d',64),'amount_irr'=>830000]);
+$pa=deltaSmsReviewPay(5);$pb=deltaSmsReviewPay(6);
+ok(deltaSmsHasCompetingInvoice('review-a',81000,$eventAt),'automatic ambiguity remains');
+ok(!deltaSmsReviewQueueFromStoredEvents(5,substr($first['event_id'],0,16),123,[array_replace($first,['source'=>'notification'])]),'notification cannot be reviewed as bank SMS');
+ok(!deltaSmsReviewQueueFromStoredEvents(5,substr($first['event_id'],0,16),123,[array_replace($first,['amount_irr'=>810001])]),'wrong amount cannot be selected');
+ok(deltaSmsReviewQueueFromStoredEvents(5,substr($first['event_id'],0,16),123,[$first,$second]),'owner can select specific stored event');
+ok(deltaSmsReviewEventUsed($first['event_id']),'event reserved immediately');
+ok(!deltaSmsReviewQueueFromStoredEvents(6,substr($first['event_id'],0,16),123,[$first,$second]),'cannot assign same SMS twice');
+ok(deltaSmsReviewReject(5,123)===null,'reserved deposit cannot be rejected');
+$queued=deltaSmsReviewQueuedBinding($pa);
+ok(is_array($queued)&&!empty($queued['admin_review']),'worker finds reviewed event');
+ok(deltaSmsClaimInvoice($pa,$queued,'sms'),'owner-confirmed ambiguous payment uses delivery worker');
+ok(!deltaSmsClaimInvoice($pa,$queued,'sms'),'reviewed invoice cannot be claimed twice');
+deltaSmsReviewDelivered($queued);
+ok(deltaSmsReviewQueueFromStoredEvents(6,substr($second['event_id'],0,16),123,[$first,$second]),'second invoice gets a distinct event');
+$queued2=deltaSmsReviewQueuedBinding($pb);
+ok(deltaSmsClaimInvoice($pb,$queued2,'sms'),'second same-price invoice can be independently claimed');
+ok(deltaSmsReviewReject(7,123)!==null,'explicit unpaid rejection recorded');
+ok(deltaSmsReviewReject(7,123)===null,'duplicate rejection prevented');
+ok(deltaSmsReviewQueueFromStoredEvents(8,substr($third['event_id'],0,16),123,[$third]),'queue before reset');
+ok(deltaSmsReviewReset(123),'reset only matching epoch');
+ok(deltaSmsReviewQueuedBinding(deltaSmsReviewPay(8))===null,'reset blocks old queued auto delivery');
+ok(deltaSmsReviewEventUsed($third['event_id']),'reset preserves event reservation');
+ok(deltaSmsReviewPay(8)['state']==='have_sent','reset does not reject paid or pending invoice');
+ok((int)$connection->query("SELECT COUNT(*) AS c FROM delta_sms_admin_audit WHERE action='reject'")->fetch_assoc()['c']===1,'rejection audit retained');
+$connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
