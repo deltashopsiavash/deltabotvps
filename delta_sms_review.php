@@ -49,9 +49,9 @@ function deltaSmsReviewEventUsed(string $id): bool {
     $s=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE event_id=? LIMIT 1');
     $s->bind_param('s',$id);$s->execute();$found=(bool)$s->get_result()->fetch_row();$s->close();return $found;
 }
-function deltaSmsReviewCandidates(array $pay,array $b): array {
+function deltaSmsReviewCandidates(array $pay,array $b,?array $trustedEvents=null): array {
     $receipt=deltaReceiptSubmittedAt($pay['hash_id'],0);$now=time();$out=[];
-    foreach(deltaSmsApprovalEvents() as $e){
+    foreach($trustedEvents??deltaSmsApprovalEvents() as $e){
         if(deltaSmsReviewEventEligible($pay,$b,$e,$receipt,$now)&&!deltaSmsReviewEventUsed($e['event_id']))$out[$e['event_id']]=$e;
     }
     uasort($out,static function($a,$b){return $b['received_at']<=>$a['received_at'];});
@@ -69,6 +69,10 @@ function deltaSmsReviewAudit(string $action,int $actor,array $pay,array $b,?arra
 // Reserve an actual stored SMS before delivery, in the same lock domain
 // as automatic approval. The event remains reserved even if delivery fails.
 function deltaSmsReviewQueue(int $id,string $prefix,int $actor): bool {
+    return deltaSmsReviewQueueFromStoredEvents($id,$prefix,$actor,deltaSmsApprovalEvents());
+}
+// Internal entry for the trusted event reader and isolated tests; never takes client payloads.
+function deltaSmsReviewQueueFromStoredEvents(int $id,string $prefix,int $actor,array $trustedEvents): bool {
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsReviewSchema()||!preg_match('/^[a-f0-9]{16}$/D',$prefix))return false;
     $connection->begin_transaction();
@@ -79,7 +83,7 @@ function deltaSmsReviewQueue(int $id,string $prefix,int $actor): bool {
         $s=$connection->prepare('SELECT * FROM pays WHERE id=? FOR UPDATE');$s->bind_param('i',$id);$s->execute();$pay=$s->get_result()->fetch_assoc();$s->close();
         if(!$pay||$pay['state']!=='have_sent'||deltaAutoApprovePolicy($pay['user_id'])==='never'||getSettingValue('AUTOAPPROVE_FAILED_'.$id,'0')==='1'||(function_exists('deltaIsUsdtInvoice')&&deltaIsUsdtInvoice($pay['hash_id'])))throw new RuntimeException('not eligible');
         $b=deltaSmsReviewBinding($pay);if(!$b)throw new RuntimeException('missing binding');
-        $matches=array_filter(deltaSmsReviewCandidates($pay,$b),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
+        $matches=array_filter(deltaSmsReviewCandidates($pay,$b,$trustedEvents),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
         if(count($matches)!==1)throw new RuntimeException('missing or ambiguous event');
         $e=reset($matches);$eid=$e['event_id'];$display=(int)$b['display_id'];$now=time();$hash=(string)$pay['hash_id'];
         $s=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND BINARY hash_id=BINARY ? AND event_id IS NULL');
