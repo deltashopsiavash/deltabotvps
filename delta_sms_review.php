@@ -132,7 +132,8 @@ function deltaSmsReviewReject(int $id,int $actor): ?array {
         if(!$p||!in_array($p['state'],['pending','have_sent'],true)||getSettingValue('AUTOAPPROVE_FAILED_'.$id,'0')==='1')throw new RuntimeException('not rejectable');
         $hash=(string)$p['hash_id'];$s=$connection->prepare('SELECT id FROM payment_card_displays WHERE BINARY hash_id=BINARY ? LIMIT 1');$s->bind_param('s',$hash);$s->execute();$hasCard=(bool)$s->get_result()->fetch_row();$s->close();if(!$hasCard)throw new RuntimeException('not a card invoice');
         $b=deltaSmsReviewBinding($p);
-        if($b&&!empty($b['event_id']))throw new RuntimeException('reserved bank deposit');
+        $s=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? AND event_id IS NOT NULL LIMIT 1');$s->bind_param('s',$hash);$s->execute();$reserved=(bool)$s->get_result()->fetch_row();$s->close();
+        if($reserved)throw new RuntimeException('reserved bank deposit');
         $s=$connection->prepare("UPDATE pays SET state='declined' WHERE id=? AND state IN ('pending','have_sent')");$s->bind_param('i',$id);$s->execute();$ok=$s->affected_rows===1;$s->close();
         if(!$ok||!deltaSmsReviewAudit('reject',$actor,$p,$b??[],null,'done','owner confirmed no payment / duplicate test invoice'))throw new RuntimeException('audit failed');
         $connection->commit();return $p;
