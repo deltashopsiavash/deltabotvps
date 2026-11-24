@@ -1,6 +1,8 @@
 <?php
 // Delta Shop extended order/payment features.
 require_once __DIR__ . '/delta_sms_approval.php';
+require_once __DIR__ . '/delta_sms_review.php';
+require_once __DIR__ . '/delta_sms_review_ui.php';
 
 if(!function_exists('deltaTrackingCode')){
     function deltaTrackingCode($hash){
