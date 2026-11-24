@@ -3604,6 +3604,13 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
     sendMessage("👤 مدیریت ادمین‌ها",getAdminsKeys());
     exit;
 }
+if(empty($data)&&($userInfo['step']??'')==='smsReviewTrack'&&empty($isChildBot)&&(string)$from_id===(string)$admin){
+    if((string)$text===(string)($buttonValues['cancel']??'')){setUser();sendMessage('جستجو لغو شد.',getBotSettingKeys());exit;}
+    $code=deltaCardNormalizeNumber((string)$text);$id=deltaTrackingIdFromCode($code);
+    $p=$id>0?deltaSmsReviewPay($id):null;
+    if(!$p||deltaTrackingCode($p['hash_id'])!==$code){sendMessage('کد پیگیری معتبر یا فاکتور پیدا نشد.');exit;}
+    setUser();deltaSmsReviewHandle('smsReviewInvoice'.$id);exit;
+}
 if(is_string($data) && str_starts_with($data,"smsReview")){
     if(!empty($isChildBot)||(string)$from_id!==(string)$admin){alert("فقط مالک ربات مادر دسترسی دارد.",true);exit;}
     try{deltaSmsReviewHandle($data);}catch(Throwable $e){error_log("Delta SMS review error: ".$e->getMessage());alert("خطا در بخش مدیریت پیامکی؛ هیچ عملیات تأیید نشده‌ای را تکرار نکنید.",true);}
