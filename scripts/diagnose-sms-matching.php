@@ -68,6 +68,12 @@ try{
         $rows=[];foreach(deltaSmsCompetitionRowsSql() as $sql)$rows=array_merge($rows,query($p,$sql,[$h,$price,$at-3600,$at]));
         $competitors=deltaSmsCompetingHashes($rows,$events,$at,(string)$event['event_id']);
         output('COMPETING_INVOICES',count($competitors));
+        foreach($competitors as $ch){
+            $cp=query($p,'SELECT id,hash_id,price,state,request_date FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1',[$ch])[0]??[];
+            $id=(int)($cp['id']??0);
+            output('CONFLICT',['tracking_code'=>$id>0&&$id<90000000?10000000+(($id*32452843+27182818)%90000000):'unknown',
+                'hash'=>$ch,'state'=>$cp['state']??'missing','price_toman'=>$cp['price']??0,'created_iran'=>gmdate('Y-m-d H:i:s',(int)($cp['request_date']??0)+12600)]);
+        }
         output('BLOCKER',$competitors?'AMBIGUOUS_INVOICE':($policy==='never'?'USER_POLICY_NEVER':'NO_MATCHING_BLOCKER_FOUND_CHECK_WORKER'));
     }
     $p->rollBack();
