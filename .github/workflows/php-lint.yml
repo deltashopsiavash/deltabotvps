@@ -53,6 +53,7 @@ jobs:
           php tests/service_ui_gradient.php
           php tests/reseller_webhook.php
           bash -n update.sh
+          bash -n scripts/configure-sms-approval.sh
       - name: Test NPVS v6 public-key generator
         run: |
           python3 -m pip install --disable-pip-version-check 'cryptography>=41,<47'
@@ -93,3 +94,5 @@ jobs:
           php tests/black_friday_collation_mysql.php
           php -l tests/black_friday_storefront_mysql.php
           php tests/black_friday_storefront_mysql.php
+          php -l tests/sms_approval_mysql.php
+          php tests/sms_approval_mysql.php
