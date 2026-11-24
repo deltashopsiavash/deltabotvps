@@ -15,12 +15,15 @@ function deltaSmsReviewHandle(string $data): void {
     if(!empty($isChildBot)||(string)$from_id!==(string)$admin)return;
     if(!deltaCardEnsureTable()||!deltaSmsReviewSchema()){alert('جدول مدیریت پیامکی آماده نیست.',true);return;}
     $home=[['text'=>'بازگشت به مدیریت پیامکی','callback_data'=>'smsReviewHome']];
+    $cutoff=deltaSmsReviewListCutoff();
     if($data==='smsReviewHome'){
         $mode=deltaReceiptApprovalMode(json_decode((string)getSettingValue('BOT_STATES','{}'),true)?:[]);
-        $r=$connection->query("SELECT COUNT(*) AS c FROM pays p WHERE p.state IN ('pending','have_sent') AND EXISTS(SELECT 1 FROM payment_card_displays d WHERE BINARY d.hash_id=BINARY p.hash_id)");
-        $count=(int)($r->fetch_assoc()['c']??0);
-        deltaSmsReviewRender("📲 <b>مدیریت تأیید پیامکی ربات مادر</b>\n\nحالت فعلی: ".deltaSmsReviewEsc($mode)."\nفاکتورهای کارت‌به‌کارت باز: $count\n\nمبلغ فاکتور تغییر نمی‌کند. پیامک هم‌مبلغ مبهم نیاز به بررسی مالک دارد. کد پیگیری، رسید را به فاکتور متصل می‌کند نه به بانک.",[
+        $count=deltaSmsReviewOpenCount($cutoff,false);
+        $archived=deltaSmsReviewOpenCount($cutoff,true);
+        deltaSmsReviewRender("📲 <b>مدیریت تأیید پیامکی ربات مادر</b>\n\nحالت فعلی: ".deltaSmsReviewEsc($mode)."\nفاکتورهای کارت‌به‌کارت باز: $count\nفاکتورهای باز بایگانی: $archived\n\nمبلغ فاکتور تغییر نمی‌کند. پیامک هم‌مبلغ مبهم نیاز به بررسی مالک دارد. کد پیگیری، رسید را به فاکتور متصل می‌کند نه به بانک.",[
             [['text'=>'📋 فاکتورهای باز / بررسی و رد','callback_data'=>'smsReviewList0']],
+            [['text'=>'🗂 فاکتورهای باز قبلی (بایگانی)','callback_data'=>'smsReviewArchive0']],
+            [['text'=>'🧹 شروع فهرست جدید','callback_data'=>'smsReviewClearAsk']],
             [['text'=>'🔎 جستجو با کد پیگیری','callback_data'=>'smsReviewTrackAsk']],
             [['text'=>'📨 پیامک‌های ثبت‌شده اخیر','callback_data'=>'smsReviewEvents0']],
             [['text'=>'🔄 ریست مبدأ پیامکی','callback_data'=>'smsReviewResetAsk']],
@@ -32,16 +35,26 @@ function deltaSmsReviewHandle(string $data): void {
         global $cancelKey;
         setUser('smsReviewTrack');sendMessage('کد پیگیری ۸ رقمی فاکتور را ارسال کنید.',$cancelKey);return;
     }
-    if(preg_match('/^smsReviewList(\d{1,6})$/D',$data,$m)){
-        $page=(int)$m[1];$offset=$page*8;
-        $s=$connection->prepare("SELECT p.* FROM pays p WHERE p.state IN ('pending','have_sent') AND EXISTS(SELECT 1 FROM payment_card_displays d WHERE BINARY d.hash_id=BINARY p.hash_id) ORDER BY (p.state='have_sent') DESC,p.id DESC LIMIT 9 OFFSET ?");
-        $s->bind_param('i',$offset);$s->execute();$items=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
+    if($data==='smsReviewClearAsk'){
+        deltaSmsReviewRender('🧹 فهرست فعلی بایگانی شود؟ فاکتورهای قبلی حذف یا رد نمی‌شوند و در بایگانی و جستجوی کد پیگیری در دسترس خواهند بود. تأیید پرداخت و پیامک‌ها تغییر نمی‌کند.',[
+            [['text'=>'✅ شروع فهرست جدید','callback_data'=>'smsReviewClearDo']],$home
+        ]);return;
+    }
+    if($data==='smsReviewClearDo'){
+        $result=deltaSmsReviewClearList((int)$from_id);
+        if($result===null){alert('بایگانی انجام نشد.',true);return;}
+        sendToAdmins('🧹 فهرست باز پیامکی بایگانی شد. تعداد فاکتورهای منتقل‌شده: '.$result['count'].'؛ هیچ پرداختی رد یا حذف نشد.',null,'HTML');
+        deltaSmsReviewRender('✅ فهرست جدید شروع شد. فاکتورهای جدید در فهرست باز نمایش داده می‌شوند.',[$home]);return;
+    }
+    if(preg_match('/^smsReview(List|Archive)(\d{1,6})$/D',$data,$m)){
+        $archive=$m[1]==='Archive';$page=(int)$m[2];$offset=$page*8;$prefix=$archive?'smsReviewArchive':'smsReviewList';
+        $items=deltaSmsReviewOpenRows($cutoff,$archive,$offset);
         $rows=[];$more=count($items)>8;
         foreach(array_slice($items,0,8) as $p){
             $rows[]=[['text'=>($p['state']==='have_sent'?'📩 ':'⏳ ').deltaTrackingCode($p['hash_id']).' | '.number_format((int)$p['price']).' تومان','callback_data'=>'smsReviewInvoice'.(int)$p['id']]];
         }
-        $nav=[];if($page>0)$nav[]=['text'=>'قبلی','callback_data'=>'smsReviewList'.($page-1)];if($more)$nav[]=['text'=>'بعدی','callback_data'=>'smsReviewList'.($page+1)];if($nav)$rows[]=$nav;$rows[]=$home;
-        deltaSmsReviewRender("📋 فاکتورهای کارت‌به‌کارت\n📩 رسید ارسال شده | ⏳ منتظر رسید\nصفحه ".($page+1),$rows);return;
+        $nav=[];if($page>0)$nav[]=['text'=>'قبلی','callback_data'=>$prefix.($page-1)];if($more)$nav[]=['text'=>'بعدی','callback_data'=>$prefix.($page+1)];if($nav)$rows[]=$nav;$rows[]=$home;
+        deltaSmsReviewRender(($archive?'🗂 فاکتورهای باز بایگانی':'📋 فاکتورهای کارت‌به‌کارت جدید')."\n📩 رسید ارسال شده | ⏳ منتظر رسید\nصفحه ".($page+1).($items?'':"\nفهرست خالی است."),$rows);return;
     }
     if(preg_match('/^smsReviewInvoice(\d+)$/D',$data,$m)){
         $id=(int)$m[1];$p=deltaSmsReviewPay($id);if(!$p){alert('فاکتور پیدا نشد.',true);return;}
