@@ -697,7 +697,7 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
             $autoReport.="\n📲 منبع تأیید: پیامک بانکی ثبت‌شده در Delta SMS Bridge";
             if(!empty($smsBinding['admin_review'])){
                 $autoReport.="\n👤 بررسی‌کننده: <code>".(int)$smsBinding['actor_id']."</code>";
-                deltaSmsReviewDelivered($smsBinding);
+                try{deltaSmsReviewDelivered($smsBinding);}catch(Throwable $e){error_log('Delta SMS review delivery audit failed');}
             }
         }
         sendToAdmins($autoReport,null,'HTML');
