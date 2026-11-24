@@ -216,6 +216,32 @@ ok($nextBinding&&$nextBinding['matched_event']===$en['event_id'],'new purchase s
 ok(deltaSmsClaimInvoice($next,$nextBinding,'sms',$all),'next purchase approved without repeating declined review');
 ok(deltaSmsReviewPay(22)['state']==='declined','old cancellation and financial records preserved');
 ok(!deltaSmsClaimInvoice($next,$nextBinding,'sms',$all),'new SMS cannot be reused');
+
+// A prior manual approval, followed by a distinct same-price checkout.
+// The reconciliation must not change its approved state or deliver again.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-1000));mode('off','on');
+$connection->query("INSERT INTO pays VALUES (31,'manual-first',701,91000,'approved'),(32,'manual-next',702,91000,'have_sent')");
+foreach([[31,'manual-first',701,$now-500,$now-440],[32,'manual-next',702,$now-100,$now-40]] as [$id,$hash,$uid,$shown,$receipt]){
+    $expires=$shown+3600;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',910000,91000,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$receipt);
+}
+$em=['event_id'=>str_repeat('7',64),'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>910000,'received_at'=>$now-450,'ingested_at'=>$now-449];
+$ef=array_replace($em,['event_id'=>str_repeat('8',64),'received_at'=>$now-35,'ingested_at'=>$now-34]);
+$fixture=[$em,$ef];
+ok(deltaSmsFindBinding(deltaSmsReviewPay(32),$now-40,$fixture)===null,'unlinked manual approval initially blocks');
+$connection->query("INSERT INTO pays VALUES (33,'manual-competitor',703,91000,'pending')");
+$connection->query("INSERT INTO payment_card_displays VALUES (33,'manual-competitor',703,'0000000000000000',".($now-480).")");
+ok(deltaSmsReconcileSettled($fixture)===0,'ambiguous earlier deposit never silently assigned');
+ok(!deltaSmsReviewEventUsed($em['event_id']),'ambiguous old SMS remains unused');
+$connection->query("DELETE FROM payment_card_displays WHERE id=33");
+ok(deltaSmsReconcileSettled($fixture)===1,'unique old manually settled payment linked');
+ok(deltaSmsReviewPay(31)['state']==='approved','prior manual payment not reopened');
+ok(deltaSmsReconcileSettled($fixture)===0,'reconciliation idempotent');
+$next=deltaSmsReviewPay(32);$bind=deltaSmsFindBinding($next,$now-40,$fixture);
+ok($bind&&$bind['matched_event']===$ef['event_id'],'new receipt matches SMS arriving after receipt');
+ok(deltaSmsClaimInvoice($next,$bind,'sms',$fixture),'next independent payment approved');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
