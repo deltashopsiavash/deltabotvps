@@ -181,6 +181,41 @@ ok(deltaSmsReviewNoPayment(22,123),'owner verifies declined unpaid');
 ok(!deltaSmsHasCompetingInvoice('closed-c',89000,$ed['received_at'],$ed['event_id'],$evs),'verified old conflicts cleared');
 ok(deltaSmsHasCompetingInvoice('closed-c',89000,time()+60,str_repeat('5',64),$evs),'later deposits remain protected');
 ok(deltaSmsReviewPay(22)['state']==='declined','declined state preserved');
+
+// Regression for the live recurrence: a new checkout AFTER the owner
+// verified a declined receipt's whole time window must not require a repeat.
+$now=time();
+$verified=(int)getSettingValue('SMS_NO_PAYMENT_'.sha1('closed-b'),'0');
+ok($verified>0,'existing no-payment marker remains usable');
+ok(!deltaSmsHasCompetingInvoice('closed-c',89000,$verified+60,str_repeat('5',64),$evs,$verified+10),'fully reviewed declined receipt retired for new checkout');
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,$verified+60,str_repeat('5',64),$evs,$verified-10),'checkout before review remains ambiguous');
+// A new receipt or later card presentation must invalidate retirement.
+deltaMarkReceiptSubmitted('closed-b',$verified-30);
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,$verified+60,str_repeat('5',64),$evs,$verified+10),'review must cover complete receipt grace window');
+deltaMarkReceiptSubmitted('closed-b',$verified-300);
+$connection->query("INSERT INTO payment_card_displays VALUES (24,'closed-b',602,'0000000000000000',".($verified+20).")");
+ok(deltaSmsHasCompetingInvoice('closed-c',89000,$verified+60,str_repeat('5',64),$evs,$verified+10),'new card presentation invalidates old review');
+$connection->query("DELETE FROM payment_card_displays WHERE id=24");
+// Synthetic next checkout after a historical verified cancellation.
+// Only fixture timestamps are changed; no production records are altered.
+$mark=$now-30;upsertSettingValue('SMS_NO_PAYMENT_'.sha1('closed-b'),(string)$mark);
+deltaMarkReceiptSubmitted('closed-b',$now-340);
+$connection->query("INSERT INTO pays VALUES (25,'closed-next',604,89000,'have_sent')");
+$shown=$now-20;$expires=$shown+3600;
+$connection->query("INSERT INTO payment_card_displays VALUES (25,'closed-next',604,'0000000000000000',$shown)");
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (25,'closed-next',604,'nominal','00000',890000,89000,$shown,$expires)");
+upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1('closed-next'),'25');deltaMarkReceiptSubmitted('closed-next',$now-2);
+// Settle the earlier distinct checkout with its own event first.
+$prior=deltaSmsReviewPay(23);
+ok(deltaSmsReviewQueueFromStoredEvents(23,substr($ed['event_id'],0,16),123,$evs),'old open payment reconciled');
+ok(deltaSmsClaimInvoice($prior,deltaSmsReviewQueuedBinding($prior),'sms'),'old open payment settled');
+$en=array_replace($ec,['event_id'=>str_repeat('6',64),'received_at'=>$now-10,'ingested_at'=>$now-9]);
+$all=[$ec,$ed,$en];$next=deltaSmsReviewPay(25);
+$nextBinding=deltaSmsFindBinding($next,$now-2,$all);
+ok($nextBinding&&$nextBinding['matched_event']===$en['event_id'],'new purchase sees only its own event after verified closure');
+ok(deltaSmsClaimInvoice($next,$nextBinding,'sms',$all),'next purchase approved without repeating declined review');
+ok(deltaSmsReviewPay(22)['state']==='declined','old cancellation and financial records preserved');
+ok(!deltaSmsClaimInvoice($next,$nextBinding,'sms',$all),'new SMS cannot be reused');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
