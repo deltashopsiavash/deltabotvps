@@ -1,3 +1,10 @@
+
+### 📱 Delta SMS Bridge — فقط ربات مادر
+
+در نصب‌های جدید ربات مادر، بخش دریافت و گزارش پیامک‌های بانکی به‌صورت مستقل راه‌اندازی می‌شود؛ ریپوی این برنامه **Private** است و روی VPS تازه برای دریافت سورس به **یک بار ورود امن به GitHub** نیاز دارد. این بخش روی ربات‌های نمایندگی (`bot.php?bid=...`) نصب یا فعال نمی‌شود و **رسیدها را خودکار تأیید نمی‌کند**.
+
+[راهنمای اختصاصی نصب و بازیابی فقط ربات مادر](MOTHER_SMS_BRIDGE_FA.md)
+
 <p align="center">
   <a href="https://github.com/deltashopsiavash/deltabotvps" target="_blank" rel="noopener noreferrer">
     <picture>
