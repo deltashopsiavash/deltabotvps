@@ -3604,6 +3604,11 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
     sendMessage("👤 مدیریت ادمین‌ها",getAdminsKeys());
     exit;
 }
+if(is_string($data) && str_starts_with($data,"smsReview")){
+    if(!empty($isChildBot)||(string)$from_id!==(string)$admin){alert("فقط مالک ربات مادر دسترسی دارد.",true);exit;}
+    try{deltaSmsReviewHandle($data);}catch(Throwable $e){error_log("Delta SMS review error: ".$e->getMessage());alert("خطا در بخش مدیریت پیامکی؛ هیچ عملیات تأیید نشده‌ای را تکرار نکنید.",true);}
+    exit;
+}
 if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     if($data!="botSettings"){
         if($match[1]==='cartToCartSmsAcceptState' && !empty($isChildBot)){
