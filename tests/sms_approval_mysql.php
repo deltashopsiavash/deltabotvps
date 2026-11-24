@@ -29,5 +29,19 @@ ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'same invoice cannot be claimed twic
 $binding['display_id']=2;ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'same event cannot be applied to another invoice');
 $r=$connection->query("SELECT state FROM pays WHERE id=2")->fetch_assoc();ok($r['state']==='have_sent','failed event claim does not mark invoice paid');
 mode('on','on');ok(deltaSmsClaimInvoice($c,null,'legacy'),'legacy has priority');
+// Reservations no longer need account setup; exact amounts must remain
+// globally unique even against older account-specific reservations.
+$botState=['cartToCartAutoAcceptState'=>'off','cartToCartSmsAcceptState'=>'on'];mode('off','on');
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (10,'test-old',123,'melli','00001',900001,90000,$now,$now+3600)");
+$used=[900001];
+for($i=0;$i<8;$i++){
+    $pay=['hash_id'=>'test-res-'.$i,'user_id'=>123,'price'=>90000,'request_date'=>$now];
+    $binding=deltaSmsReservePresentation($pay,['id'=>100+$i,'number'=>'0000000000000000']);
+    ok(is_array($binding),'reservation needs no account map');
+    ok(!in_array($binding['amount_irr'],$used,true),'global amount must not be reused');
+    $used[]=$binding['amount_irr'];
+}
+ok(deltaSmsReservePresentation(['hash_id'=>'test-full','user_id'=>123,'price'=>90000,'request_date'=>$now],['id'=>200,'number'=>'0000000000000000'])===null,'exhausted suffixes must remain manual');
+$connection->query("DELETE FROM delta_sms_invoice_bindings WHERE hash_id LIKE 'test-res-%' OR hash_id='test-old'");
 $connection->query("DELETE FROM delta_sms_invoice_bindings WHERE hash_id IN ('test-a','test-b')");
 echo "SMS claim integration PASS\n";

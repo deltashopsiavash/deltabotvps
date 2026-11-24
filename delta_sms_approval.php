@@ -1,17 +1,10 @@
 <?php
 // Mother-only SMS checkout binding. No customer-supplied receipt is proof of payment.
-function deltaSmsApprovalAccounts(): array {
-    $path='/etc/delta-sms-approval.json';
-    if(!is_file($path)||!is_readable($path)||fileowner($path)!==0||(fileperms($path)&0022)!==0) return [];
-    $cfg=json_decode((string)file_get_contents($path),true);
-    if(!is_array($cfg)||($cfg['dedicated_accounts_confirmed']??false)!==true) return [];
-    $out=[];
-    foreach(($cfg['cards']??[]) as $card=>$row){
-        if(!preg_match('/^[0-9]{16}$/D',(string)$card)||!is_array($row)) continue;
-        if(!in_array($row['bank']??'',['melli','pasargad','khavar'],true)||!preg_match('/^[0-9]{5}$/D',(string)($row['account_hint']??''))) continue;
-        $out[(string)$card]=['bank'=>$row['bank'],'account_hint'=>$row['account_hint']];
-    }
-    return $out;
+// Sender rules live on the paired Android phone. Its authenticated SMS
+// events are already filtered by the exact configured sender; no second
+// card/account mapping or server-side copy of those rules is required.
+function deltaSmsSenderReservation(array $binding): bool {
+    return ($binding['bank']??'')==='sender' && ($binding['account_hint']??'')==='00000';
 }
 function deltaSmsApprovalSchema(): bool {
     global $connection,$isChildBot;
@@ -36,22 +29,25 @@ function deltaSmsApprovalEpoch(): int {
 function deltaSmsReservePresentation(array $pay,array $card): ?array {
     global $connection,$botState,$isChildBot;
     if(!empty($isChildBot)||deltaReceiptApprovalMode($botState)!=='sms'||deltaSmsApprovalEpoch()<=0) return null;
-    $accounts=deltaSmsApprovalAccounts();$target=$accounts[(string)$card['number']]??null;
     $price=(int)($pay['price']??0);$hash=(string)($pay['hash_id']??'');
-    if(!$target||$price<=0||$price>99999999999||$hash===''||!deltaSmsApprovalSchema()) return null;
+    if($price<=0||$price>99999999999||$hash===''||!deltaSmsApprovalSchema()) return null;
     $now=time();$expires=min($now+3600,(int)($pay['request_date']??0)+3600);
     if(function_exists('bfFindInvoice')){
         $bf=bfFindInvoice($hash);
         if($bf) $expires=min($expires,(int)$bf['reserved_until']);
     }
     if($expires<=$now || $now<deltaSmsApprovalEpoch()) return null;
-    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank=$target['bank'];$hint=$target['account_hint'];
-    // Exact rial suffix is below one toman. Never reuse a reserved amount on the
-    // same account, even after expiration, so late/duplicate deposits cannot
-    // accidentally pay a later invoice. Exhausted prices go to manual review.
+    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank='sender';$hint='00000';
+    // Without account mapping, each exact amount must be unique across ALL
+    // cards and banks, including reservations made by the previous version.
+    // The existing unique index on (bank,account_hint,amount_irr) serializes
+    // competing new sender reservations. Never recycle old amounts.
     $offsets=range(1,9);shuffle($offsets);
     foreach($offsets as $offset){
         $rial=$price*10+$offset;
+        $check=$connection->prepare('SELECT 1 FROM delta_sms_invoice_bindings WHERE amount_irr=? LIMIT 1');
+        $check->bind_param('i',$rial);$check->execute();$used=(bool)$check->get_result()->fetch_row();$check->close();
+        if($used)continue;
         $st=$connection->prepare('INSERT IGNORE INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
         $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
         $st->execute();$inserted=$st->affected_rows===1;$st->close();
@@ -71,7 +67,10 @@ function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $ep
       && $now <= $expires+900
       && ($event['source']??'')==='sms'
       && preg_match('/^[a-f0-9]{64}$/D',(string)($event['event_id']??''))
-      && ($event['bank']??'')===$binding['bank'] && ($event['account_hint']??'')===$binding['account_hint']
+      && (deltaSmsSenderReservation($binding)
+          ? (in_array($event['bank']??'',['melli','pasargad','khavar'],true)
+              && is_string($event['sender']??null) && trim($event['sender'])!=='')
+          : (($event['bank']??'')===$binding['bank'] && ($event['account_hint']??'')===$binding['account_hint']))
       && is_int($event['amount_irr']??null) && $event['amount_irr']===(int)$binding['amount_irr']
       && is_int($received) && $received >= $shown && $received <= $expires
       && is_int($ingested) && $ingested >= $shown && $ingested <= $now && $ingested >= $received-300;
@@ -98,8 +97,9 @@ function deltaSmsFindBinding(array $pay,int $receiptAt): ?array {
     $st=$connection->prepare('SELECT b.*,d.card_number FROM delta_sms_invoice_bindings b JOIN payment_card_displays d ON d.id=b.display_id AND d.hash_id=b.hash_id AND d.user_id=b.user_id WHERE b.display_id=? AND b.hash_id=? AND b.user_id=? AND b.event_id IS NULL LIMIT 1');
     $st->bind_param('isi',$id,$hash,$uid);$st->execute();$b=$st->get_result()->fetch_assoc();$st->close();
     if(!$b||(int)$b['nominal_toman']!==(int)$pay['price'])return null;
-    $account=deltaSmsApprovalAccounts()[$b['card_number']]??null;
-    if(!$account||$account['bank']!==$b['bank']||$account['account_hint']!==$b['account_hint'])return null;
+    // Older account-bound reservations cannot silently acquire broader
+    // sender-only eligibility after the upgrade.
+    if(!deltaSmsSenderReservation($b))return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
     foreach(deltaSmsApprovalEvents() as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
