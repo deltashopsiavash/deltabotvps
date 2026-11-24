@@ -98,6 +98,10 @@ if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 // exceptions. Reseller behavior is intentionally unchanged.
 $receiptMode=deltaReceiptApprovalMode($botState,!empty($isChildBot));
 $smsMode=$receiptMode==='sms';
+if($smsMode){
+    try{deltaSmsReconcileSettled();}
+    catch(Throwable $e){error_log('Delta SMS settled reconciliation unavailable');}
+}
 if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$deltaForcedExists)){
     $date = strtotime("-" . ($botState['cartToCartAutoAcceptTime']??10) . " minutes");
     $autoFrom = function_exists('deltaAutoApproveFrom') ? deltaAutoApproveFrom() : 0;
