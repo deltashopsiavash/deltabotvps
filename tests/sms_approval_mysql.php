@@ -267,6 +267,25 @@ ok(deltaSmsReviewEventUsed($x['event_id'])&&deltaSmsReviewEventUsed($y['event_id
 $open=deltaSmsReviewPay(43);$bind=deltaSmsFindBinding($open,$now-140,$chain);
 ok($bind&&$bind['matched_event']===$z['event_id'],'new khavar payment unblocked');
 ok(deltaSmsClaimInvoice($open,$bind,'sms',$chain),'current live invoice claimed once');
+
+// Older manual reconciliation must not disappear merely because the
+// ordinary two-hour recent SMS view rolled over. Keep live approval strict.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-20000));mode('off','on');
+$connection->query("INSERT INTO pays VALUES (51,'historical-paid',901,93000,'approved'),(52,'historical-open',902,94000,'have_sent')");
+foreach([[51,'historical-paid',901,93000],[52,'historical-open',902,94000]] as [$id,$hash,$uid,$price]){
+    $shown=$now-10800;$expires=$shown+3600;$amount=$price*10;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',$amount,$price,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$shown+60);
+}
+$hx=['event_id'=>str_repeat('c',63).'1','bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>930000,'received_at'=>$now-10750,'ingested_at'=>$now-10749];
+$hy=array_replace($hx,['event_id'=>str_repeat('d',63).'1','amount_irr'=>940000]);
+ok(deltaSmsReconciliationLookbackSeconds()===86400,'bounded historical evidence window');
+ok(deltaSmsReconcileSettled([$hx,$hy])===1,'three-hour-old settled receipt can be linked');
+ok(deltaSmsReviewEventUsed($hx['event_id']),'old paid evidence is used once');
+ok(deltaSmsReviewPay(51)['state']==='approved','historical state untouched');
+ok(deltaSmsFindBinding(deltaSmsReviewPay(52),$now-10740,[$hx,$hy])===null,'old open invoice cannot be automatically fulfilled');
+ok(!deltaSmsReviewEventUsed($hy['event_id']),'expired open payment stays available for owner review');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
