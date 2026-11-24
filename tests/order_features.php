@@ -20,6 +20,19 @@ expectFeature(deltaDiscountAllowedForUser('VIP-ONE', 6166906522), 'Private disco
 expectFeature(!deltaDiscountAllowedForUser('VIP-ONE', 123456789), 'Private discount must reject other users');
 expectFeature(deltaDiscountAllowedForUser('PUBLIC', 123456789), 'Ordinary discount should stay public');
 
+// All four mother switch combinations; forced-user policies cannot bypass
+// the main switch in SMS-only/manual mode. Child behavior stays unchanged.
+foreach([['off','off','manual'],['off','on','sms'],['on','off','legacy'],['on','on','legacy']] as [$main,$sms,$expected]){
+    $state=['cartToCartAutoAcceptState'=>$main,'cartToCartSmsAcceptState'=>$sms];
+    expectFeature(deltaReceiptApprovalMode($state)===$expected,'Incorrect mother approval priority');
+    foreach([false,true] as $forced){
+        expectFeature(deltaLegacyReceiptWorkerAllowed($state,false,$forced)===($main==='on'),'Forced user must not bypass mother switch');
+        expectFeature(deltaLegacyReceiptWorkerAllowed($state,true,$forced)===($main==='on'||$forced),'Reseller approval behavior must stay unchanged');
+    }
+    expectFeature(deltaReceiptApprovalMode($state,true)===($main==='on'?'legacy':'manual'),'SMS mode must not reach resellers');
+}
+expectFeature(deltaReceiptApprovalMode([])==='manual','Missing switches must fail closed');
+
 $old = time() - 20;
 deltaMarkReceiptSubmitted('receipt-new', $old);
 expectFeature(deltaReceiptHasSubmissionMarker('receipt-new'), 'New receipt needs a submission marker');
