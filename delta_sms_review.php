@@ -143,3 +143,35 @@ function deltaSmsReviewReject(int $id,int $actor): ?array {
         $connection->commit();return $p;
     }catch(Throwable $e){$connection->rollback();return null;}
 }
+
+
+function deltaSmsReviewListCutoff(): int {
+    return max(0,(int)getSettingValue('SMS_REVIEW_LIST_AFTER_ID','0'));
+}
+function deltaSmsReviewOpenCount(int $cutoff,bool $archive): int {
+    global $connection;
+    $op=$archive?'<=':'>';
+    $s=$connection->prepare("SELECT COUNT(*) AS c FROM pays p WHERE p.id $op ? AND p.state IN ('pending','have_sent') AND EXISTS(SELECT 1 FROM payment_card_displays d WHERE BINARY d.hash_id=BINARY p.hash_id)");
+    $s->bind_param('i',$cutoff);$s->execute();$n=(int)$s->get_result()->fetch_assoc()['c'];$s->close();return $n;
+}
+function deltaSmsReviewOpenRows(int $cutoff,bool $archive,int $offset): array {
+    global $connection;
+    $op=$archive?'<=':'>';
+    $s=$connection->prepare("SELECT p.* FROM pays p WHERE p.id $op ? AND p.state IN ('pending','have_sent') AND EXISTS(SELECT 1 FROM payment_card_displays d WHERE BINARY d.hash_id=BINARY p.hash_id) ORDER BY (p.state='have_sent') DESC,p.id DESC LIMIT 9 OFFSET ?");
+    $s->bind_param('ii',$cutoff,$offset);$s->execute();$rows=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();return $rows;
+}
+function deltaSmsReviewClearList(int $actor): ?array {
+    global $connection,$isChildBot;
+    if(!empty($isChildBot)||!deltaSmsReviewSchema())return null;
+    $connection->begin_transaction();
+    try {
+        $r=$connection->query("SELECT value FROM setting WHERE type='BOT_STATES' LIMIT 1 FOR UPDATE");
+        if(!$r||!$r->fetch_assoc())throw new RuntimeException('settings unavailable');
+        $old=deltaSmsReviewListCutoff();
+        $cutoff=max($old,(int)$connection->query('SELECT COALESCE(MAX(id),0) AS m FROM pays')->fetch_assoc()['m']);
+        $count=deltaSmsReviewOpenCount($old,false);
+        if(!upsertSettingValue('SMS_REVIEW_LIST_AFTER_ID',(string)$cutoff))throw new RuntimeException('cutoff save failed');
+        if(!deltaSmsReviewAudit('archive',$actor,[],[],null,'done','cutoff='.$cutoff.'; open archived='.$count))throw new RuntimeException('audit failed');
+        $connection->commit();return ['cutoff'=>$cutoff,'count'=>$count];
+    }catch(Throwable $e){$connection->rollback();return null;}
+}
