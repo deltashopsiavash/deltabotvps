@@ -179,8 +179,25 @@ function deltaSmsReviewClearList(int $actor): ?array {
  // Reconcile an already closed invoice without delivering a service again.
 function deltaSmsReviewClosedCandidates(array $pay,array $b,?array $trustedEvents=null): array {
     if(!in_array($pay['state']??'',['paid','approved'],true))return [];
+    // Manual-only exception for a verified already-settled deposit whose
+    // bank timestamp predates this presentation by at most five minutes.
+    // Never used by live delivery or automatic reconciliation.
+    if(!deltaSmsSenderReservation($b)||deltaIsUsdtInvoice((string)$pay['hash_id'])||
+       getSettingValue('AUTOAPPROVE_FAILED_'.(int)$pay['id'],'0')==='1')return [];
     $pay['state']='have_sent';
-    return deltaSmsReviewCandidates($pay,$b,$trustedEvents??deltaSmsMatchingEvents());
+    $events=$trustedEvents??deltaSmsMatchingEvents();
+    $out=deltaSmsReviewCandidates($pay,$b,$events);
+    $shown=(int)$b['shown_at'];$receipt=deltaReceiptSubmittedAt($pay['hash_id'],0);$now=time();
+    if($receipt<$shown||$receipt>(int)$b['expires_at'])return $out;
+    $early=$b;$early['shown_at']=$shown-300;
+    foreach($events as $e){
+        $at=$e['received_at']??null;$ing=$e['ingested_at']??null;
+        if(is_int($at)&&$at<$shown&&is_int($ing)&&$ing>=$shown&&
+           deltaSmsReviewEventEligible($pay,$early,$e,$receipt,$now)&&!deltaSmsReviewEventUsed($e['event_id']))
+            $out[$e['event_id']]=$e;
+    }
+    uasort($out,static function($a,$b){return $b['received_at']<=>$a['received_at'];});
+    return $out;
 }
 function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false): bool {
     global $connection,$isChildBot;
@@ -216,7 +233,11 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
         if(count($hits)!==1)throw new RuntimeException('ambiguous evidence');
         $e=reset($hits);$eid=$e['event_id'];$display=(int)$b['display_id'];$now=time();
         $s=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND BINARY hash_id=BINARY ? AND event_id IS NULL');$s->bind_param('siis',$eid,$now,$display,$hash);$s->execute();$ok=$s->affected_rows===1;$s->close();
-        if(!$ok||!deltaSmsReviewAudit('reconcile',$actor,$p,$b,$e,'done',$automatic?'unique stored SMS for settled payment; no delivery':'owner verified previously settled deposit; no delivery'))throw new RuntimeException('cannot reconcile');
+        if(!$ok)throw new RuntimeException('cannot reconcile');
+        $early=(int)$e['received_at']<(int)$b['shown_at'];
+        if($early&&($automatic||$actor<=0||!upsertSettingValue('SMS_EARLY_RECONCILE_'.sha1($hash),$eid)))throw new RuntimeException('early event requires owner verification');
+        $detail=$automatic?'unique stored SMS for settled payment; no delivery':($early?'owner verified pre-presentation deposit; no delivery':'owner verified previously settled deposit; no delivery');
+        if(!deltaSmsReviewAudit('reconcile',$actor,$p,$b,$e,'done',$detail))throw new RuntimeException('audit failed');
         $connection->commit();return true;
     }catch(Throwable $e){$connection->rollback();return false;}
 }

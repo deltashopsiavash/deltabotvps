@@ -119,7 +119,9 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
               && in_array($e['bank']??'',['melli','pasargad','khavar'],true)
               && is_string($e['sender']??null)&&trim($e['sender'])!==''
               && is_int($e['amount_irr']??null)&&$e['amount_irr']===(int)$r['amount_irr']
-              && is_int($at)&&$at>=(int)$r['shown_at']&&$at<=(int)$r['expires_at']&&$at<$eventAt
+              && is_int($at)&&($at>=(int)$r['shown_at'] ||
+                  (($history[$hash]['early_verified_event']??'')===$id && $at>=(int)$r['shown_at']-300))
+              && $at<=(int)$r['expires_at']&&$at<$eventAt
               && is_int($ing)&&$ing>=(int)$r['shown_at']&&$ing>=$at-300;
         }
         if(count($group)===1){
@@ -141,7 +143,11 @@ function deltaSmsCompetitionHistory(array $rows): array {
     $history=[];
     foreach($rows as $r){
         $h=(string)$r['hash_id'];
-        if(isset($history[$h])||($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+        if(isset($history[$h]))continue;
+        if(in_array($r['state']??'',['paid','approved'],true)&&!empty($r['event_id'])){
+            $history[$h]=['early_verified_event'=>(string)getSettingValue('SMS_EARLY_RECONCILE_'.sha1($h),'')];continue;
+        }
+        if(($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
         $latest=0;
         foreach(deltaSmsCompetitionHistoryQueries() as $sql){
             $s=$connection->prepare($sql);$s->bind_param('s',$h);$s->execute();$row=$s->get_result()->fetch_assoc();$s->close();$latest=max($latest,(int)($row['latest']??0));

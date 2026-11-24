@@ -73,7 +73,11 @@ try{
         $history=[];
         foreach($rows as $r){
             $ch=(string)$r['hash_id'];
-            if(isset($history[$ch])||($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+            if(isset($history[$ch]))continue;
+            if(in_array($r['state']??'',['paid','approved'],true)&&!empty($r['event_id'])){
+                $history[$ch]=['early_verified_event'=>(string)setting($p,'SMS_EARLY_RECONCILE_'.sha1($ch))];continue;
+            }
+            if(($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
             $latest=0;
             foreach(deltaSmsCompetitionHistoryQueries() as $sql)$latest=max($latest,(int)(query($p,$sql,[$ch])[0]['latest']??0));
             $history[$ch]=['receipt_at'=>(int)setting($p,'RECEIPT_AT_'.sha1($ch)),'latest_shown'=>$latest];
