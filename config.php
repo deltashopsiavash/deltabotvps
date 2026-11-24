@@ -4967,7 +4967,7 @@ function getBotSettingKeys(){
             ['text'=>'تأیید پیامکی','callback_data'=>'deltach']
         ]:[]),
         (empty($isChildBot) && deltaReceiptApprovalMode($botState)==='sms'?[
-            ['text'=>'📲 فقط پیامک سرشماره مجاز و مبلغ اختصاصی','callback_data'=>'deltach']
+            ['text'=>'📲 پیامک سرشماره مجاز و مبلغ دقیق فاکتور','callback_data'=>'deltach']
         ]:[]),
         ($botState['cartToCartAutoAcceptState']=="on"?[
             ['text'=>($botState['cartToCartAutoAcceptType'] == "0"?"نماینده":($botState['cartToCartAutoAcceptType'] == "1"?"کاربر":"همه")),'callback_data'=>"changeBotcartToCartAutoAcceptType"],

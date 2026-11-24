@@ -40,8 +40,10 @@ expectFeature(deltaSmsEventMatches($b,$e,$now-10,$now-120,$now),'Exact trusted S
 foreach(['amount_irr'=>800000,'account_hint'=>'00002','bank'=>'pasargad','source'=>'notification','received_at'=>$now-61,'ingested_at'=>$now+1] as $key=>$bad){
     expectFeature(!deltaSmsEventMatches($b,array_replace($e,[$key=>$bad]),$now-10,$now-120,$now),'Reject mismatching SMS field '.$key);
 }
-$senderBinding=array_replace($b,['bank'=>'sender','account_hint'=>'00000']);
-$senderEvent=array_replace($e,['sender'=>'bank-test']);
+$senderBinding=array_replace($b,['bank'=>'nominal','account_hint'=>'00000','amount_irr'=>800000]);
+$senderEvent=array_replace($e,['sender'=>'bank-test','amount_irr'=>800000]);
+expectFeature(!deltaSmsSenderReservation(array_replace($senderBinding,['bank'=>'sender'])),'Old suffix reservations remain manual');
+expectFeature(strpos(deltaSmsPresentationText($senderBinding),'800000')!==false,'Payment instructions show the exact original rial price');
 expectFeature(deltaSmsEventMatches($senderBinding,$senderEvent,$now-10,$now-120,$now),'Paired phone sender event matches without account configuration');
 expectFeature(deltaSmsEventMatches($senderBinding,array_replace($senderEvent,['bank'=>'pasargad','account_hint'=>'98765','sender'=>'second-bank-test']),$now-10,$now-120,$now),'Multiple approved bank senders and accounts need no card mapping');
 expectFeature(!deltaSmsEventMatches($senderBinding,array_replace($senderEvent,['sender'=>'']),$now-10,$now-120,$now),'Missing sender fails closed');

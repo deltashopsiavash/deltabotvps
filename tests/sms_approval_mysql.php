@@ -10,38 +10,60 @@ function upsertSettingValue($type,$value){global $connection;$s=$connection->pre
 require __DIR__.'/../delta_order_features.php';
 function ok($condition,$label){if(!$condition)throw new RuntimeException($label);}
 function mode($main,$sms){upsertSettingValue('BOT_STATES',json_encode(['cartToCartAutoAcceptState'=>$main,'cartToCartSmsAcceptState'=>$sms]));}
-ok(deltaSmsApprovalSchema(),'schema');
-$connection->query("INSERT INTO pays VALUES (1,'test-a',123,80000,'have_sent'),(2,'test-b',123,80000,'have_sent'),(3,'test-c',123,80000,'have_sent')");
+// Recreate the previous schema in isolated CI to exercise the live upgrade.
+$connection->query("CREATE TABLE delta_sms_invoice_bindings (
+display_id BIGINT UNSIGNED NOT NULL PRIMARY KEY, hash_id VARCHAR(128) NOT NULL, user_id BIGINT NOT NULL,
+bank VARCHAR(16) NOT NULL, account_hint CHAR(5) NOT NULL, amount_irr BIGINT UNSIGNED NOT NULL,
+nominal_toman BIGINT UNSIGNED NOT NULL, shown_at BIGINT UNSIGNED NOT NULL, expires_at BIGINT UNSIGNED NOT NULL,
+event_id CHAR(64) DEFAULT NULL, claimed_at BIGINT UNSIGNED DEFAULT NULL,
+UNIQUE KEY sms_amount (bank,account_hint,amount_irr), UNIQUE KEY sms_event (event_id), KEY sms_invoice(hash_id)
+) ENGINE=InnoDB");
+$connection->query("CREATE TEMPORARY TABLE payment_card_displays (id BIGINT PRIMARY KEY, hash_id VARCHAR(128),user_id BIGINT,card_number VARCHAR(16),shown_at BIGINT) ENGINE=InnoDB");
 $now=time();$epoch=$now-120;upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)$epoch);
-$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (1,'test-a',123,'melli','00001',800001,80000,$now,$now+3600),(2,'test-b',123,'melli','00001',800002,80000,$now,$now+3600)");
-upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1('test-a'),'1');
-upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1('test-b'),'2');
-$a=['id'=>1,'hash_id'=>'test-a','user_id'=>123,'price'=>80000];
-$b=['id'=>2,'hash_id'=>'test-b','user_id'=>123,'price'=>80000];
-$c=['id'=>3,'hash_id'=>'test-c','user_id'=>123,'price'=>80000];
-$event=str_repeat('a',64);$binding=['display_id'=>1,'matched_event'=>$event,'shown_at'=>$now];
+$oldEvent=str_repeat('f',64);
+$connection->query("INSERT INTO delta_sms_invoice_bindings VALUES (10,'test-old',123,'sender','00000',800001,80000,".($now-7200).",".($now-3600).",'$oldEvent',".($now-7000).")");
+ok(deltaSmsApprovalSchema(),'schema migration');
+$row=$connection->query("SHOW INDEX FROM delta_sms_invoice_bindings WHERE Key_name='sms_amount'")->fetch_assoc();
+ok((int)$row['Non_unique']===1,'old unique amount restriction removed');
+ok($connection->query("SELECT event_id FROM delta_sms_invoice_bindings WHERE display_id=10")->fetch_assoc()['event_id']===$oldEvent,'old consumed events preserved');
+$botState=['cartToCartAutoAcceptState'=>'off','cartToCartSmsAcceptState'=>'on'];mode('off','on');
+$connection->query("INSERT INTO pays VALUES (1,'test-a',123,80000,'have_sent'),(2,'test-b',123,80000,'pending'),(3,'test-c',123,90000,'have_sent'),(4,'test-d',123,80000,'have_sent')");
+$a=['id'=>1,'hash_id'=>'test-a','user_id'=>123,'price'=>80000,'request_date'=>$now-60];
+$b=['id'=>2,'hash_id'=>'test-b','user_id'=>123,'price'=>80000,'request_date'=>$now-60];
+$c=['id'=>3,'hash_id'=>'test-c','user_id'=>123,'price'=>90000,'request_date'=>$now-60];
+$d=['id'=>4,'hash_id'=>'test-d','user_id'=>123,'price'=>80000,'request_date'=>$now-60];
+foreach([[$a,1],[$b,2],[$c,3]] as [$pay,$id]){
+    $reserved=deltaSmsReservePresentation($pay,['id'=>$id,'number'=>'0000000000000000']);
+    ok(is_array($reserved)&&$reserved['amount_irr']===$pay['price']*10,'exact original price, no suffix');
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($pay['hash_id']),(string)$id);
+}
+$eventAt=time();
+$connection->query("INSERT INTO payment_card_displays VALUES (1,'test-a',123,'0000000000000000',$eventAt),(2,'test-b',123,'0000000000000000',$eventAt),(3,'test-c',123,'0000000000000000',$eventAt)");
+$event=str_repeat('a',64);
+$binding=['display_id'=>1,'matched_event'=>$event,'matched_event_at'=>$eventAt,'shown_at'=>$eventAt,'bank'=>'nominal','account_hint'=>'00000','amount_irr'=>800000];
 mode('off','off');ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'manual rejects SMS');
 mode('on','on');ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'both on rejects SMS');
-mode('off','on');ok(!deltaSmsClaimInvoice($a,null,'sms'),'no payment evidence rejects claim');
-ok(!deltaSmsClaimInvoice($c,null,'legacy'),'SMS-only rejects legacy claim');
-ok(deltaSmsClaimInvoice($a,$binding,'sms'),'valid SMS claim');
+mode('off','on');ok(!deltaSmsClaimInvoice($a,null,'sms'),'no evidence rejects claim');
+ok(!deltaSmsClaimInvoice($c,null,'legacy'),'SMS-only rejects legacy');
+ok(deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'pending same-price invoice is a competitor');
+ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'ambiguous invoice stays manual');
+$connection->query("UPDATE pays SET state='approved' WHERE id=2");
+ok(deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'manual approved invoice still competes');
+ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'manual approval does not remove ambiguity');
+// Simulate a subsequent isolated payment window, not deletion in production.
+$connection->query("UPDATE payment_card_displays SET shown_at=".($eventAt-7200)." WHERE id=2");
+$connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($eventAt-7200)." WHERE display_id=2");
+ok(!deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'older presentation outside window');
+ok(deltaSmsClaimInvoice($a,$binding,'sms'),'unambiguous exact-price claim');
 ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'same invoice cannot be claimed twice');
-$binding['display_id']=2;ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'same event cannot be applied to another invoice');
-$r=$connection->query("SELECT state FROM pays WHERE id=2")->fetch_assoc();ok($r['state']==='have_sent','failed event claim does not mark invoice paid');
+$connection->query("UPDATE pays SET state='have_sent' WHERE id=2");
+$binding['display_id']=2;
+$connection->query("UPDATE payment_card_displays SET shown_at=".($eventAt-7200)." WHERE id=1");
+$connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($eventAt-7200)." WHERE display_id=1");
+ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'consumed event cannot be reused');
+$binding['matched_event']=$oldEvent;
+ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'consumed event from old version cannot be reused');
+$r=$connection->query("SELECT state FROM pays WHERE id=2")->fetch_assoc();ok($r['state']==='have_sent','failed claims leave invoice pending');
 mode('on','on');ok(deltaSmsClaimInvoice($c,null,'legacy'),'legacy has priority');
-// Reservations no longer need account setup; exact amounts must remain
-// globally unique even against older account-specific reservations.
-$botState=['cartToCartAutoAcceptState'=>'off','cartToCartSmsAcceptState'=>'on'];mode('off','on');
-$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (10,'test-old',123,'melli','00001',900001,90000,$now,$now+3600)");
-$used=[900001];
-for($i=0;$i<8;$i++){
-    $pay=['hash_id'=>'test-res-'.$i,'user_id'=>123,'price'=>90000,'request_date'=>$now];
-    $binding=deltaSmsReservePresentation($pay,['id'=>100+$i,'number'=>'0000000000000000']);
-    ok(is_array($binding),'reservation needs no account map');
-    ok(!in_array($binding['amount_irr'],$used,true),'global amount must not be reused');
-    $used[]=$binding['amount_irr'];
-}
-ok(deltaSmsReservePresentation(['hash_id'=>'test-full','user_id'=>123,'price'=>90000,'request_date'=>$now],['id'=>200,'number'=>'0000000000000000'])===null,'exhausted suffixes must remain manual');
-$connection->query("DELETE FROM delta_sms_invoice_bindings WHERE hash_id LIKE 'test-res-%' OR hash_id='test-old'");
-$connection->query("DELETE FROM delta_sms_invoice_bindings WHERE hash_id IN ('test-a','test-b')");
-echo "SMS claim integration PASS\n";
+$connection->query("DROP TABLE delta_sms_invoice_bindings");
+echo "SMS claim integration PASS\\n";
