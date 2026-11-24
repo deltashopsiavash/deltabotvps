@@ -92,13 +92,13 @@ function deltaSmsReviewHandle(string $data): void {
         $id=(int)$m[2];$p=deltaSmsReviewPay($id);
         if(!$p||$p['state']!=='declined'){alert('فاکتور ردشده پیدا نشد.',true);return;}
         if($m[1]==='Ask'){
-            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n⚠️ فقط پس از بررسی گردش حساب و اطمینان از اینکه تا همین لحظه هیچ واریزی متعلق به این فاکتور نیست، تأیید کنید. واریزی‌های بعدی همچنان نیازمند بررسی هستند.",[
+            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n⚠️ فقط پس از بررسی گردش حساب و اطمینان از اینکه تا همین لحظه هیچ واریزی متعلق به این فاکتور نیست، تأیید کنید. اگر کل بازه رسید قبلی بررسی شده باشد، فاکتور بسته برای خریدهای جدید بعد از بررسی مزاحم نمی‌شود. اگر مشتری پس از لغو دوباره پول واریز کرد، باید دستی بررسی شود.",[
                 [['text'=>'تأیید بررسی؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayDo'.$id]],
                 [['text'=>'انصراف','callback_data'=>'smsReviewInvoice'.$id]]
             ]);return;
         }
         if(!deltaSmsReviewNoPayment($id,(int)$from_id)){alert('ثبت انجام نشد.',true);return;}
-        deltaSmsReviewRender('✅ عدم پرداخت تا زمان بررسی ثبت شد؛ فاکتور و سوابق باقی می‌مانند.',[[['text'=>'بازگشت به فاکتور','callback_data'=>'smsReviewInvoice'.$id]],$home]);return;
+        deltaSmsReviewRender('✅ عدم پرداخت ثبت شد؛ فاکتور و سوابق باقی می‌مانند. اگر بازه رسید کامل بررسی شده، برای فاکتورهای جدید دوباره بررسی لازم نیست.',[[['text'=>'بازگشت به فاکتور','callback_data'=>'smsReviewInvoice'.$id]],$home]);return;
     }
     if(preg_match('/^smsReviewClosed(Ask|Do)(\d+)_([a-f0-9]{16})$/D',$data,$m)){
         $id=(int)$m[2];$prefix=$m[3];$p=deltaSmsReviewPay($id);$b=$p?deltaSmsReviewBinding($p):null;
