@@ -286,6 +286,35 @@ ok(deltaSmsReviewEventUsed($hx['event_id']),'old paid evidence is used once');
 ok(deltaSmsReviewPay(51)['state']==='approved','historical state untouched');
 ok(deltaSmsFindBinding(deltaSmsReviewPay(52),$now-10740,[$hx,$hy])===null,'old open invoice cannot be automatically fulfilled');
 ok(!deltaSmsReviewEventUsed($hy['event_id']),'expired open payment stays available for owner review');
+
+// Production regression: bank timestamp is 27 seconds before display.
+// Only owner-confirmed historical reconciliation can consume this evidence.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-20000));mode('off','on');
+$connection->query("INSERT INTO pays VALUES (61,'early-settled',1001,95000,'approved'),(62,'after-early',1002,95000,'have_sent')");
+foreach([[61,'early-settled',1001,$now-1300,$now-1292],[62,'after-early',1002,$now-200,$now-140]] as [$id,$hash,$uid,$shown,$receipt]){
+    $expires=$shown+3600;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',950000,95000,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$receipt);
+}
+$early=['event_id'=>str_repeat('e',63).'1','bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>950000,'received_at'=>$now-1327,'ingested_at'=>$now-1198];
+$later=array_replace($early,['event_id'=>str_repeat('f',63).'1','received_at'=>$now-150,'ingested_at'=>$now-149]);
+$tooOld=array_replace($early,['event_id'=>str_repeat('1',63).'2','received_at'=>$now-1601]);
+$fixtures=[$early,$later,$tooOld];
+$prior=deltaSmsReviewPay(61);$b=deltaSmsReviewBinding($prior);
+ok(deltaSmsFindBinding($prior,$now-1292,$fixtures,true)===null,'early event never auto reconciled');
+ok(deltaSmsReconcileSettled($fixtures)===0,'worker cannot attach early event');
+ok(isset(deltaSmsReviewClosedCandidates($prior,$b,$fixtures)[$early['event_id']]),'owner can review early settled evidence');
+ok(!isset(deltaSmsReviewClosedCandidates($prior,$b,$fixtures)[$tooOld['event_id']]),'early exception limited to five minutes');
+ok(!deltaSmsReviewRecordClosed(62,substr($early['event_id'],0,16),123,$fixtures),'early exception cannot approve open invoice');
+ok(!deltaSmsReviewRecordClosed(61,substr($early['event_id'],0,16),0,$fixtures),'early exception requires owner actor');
+ok(deltaSmsReviewRecordClosed(61,substr($early['event_id'],0,16),123,$fixtures),'owner confirms earlier paid deposit without delivery');
+ok(deltaSmsReviewPay(61)['state']==='approved','settled state preserved');
+ok(deltaSmsReviewEventUsed($early['event_id']),'early event consumed exactly once');
+ok(!deltaSmsReviewRecordClosed(61,substr($early['event_id'],0,16),123,$fixtures),'no duplicate reconciliation');
+$next=deltaSmsReviewPay(62);$nb=deltaSmsFindBinding($next,$now-140,$fixtures);
+ok($nb&&$nb['matched_event']===$later['event_id'],'verified early deposit no longer blocks new distinct event');
+ok(deltaSmsClaimInvoice($next,$nb,'sms',$fixtures),'live approval still claims its own event');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
