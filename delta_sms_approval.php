@@ -142,7 +142,11 @@ function deltaSmsClaimInvoice(array $pay,?array $binding,string $mode): bool {
         $state=$r?json_decode((string)($r->fetch_assoc()['value']??''),true):null;
         if(!is_array($state)||deltaReceiptApprovalMode($state)!==$mode)throw new RuntimeException('mode changed');
         if($mode==='sms'){
-            if(!$binding||deltaSmsApprovalEpoch()>(int)$binding['shown_at']||deltaAutoApprovePolicy($uid)==='never')throw new RuntimeException('binding no longer eligible');
+            if(!$binding||deltaAutoApprovePolicy($uid)==='never')throw new RuntimeException('binding no longer eligible');
+            if(!empty($binding['admin_review'])){
+                if(!deltaSmsReviewClaim($pay,$binding))throw new RuntimeException('review claim unavailable');
+            }else{
+            if(deltaSmsApprovalEpoch()>(int)$binding['shown_at'])throw new RuntimeException('old activation epoch');
             $display=(int)$binding['display_id'];$event=(string)$binding['matched_event'];$now=time();
             if(!deltaSmsSenderReservation($binding)||(int)($binding['amount_irr']??0)!==$price*10)throw new RuntimeException('old pricing mode');
             $eventAt=(int)($binding['matched_event_at']??0);
@@ -152,6 +156,7 @@ function deltaSmsClaimInvoice(array $pay,?array $binding,string $mode): bool {
             $st->bind_param('siisii',$event,$now,$display,$hash,$uid,$price);
             $st->execute();$ok=$st->affected_rows===1;$st->close();
             if(!$ok)throw new RuntimeException('event already used');
+            }
         }
         $st=$connection->prepare("UPDATE pays SET state='paid' WHERE id=? AND hash_id=? AND user_id=? AND price=? AND state='have_sent'");
         $st->bind_param('isii',$rowId,$hash,$uid,$price);$st->execute();$ok=$st->affected_rows===1;$st->close();
