@@ -96,7 +96,7 @@ function deltaSmsReviewQueuedBinding(array $pay): ?array {
     global $connection;
     if(!deltaSmsReviewSchema())return null;
     $hash=(string)$pay['hash_id'];$id=(int)$pay['id'];$epoch=deltaSmsApprovalEpoch();
-    $s=$connection->prepare("SELECT a.id AS review_id,a.actor_id,a.event_id AS matched_event,a.event_at AS matched_event_at,a.amount_irr,a.created_at,b.display_id,b.shown_at,b.nominal_toman FROM delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND b.event_id=a.event_id AND BINARY b.hash_id=BINARY a.hash_id WHERE a.action='link' AND a.status='queued' AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.created_at>=? LIMIT 1");
+    $s=$connection->prepare("SELECT a.id AS review_id,a.actor_id,a.event_id AS matched_event,a.event_at AS matched_event_at,a.amount_irr,a.created_at,b.display_id,b.shown_at,b.nominal_toman FROM delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id WHERE a.action='link' AND a.status='queued' AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.created_at>=? LIMIT 1");
     $s->bind_param('isi',$id,$hash,$epoch);$s->execute();$b=$s->get_result()->fetch_assoc();$s->close();
     if(!$b||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $b['admin_review']=true;return $b;
@@ -105,7 +105,7 @@ function deltaSmsReviewClaim(array $pay,array $b): bool {
     global $connection;
     $review=(int)($b['review_id']??0);$display=(int)$b['display_id'];$hash=(string)$pay['hash_id'];$id=(int)$pay['id'];$eid=(string)$b['matched_event'];$price=(int)$pay['price']*10;$epoch=deltaSmsApprovalEpoch();
     if((int)getSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),'0')!==$display)return false;
-    $s=$connection->prepare("UPDATE delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND b.event_id=a.event_id AND BINARY b.hash_id=BINARY a.hash_id SET a.status='claimed' WHERE a.id=? AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.display_id=? AND a.event_id=? AND a.amount_irr=? AND a.created_at>=? AND a.action='link' AND a.status='queued'");
+    $s=$connection->prepare("UPDATE delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id SET a.status='claimed' WHERE a.id=? AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.display_id=? AND a.event_id=? AND a.amount_irr=? AND a.created_at>=? AND a.action='link' AND a.status='queued'");
     $s->bind_param('iisisii', $review,$id,$hash,$display,$eid,$price,$epoch);
     $s->execute();$ok=$s->affected_rows===1;$s->close();return $ok;
 }
