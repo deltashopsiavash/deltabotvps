@@ -3606,8 +3606,12 @@ if(($userInfo['step'] ?? '')==='addNewAdmin' && (int)$from_id === (int)$admin &&
 }
 if(($data=="botSettings" or preg_match("/^changeBot(\w+)/",$data,$match)) && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     if($data!="botSettings"){
+        if($match[1]==='cartToCartSmsAcceptState' && !empty($isChildBot)){
+            alert('این تنظیم فقط برای ربات مادر است.',true);
+            exit;
+        }
         if($match[1] == "cartToCartAutoAcceptType") $newValue = $botState[$match[1]] == "0"?"1":($botState[$match[1]] == "1"?"2":0);
-        else $newValue = $botState[$match[1]]=="on"?"off":"on";
+        else $newValue = ($botState[$match[1]]??'off')=="on"?"off":"on";
         setSettings($match[1], $newValue);
         if($match[1] === 'cartToCartAutoAcceptType') upsertSettingValue('AUTOAPPROVE_TYPE_SELECTED','1');
         if($match[1] === 'cartToCartAutoAcceptState' && $newValue === 'on'){
