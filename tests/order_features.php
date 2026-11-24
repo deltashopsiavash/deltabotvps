@@ -33,6 +33,17 @@ foreach([['off','off','manual'],['off','on','sms'],['on','off','legacy'],['on','
 }
 expectFeature(deltaReceiptApprovalMode([])==='manual','Missing switches must fail closed');
 
+$now=time();
+$b=['shown_at'=>$now-60,'expires_at'=>$now+3500,'bank'=>'melli','account_hint'=>'00001','amount_irr'=>800001];
+$e=['event_id'=>str_repeat('a',64),'bank'=>'melli','source'=>'sms','account_hint'=>'00001','amount_irr'=>800001,'received_at'=>$now-30,'ingested_at'=>$now-20];
+expectFeature(deltaSmsEventMatches($b,$e,$now-10,$now-120,$now),'Exact trusted SMS should match reserved invoice');
+foreach(['amount_irr'=>800000,'account_hint'=>'00002','bank'=>'pasargad','source'=>'notification','received_at'=>$now-61,'ingested_at'=>$now+1] as $key=>$bad){
+    expectFeature(!deltaSmsEventMatches($b,array_replace($e,[$key=>$bad]),$now-10,$now-120,$now),'Reject mismatching SMS field '.$key);
+}
+expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-50,$now),'Reject old activation epoch');
+expectFeature(!deltaSmsEventMatches($b,$e,$now+3600,$now-120,$now),'Reject expired receipt');
+expectFeature(!deltaSmsEventMatches($b,$e,$now-10,$now-120,$now+4501),'Reject expired processing window');
+
 $old = time() - 20;
 deltaMarkReceiptSubmitted('receipt-new', $old);
 expectFeature(deltaReceiptHasSubmissionMarker('receipt-new'), 'New receipt needs a submission marker');
