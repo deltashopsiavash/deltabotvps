@@ -379,6 +379,23 @@ EOF
             fi
         fi
         # ------------------------------------------------------------------
+
+        # Parent bot ONLY: install the separate PRIVATE SMS Bridge on this VPS.
+        # Reseller bots use bot.php?bid=N and their own databases. The bridge
+        # installer verifies the mother bot URL/token and NEVER touches child bots.
+        # GitHub device login is needed once on a brand-new VPS because the
+        # independent Delta SMS Bridge repository must remain PRIVATE.
+        MOTHER_SMS_SETUP="/var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh"
+        if [ -f "$MOTHER_SMS_SETUP" ]; then
+            echo -e "\n\e[36m[+] Setting up optional mother-only Delta SMS Bridge...\033[0m"
+            if ! bash "$MOTHER_SMS_SETUP" --domain "$YOUR_DOMAIN"; then
+                echo -e "\n\e[33mSMS Bridge setup was skipped or could not finish.\033[0m"
+                echo "The mother bot is installed; reseller bots were not modified."
+                echo "To retry later, on the mother VPS run:"
+                echo "  sudo bash /var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh --domain '$YOUR_DOMAIN'"
+            fi
+        fi
+        # ------------------------------------------------------------------
         
         sleep 1
         
