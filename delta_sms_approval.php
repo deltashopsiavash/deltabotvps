@@ -63,7 +63,7 @@ function deltaSmsReservePresentation(array $pay,array $card): ?array {
 }
 function deltaSmsPresentationText(?array $binding): string {
     if(!$binding) return "\n\n⚠️ این فاکتور برای بررسی دستی است؛ مبلغ اصلی فاکتور را واریز کنید.";
-    return "\n\n📲 مبلغ دقیق قابل پرداخت: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nپس از واریز، رسید را ارسال کنید. در صورت وجود فاکتور یا واریزی هم‌مبلغ دیگر، مدیریت پرداخت را بررسی می‌کند.";
+    return "\n\n📲 مبلغ دقیق قابل پرداخت: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nفقط در زمان اعتبار فاکتور واریز کنید؛ پس از لغو یا ارسال رسید دوباره واریز نکنید. واریزی دیرهنگام را به پشتیبانی اطلاع دهید. موارد هم‌مبلغ مبهم نیاز به بررسی دارند.";
 }
 // Never exclude a possible owner just because it is pending, archived,
 // manually approved, declined, or has an earlier customer receipt.
@@ -84,7 +84,20 @@ function deltaSmsCompetitionRowsSql(): array {
         WHERE BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at BETWEEN ? AND ?"
     ];
 }
-function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $eventId): array {
+// Each hash gets a snapshot of its receipt and latest card presentation.
+// A previously verified declined receipt can be retired for NEW checkouts
+// only after its entire receipt window was reviewed. Late payments remain
+// ambiguous if they relate to an earlier or changed checkout.
+function deltaSmsVerifiedClosedReceipt(array $row,array $history,int $candidateShown,int $eventAt): bool {
+    $marker=(int)($row['no_payment_through']??0);
+    if(($row['state']??'')!=='declined'||!empty($row['event_id'])||$marker<=0)return false;
+    if($marker>=$eventAt)return true;
+    $receipt=(int)($history['receipt_at']??0);$latest=(int)($history['latest_shown']??0);
+    return $receipt>0 && $latest>0 && $latest<=$receipt
+      && $receipt+deltaSmsReceiptGraceSeconds()<=$marker
+      && $candidateShown>$marker && $eventAt>=$candidateShown;
+}
+function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $eventId,array $history=[],int $candidateShown=0): array {
     $byHash=[];$byEvent=[];
     foreach($events as $e){
         $id=(string)($e['event_id']??'');
@@ -111,16 +124,33 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
         }
         if(count($group)===1){
             $r=reset($group);
-            // An explicit owner reconciliation covers only bank events already
-            // received when the owner checked the account, not future deposits.
-            if(($r['state']??'')==='declined'&&empty($r['event_id'])
-                && (int)($r['no_payment_through']??0)>=$eventAt)$settled=true;
+            if(deltaSmsVerifiedClosedReceipt($r,$history[$hash]??[],$candidateShown,$eventAt))$settled=true;
         }
         if(!$settled)$out[]=$hash;
     }
     return $out;
 }
-function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null): bool {
+function deltaSmsCompetitionHistoryQueries(): array {
+    return [
+        'SELECT COALESCE(MAX(shown_at),0) AS latest FROM payment_card_displays WHERE BINARY hash_id=BINARY ?',
+        'SELECT COALESCE(MAX(shown_at),0) AS latest FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ?'
+    ];
+}
+function deltaSmsCompetitionHistory(array $rows): array {
+    global $connection;
+    $history=[];
+    foreach($rows as $r){
+        $h=(string)$r['hash_id'];
+        if(isset($history[$h])||($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+        $latest=0;
+        foreach(deltaSmsCompetitionHistoryQueries() as $sql){
+            $s=$connection->prepare($sql);$s->bind_param('s',$h);$s->execute();$row=$s->get_result()->fetch_assoc();$s->close();$latest=max($latest,(int)($row['latest']??0));
+        }
+        $history[$h]=['receipt_at'=>deltaReceiptSubmittedAt($h,0),'latest_shown'=>$latest];
+    }
+    return $history;
+}
+function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null,int $candidateShown=0): bool {
     global $connection;
     $from=$eventAt-3600;
     $rows=[];
@@ -129,7 +159,7 @@ function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string
         $st->bind_param('siii',$hash,$price,$from,$eventAt);
         $st->execute();$rows=array_merge($rows,$st->get_result()->fetch_all(MYSQLI_ASSOC));$st->close();
     }
-    return (bool)deltaSmsCompetingHashes($rows,$events??[],$eventAt,$eventId);
+    return (bool)deltaSmsCompetingHashes($rows,$events??[],$eventAt,$eventId,deltaSmsCompetitionHistory($rows),$candidateShown);
 }
 function deltaSmsEventAlreadyUsed(string $id): bool {
     global $connection;
@@ -187,7 +217,7 @@ function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=nul
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);
     $b['matched_event_at']=(int)$hits[$b['matched_event']]['received_at'];
-    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events))return null;
+    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events,(int)$b['shown_at']))return null;
     return $b;
 }
 // Atomic invoice+event claim. No bank event is released on a panel failure;
