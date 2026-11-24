@@ -40,29 +40,31 @@ foreach([[$a,1],[$b,2],[$c,3]] as [$pay,$id]){
 $eventAt=time();
 $connection->query("INSERT INTO payment_card_displays VALUES (1,'test-a',123,'0000000000000000',$eventAt),(2,'test-b',123,'0000000000000000',$eventAt),(3,'test-c',123,'0000000000000000',$eventAt)");
 $event=str_repeat('a',64);
+$trusted=[['event_id'=>$event,'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>800000,'received_at'=>$eventAt,'ingested_at'=>$eventAt]];
+deltaMarkReceiptSubmitted('test-a',$eventAt);deltaMarkReceiptSubmitted('test-b',$eventAt);
 $binding=['display_id'=>1,'matched_event'=>$event,'matched_event_at'=>$eventAt,'shown_at'=>$eventAt,'bank'=>'nominal','account_hint'=>'00000','amount_irr'=>800000];
-mode('off','off');ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'manual rejects SMS');
-mode('on','on');ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'both on rejects SMS');
+mode('off','off');ok(!deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'manual rejects SMS');
+mode('on','on');ok(!deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'both on rejects SMS');
 mode('off','on');ok(!deltaSmsClaimInvoice($a,null,'sms'),'no evidence rejects claim');
 ok(!deltaSmsClaimInvoice($c,null,'legacy'),'SMS-only rejects legacy');
 ok(deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'pending same-price invoice is a competitor');
-ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'ambiguous invoice stays manual');
+ok(!deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'ambiguous invoice stays manual');
 $connection->query("UPDATE pays SET state='approved' WHERE id=2");
 ok(deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'manual approved invoice still competes');
-ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'manual approval does not remove ambiguity');
+ok(!deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'manual approval does not remove ambiguity');
 // Simulate a subsequent isolated payment window, not deletion in production.
 $connection->query("UPDATE payment_card_displays SET shown_at=".($eventAt-7200)." WHERE id=2");
 $connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($eventAt-7200)." WHERE display_id=2");
 ok(!deltaSmsHasCompetingInvoice('test-a',80000,$eventAt),'older presentation outside window');
-ok(deltaSmsClaimInvoice($a,$binding,'sms'),'unambiguous exact-price claim');
-ok(!deltaSmsClaimInvoice($a,$binding,'sms'),'same invoice cannot be claimed twice');
+ok(deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'unambiguous exact-price claim');
+ok(!deltaSmsClaimInvoice($a,$binding,'sms',$trusted),'same invoice cannot be claimed twice');
 $connection->query("UPDATE pays SET state='have_sent' WHERE id=2");
 $binding['display_id']=2;
 $connection->query("UPDATE payment_card_displays SET shown_at=".($eventAt-7200)." WHERE id=1");
 $connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($eventAt-7200)." WHERE display_id=1");
-ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'consumed event cannot be reused');
+ok(!deltaSmsClaimInvoice($b,$binding,'sms',$trusted),'consumed event cannot be reused');
 $binding['matched_event']=$oldEvent;
-ok(!deltaSmsClaimInvoice($b,$binding,'sms'),'consumed event from old version cannot be reused');
+ok(!deltaSmsClaimInvoice($b,$binding,'sms',$trusted),'consumed event from old version cannot be reused');
 $r=$connection->query("SELECT state FROM pays WHERE id=2")->fetch_assoc();ok($r['state']==='have_sent','failed claims leave invoice pending');
 mode('on','on');ok(deltaSmsClaimInvoice($c,null,'legacy'),'legacy has priority');
 
@@ -121,6 +123,39 @@ $connection->query("INSERT INTO pays VALUES (9,'fresh-list',325,83000,'pending')
 $connection->query("INSERT INTO payment_card_displays VALUES (9,'fresh-list',325,'0000000000000000',$now)");
 ok(deltaSmsReviewOpenCount($cutoff,false)===1,'new invoice appears in fresh list');
 ok(deltaSmsReviewOpenRows($cutoff,false,0)[0]['hash_id']==='fresh-list','only new invoice listed');
+
+// Replay the observed pattern: later SMS after first receipt, then
+// an independent same-price invoice. Neither invoice blocks issuance.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-1000));mode('off','on');
+$connection->query("INSERT INTO pays VALUES (11,'time-a',501,88000,'have_sent'),(12,'time-b',502,88000,'have_sent'),(13,'time-c',503,88000,'pending')");
+foreach([[11,'time-a',501,$now-660,$now-580],[12,'time-b',502,$now-150,$now-60],[13,'time-c',503,$now-30,0]] as [$id,$hash,$uid,$shown,$receipt]){
+    $expires=$shown+3600;
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($id,'$hash',$uid,'nominal','00000',880000,88000,$shown,$expires)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);
+    if($receipt)deltaMarkReceiptSubmitted($hash,$receipt);
+}
+$ea=['event_id'=>str_repeat('1',64),'bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>880000,'received_at'=>$now-600,'ingested_at'=>$now-590];
+$eb=array_replace($ea,['event_id'=>str_repeat('2',64),'received_at'=>$now-80,'ingested_at'=>$now-70]);
+$events=[$ea,$eb];
+$pa=deltaSmsReviewPay(11);$pb=deltaSmsReviewPay(12);
+$ba=deltaSmsFindBinding($pa,$now-580,$events);
+ok($ba&&$ba['matched_event']===$ea['event_id'],'later deposit is outside first receipt time window');
+ok(deltaSmsFindBinding($pb,$now-60,$events)===null,'unsettled earlier invoice remains competing');
+ok(deltaSmsClaimInvoice($pa,$ba,'sms',$events),'first distinct payment claims');
+$bb=deltaSmsFindBinding($pb,$now-60,$events);
+ok($bb&&$bb['matched_event']===$eb['event_id'],'earlier invoice with distinct verified claim no longer competes');
+ok(deltaSmsFindBinding($pb,$now-60,[$eb])===null,'missing historical evidence remains ambiguous');
+$connection->query("UPDATE pays SET state='approved' WHERE id=11");
+ok(deltaSmsFindBinding($pb,$now-60,$events)!==null,'settled SMS claim still excludes earlier invoice');
+$connection->query("UPDATE payment_card_displays SET shown_at=".($now-100)." WHERE id=13");
+$connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($now-100)." WHERE display_id=13");
+ok(!deltaSmsClaimInvoice($pb,$bb,'sms',$events),'new genuine competitor blocks stale pre-lock match');
+$connection->query("UPDATE payment_card_displays SET shown_at=".($now-30)." WHERE id=13");
+$connection->query("UPDATE delta_sms_invoice_bindings SET shown_at=".($now-30)." WHERE display_id=13");
+ok(deltaSmsClaimInvoice($pb,$bb,'sms',$events),'second sequential receipt claims separate SMS');
+ok(!deltaSmsClaimInvoice($pb,$bb,'sms',$events),'replay blocked');
+ok(deltaSmsReviewPay(13)['state']==='pending','other same-price invoice remains open');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
