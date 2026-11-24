@@ -21,7 +21,8 @@ jobs:
       - name: Validate dedicated mother-only bridge bootstrap
         run: |
           bash -n scripts/install-mother-sms-bridge.sh
-          grep -Fq -- 'MOTHER_CONFIG="/var/www/html/deltabotvps/baseInfo.php"' scripts/install-mother-sms-bridge.sh
+          grep -Fq -- 'MOTHER_ROOT="/var/www/html/deltabotvps"' scripts/install-mother-sms-bridge.sh
+          grep -Fq -- 'MOTHER_CONFIG="$MOTHER_ROOT/baseInfo.php"' scripts/install-mother-sms-bridge.sh
           grep -Fq -- '"--mother-only"' scripts/install-mother-sms-bridge.sh || grep -Fq -- '--mother-only --domain' scripts/install-mother-sms-bridge.sh
           grep -Fq -- '"/deltabotvps/"' scripts/install-mother-sms-bridge.sh
           grep -Fq -- 'MOTHER_SMS_SETUP="/var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh"' delta.sh
