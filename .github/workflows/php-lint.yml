@@ -40,6 +40,7 @@ jobs:
           php -l settings/expired_subscriptions_admin.php
           php -l config.php
           php -l delta_order_features.php
+          php -l delta_sms_approval.php
           php -l settings/rewardReport.php
           php -l tests/order_features.php
           php tests/order_features.php
