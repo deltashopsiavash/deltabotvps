@@ -1,0 +1,32 @@
+name: Mother-only SMS Bridge installer safety
+
+on:
+  push:
+    paths:
+      - delta.sh
+      - update.sh
+      - scripts/install-mother-sms-bridge.sh
+      - .github/workflows/mother-sms-bridge.yml
+  workflow_dispatch:
+
+jobs:
+  installer-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate existing mother install and update script syntax
+        run: |
+          bash -n delta.sh
+          bash -n update.sh
+      - name: Validate dedicated mother-only bridge bootstrap
+        run: |
+          bash -n scripts/install-mother-sms-bridge.sh
+          grep -Fq -- 'MOTHER_CONFIG="/var/www/html/deltabotvps/baseInfo.php"' scripts/install-mother-sms-bridge.sh
+          grep -Fq -- '"--mother-only"' scripts/install-mother-sms-bridge.sh || grep -Fq -- '--mother-only --domain' scripts/install-mother-sms-bridge.sh
+          grep -Fq -- '"/deltabotvps/"' scripts/install-mother-sms-bridge.sh
+          grep -Fq -- 'MOTHER_SMS_SETUP="/var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh"' delta.sh
+          grep -Fq -- 'MOTHER_SMS_SETUP="/var/www/html/deltabotvps/scripts/install-mother-sms-bridge.sh"' update.sh
+          grep -Fq -- '[ -f "/etc/delta-sms-bridge.php" ]' update.sh
+          # No automatic invoices or child-bot changes within the bootstrapper.
+          ! grep -Eq 'UPDATE[[:space:]]+pays|DELETE[[:space:]]+FROM[[:space:]]+pays|reseller_bots.*UPDATE' scripts/install-mother-sms-bridge.sh
+          echo "Mother-only installer static guards PASS"
