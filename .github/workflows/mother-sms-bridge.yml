@@ -31,3 +31,17 @@ jobs:
           # No automatic invoices or child-bot changes within the bootstrapper.
           ! grep -Eq 'UPDATE[[:space:]]+pays|DELETE[[:space:]]+FROM[[:space:]]+pays|reseller_bots.*UPDATE' scripts/install-mother-sms-bridge.sh
           echo "Mother-only installer static guards PASS"
+      - name: Reject child webhook and reseller domain before any clone or installation
+        run: |
+          sudo mkdir -p /var/www/html/deltabotvps
+          printf '%s\n' '<?php $botUrl="https://mother.example.com/deltabotvps/"; $botToken="123456:exampleMotherBotTokenOnly"; $admin=12345; $dbName="motherdb";' | sudo tee /var/www/html/deltabotvps/baseInfo.php >/dev/null
+          if sudo bash scripts/install-mother-sms-bridge.sh --domain reseller.example.com > /tmp/bridge-role-test.out 2>&1; then
+            echo "FAIL: allowed a reseller domain"; exit 1
+          fi
+          grep -q 'Refusing cross-bot installation' /tmp/bridge-role-test.out
+          printf '%s\n' '<?php $botUrl="https://mother.example.com/deltabotvps/bot.php?bid=7"; $botToken="123456:exampleChildBotToken"; $admin=12345; $dbName="childdb";' | sudo tee /var/www/html/deltabotvps/baseInfo.php >/dev/null
+          if sudo bash scripts/install-mother-sms-bridge.sh --domain mother.example.com > /tmp/bridge-role-test.out 2>&1; then
+            echo "FAIL: allowed a child webhook"; exit 1
+          fi
+          grep -q 'Not a verified mother' /tmp/bridge-role-test.out
+          echo "Child and reseller isolation runtime tests PASS"
