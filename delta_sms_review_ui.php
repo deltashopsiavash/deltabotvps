@@ -70,7 +70,7 @@ function deltaSmsReviewHandle(string $data): void {
             $events=deltaSmsReviewClosedCandidates($p,$b);
             $text.="\n\nپرداخت قبلاً تأیید شده است. فقط پیامک همان واریزی را ثبت کنید؛ سرویس دوباره تحویل نمی‌شود.";
             foreach(array_slice($events,0,8,true) as $e){
-                $rows[]=[['text'=>'ثبت واریز قبلی | '.strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600),'callback_data'=>'smsReviewClosedAsk'.$id.'_'.substr($e['event_id'],0,16)]];
+                $rows[]=[['text'=>((int)$e['received_at']<(int)$b['shown_at']?'⚠️ قبل از فاکتور | ':'ثبت واریز قبلی | ').strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600),'callback_data'=>'smsReviewClosedAsk'.$id.'_'.substr($e['event_id'],0,16)]];
             }
         }else $text.="\n\nپیامک قابل اتصال ثبت نشده یا رسید هنوز ارسال نشده است.";
         if($p['state']==='declined'&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
@@ -106,7 +106,7 @@ function deltaSmsReviewHandle(string $data): void {
         if($m[1]==='Ask'){
             $hits=array_filter(deltaSmsReviewClosedCandidates($p,$b),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
             if(count($hits)!==1){alert('پیامک معتبر موجود نیست.',true);return;}$e=reset($hits);
-            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n🏦 ".deltaSmsReviewEsc($e['bank'])." | ".number_format((int)$e['amount_irr'])." ریال\n🕒 ".gmdate('Y-m-d H:i:s',(int)$e['received_at']+12600)." ایران\nحساب: ".deltaSmsReviewEsc($e['account_hint']??'-')."\n⚠️ فقط اگر این دقیقاً واریز قبلاً تأییدشده همین مشتری است، ثبت کنید. تحویل مجدد انجام نمی‌شود.",[
+            deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n🏦 ".deltaSmsReviewEsc($e['bank'])." | ".number_format((int)$e['amount_irr'])." ریال\n🕒 ".gmdate('Y-m-d H:i:s',(int)$e['received_at']+12600)." ایران\nحساب: ".deltaSmsReviewEsc($e['account_hint']??'-').((int)$e['received_at']<(int)$b['shown_at']?"\n⚠️ زمان بانکی قبل از نمایش کارت است؛ صرف شباهت مبلغ و زمان کافی نیست. گردش حساب و رسید همان مشتری را تطبیق دهید.":"")."\n⚠️ فقط اگر این دقیقاً واریز قبلاً تأییدشده همین مشتری است، ثبت کنید. تحویل مجدد انجام نمی‌شود.",[
                 [['text'=>'✅ ثبت واریز قبلی بدون تحویل','callback_data'=>'smsReviewClosedDo'.$id.'_'.$prefix]],
                 [['text'=>'انصراف','callback_data'=>'smsReviewInvoice'.$id]]
             ]);return;
