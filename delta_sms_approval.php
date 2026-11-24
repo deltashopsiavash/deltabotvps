@@ -186,20 +186,25 @@ function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $ep
       && is_int($received) && $received >= $shown && $received <= min($expires,$receiptAt+deltaSmsReceiptGraceSeconds())
       && is_int($ingested) && $ingested >= $shown && $ingested <= $now && $ingested >= $received-300;
 }
-function deltaSmsApprovalEvents(): array {
-    static $events=null;
-    if($events!==null) return $events;
+function deltaSmsReconciliationLookbackSeconds(): int {return 86400;}
+function deltaSmsApprovalEvents(int $lookback=7200): array {
+    static $cache=[];
+    $lookback=max(1,min(deltaSmsReconciliationLookbackSeconds(),$lookback));
+    if(isset($cache[$lookback]))return $cache[$lookback];
     $events=[];$conf='/etc/delta-sms-bridge.php';
     if(!is_readable($conf)) return $events;
     $cfg=require $conf;if(!is_array($cfg))return $events;
     $base=(string)($cfg['storage_dir']??'/var/lib/delta-sms-bridge/events');
     foreach(glob($base.'/[a-f0-9][a-f0-9]/*.json')?:[] as $path){
-        if(is_link($path)||!is_file($path)||filesize($path)>4096||filemtime($path)<time()-7200)continue;
+        if(is_link($path)||!is_file($path)||filesize($path)>4096||filemtime($path)<time()-$lookback)continue;
         $row=json_decode((string)file_get_contents($path),true);
         if(is_array($row)&&basename($path)===(string)($row['event_id']??'').'.json') $events[]=$row;
     }
-    return $events;
+    return $cache[$lookback]=$events;
 }
+// Use historical stored evidence for ownership/reconciliation only; the
+// live event matcher still enforces the original invoice and receipt window.
+function deltaSmsMatchingEvents(): array {return deltaSmsApprovalEvents(deltaSmsReconciliationLookbackSeconds());}
 function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=null,bool $settledReconciliation=false): ?array {
     if($settledReconciliation&&!in_array($pay['state']??'',['paid','approved'],true))return null;
     global $connection,$isChildBot;
@@ -213,7 +218,7 @@ function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=nul
     // sender-only eligibility after the upgrade.
     if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
-    $events=$trustedEvents??deltaSmsApprovalEvents();
+    $events=$trustedEvents??deltaSmsMatchingEvents();
     foreach($events as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now,$settledReconciliation)&&!deltaSmsEventAlreadyUsed($event['event_id']))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);

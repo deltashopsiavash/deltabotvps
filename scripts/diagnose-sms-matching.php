@@ -28,8 +28,9 @@ try{
     if(!$rows){output('INVOICES','NONE');exit;}
     $table=query($p,"SHOW TABLES LIKE 'delta_sms_invoice_bindings'");
     if(!$table){output('ERROR','SMS_BINDING_TABLE_MISSING');exit(3);}
-    $events=deltaSmsApprovalEvents();
-    output('RECENT_STORED_EVENTS',count($events));
+    $events=deltaSmsMatchingEvents();
+    output('HISTORY_LOOKBACK_SECONDS',deltaSmsReconciliationLookbackSeconds());
+    output('STORED_EVENTS_IN_LOOKBACK',count($events));
     output('RECEIPT_GRACE_SECONDS',deltaSmsReceiptGraceSeconds());
     foreach($rows as $pay){
         $h=(string)$pay['hash_id'];$price=(int)$pay['price'];$receipt=(int)setting($p,'RECEIPT_AT_'.sha1($h));
