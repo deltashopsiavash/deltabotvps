@@ -12,6 +12,17 @@ require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
 if(deltaSvcHandleRequest() || dsHandleCustomer()) exit;
 
+// Superseded invoices still exist for SMS evidence. Treat stale payment
+// buttons like deleted invoices, without blocking admin review or menus.
+if(empty($isChildBot)){
+    if(deltaIsCancelledCheckoutFlow((string)($data??''))){
+        answerQuery('این فاکتور لغو شده است؛ اگر قبلاً واریز کرده‌اید با پشتیبانی تماس بگیرید.',true);exit;
+    }
+    if(isset($update->message) && empty($data) && !in_array(trim((string)($text??'')),['/start',(string)($buttonValues['cancel']??'')],true) &&
+       deltaIsCancelledCheckoutFlow((string)($userInfo['step']??''))){
+        setUser();sendMessage('این فاکتور لغو شده است؛ اگر قبلاً واریز کرده‌اید با پشتیبانی تماس بگیرید.',getMainKeys());exit;
+    }
+}
 if(function_exists('deltaFeatureHandleRequest')) deltaFeatureHandleRequest();
 
 function pgUserRenewSuggestionEnabled($userId){
@@ -4940,7 +4951,7 @@ if($userInfo['step'] == "increaseMyWallet" && $text != $buttonValues['cancel']){
     }
     sendMessage("🪄 لطفا صبور باشید ...",$removeKeyboard);
     $hash_id = RandomString();
-    $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'INCREASE_WALLET' AND `state` = 'pending'");
+    $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'INCREASE_WALLET' AND `state` = 'pending'",!empty($isChildBot)));
     $stmt->bind_param("i", $from_id);
     $stmt->execute();
     $stmt->close();
@@ -6960,7 +6971,7 @@ if((preg_match('/^discountCustomPlanDay(\d+)/',$userInfo['step'], $match) || pre
         $price = applyUserPercentDiscount($from_id, $price);
         if(!empty($freeVolumeQuota)) $price = 0;
         $hash_id = RandomString();
-        $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0");
+        $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0",!empty($isChildBot)));
         $stmt->bind_param("i", $from_id);
         $stmt->execute();
         $stmt->close();
@@ -7382,7 +7393,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
     if(($price == 0 or ($from_id == $admin)) && !$specialOffer && !$bfDedicated){
         if(!empty($freeVolumeQuota)){
             $hash_id = RandomString();
-            $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0");
+            $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0",!empty($isChildBot)));
             $stmt->bind_param("i", $from_id);
             $stmt->execute();
             $stmt->close();
@@ -7407,7 +7418,7 @@ if((preg_match('/^discountSelectPlan(\d+)_(\d+)_(\d+)/',$userInfo['step'],$match
         
         if(!preg_match('/^discountSelectPlan/', $userInfo['step'])){
             $hash_id = RandomString();
-            $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0");
+            $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'BUY_SUB' AND `state` = 'pending' AND `special_offer_id`=0",!empty($isChildBot)));
             $stmt->bind_param("i", $from_id);
             $stmt->execute();
             $stmt->close();
@@ -11637,7 +11648,7 @@ if(preg_match('/sConfigRenewPlan(\d+)_(\d+)/',$data, $match) && ($botState['sell
     $token = base64_encode("{$from_id}.{$id}");
     
     $hash_id = RandomString();
-    $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'RENEW_SCONFIG' AND `state` = 'pending'");
+    $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'RENEW_SCONFIG' AND `state` = 'pending'",!empty($isChildBot)));
     $stmt->bind_param("i", $from_id);
     $stmt->execute();
     $stmt->close();
@@ -13738,7 +13749,7 @@ if(preg_match('/^discountRenew(\d+)_(\d+)/',$userInfo['step'], $match) || preg_m
     }
     if(!preg_match('/^discountRenew/', $userInfo['step'])){
         $hash_id = RandomString();
-        $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'RENEW_ACCOUNT' AND `state` = 'pending'");
+        $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` = 'RENEW_ACCOUNT' AND `state` = 'pending'",!empty($isChildBot)));
         $stmt->bind_param("i", $from_id);
         $stmt->execute();
         $stmt->close();
@@ -14646,7 +14657,7 @@ if(preg_match('/selectPlanDayIncrease(?<orderId>.+)_(?<dayId>.+)/',$data,$match)
     
     
     $hash_id = RandomString();
-    $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` LIKE '%INCREASE_DAY%' AND `state` = 'pending'");
+    $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` LIKE '%INCREASE_DAY%' AND `state` = 'pending'",!empty($isChildBot)));
     $stmt->bind_param("i", $from_id);
     $stmt->execute();
     $stmt->close();
@@ -15022,7 +15033,7 @@ if(preg_match('/increaseVolumePlan(?<orderId>.+)_(?<volumeId>.+)/',$data,$match)
     }
 
     $hash_id = RandomString();
-    $stmt = $connection->prepare("DELETE FROM `pays` WHERE `user_id` = ? AND `type` LIKE '%INCREASE_VOLUME%' AND `state` = 'pending'");
+    $stmt = $connection->prepare(deltaSupersedePendingInvoiceSql("DELETE FROM `pays` WHERE `user_id` = ? AND `type` LIKE '%INCREASE_VOLUME%' AND `state` = 'pending'",!empty($isChildBot)));
     $stmt->bind_param("i", $from_id);
     $stmt->execute();
     $stmt->close();
