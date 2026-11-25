@@ -51,7 +51,7 @@ try{
         output('BINDING_MODE',$b['bank']);output('EXPECTED_RIAL',$b['amount_irr']);
         output('DISPLAY_UTC',gmdate('c',(int)$b['shown_at']));output('EXPIRES_UTC',gmdate('c',(int)$b['expires_at']));
         if(!empty($b['event_id'])){output('BLOCKER','EVENT_ALREADY_CLAIMED');continue;}
-        if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==$price*10){output('BLOCKER','OLD_OR_WRONG_AMOUNT_BINDING');continue;}
+        if(!deltaSmsBindingPriceValid($b,$price)){output('BLOCKER','OLD_OR_WRONG_AMOUNT_BINDING');continue;}
         $hits=[];$sameAmount=0;$usedCount=0;
         $settled=in_array($pay['state'],['paid','approved'],true);
         output('MATCH_MODE',$settled?'SETTLED_RECONCILIATION':'NEW_PAYMENT');
@@ -73,7 +73,8 @@ try{
         output('SAME_AMOUNT_EVENTS',$sameAmount);output('USED_SAME_AMOUNT_EVENTS',$usedCount);output('ELIGIBLE_UNUSED_EVENTS',count($hits));
         if(count($hits)!==1){output('BLOCKER',count($hits)>1?'AMBIGUOUS_BANK_EVENTS':'NO_ELIGIBLE_BANK_EVENT');continue;}
         $event=reset($hits);$at=(int)$event['received_at'];
-        $rows=[];foreach(deltaSmsCompetitionRowsSql() as $sql)$rows=array_merge($rows,query($p,$sql,[$h,$price,$at-3600,$at]));
+        $tagged=($b['bank']??'')==='nominal_tag';$compPrice=$tagged?intdiv((int)$b['amount_irr'],10):$price;
+        $rows=[];foreach(deltaSmsCompetitionRowsSql($tagged) as $sql)$rows=array_merge($rows,query($p,$sql,[$h,$compPrice,$at-3600,$at]));
         $history=[];
         foreach($rows as $r){
             $ch=(string)$r['hash_id'];

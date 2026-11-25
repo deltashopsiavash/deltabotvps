@@ -283,6 +283,9 @@ function deltaCardShowInvoice($pay) {
         global $botState,$isChildBot;
         $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
         $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
+        if($smsMode&&!$binding&&deltaSmsTaggedEnabled()){
+            sendMessage('⚠️ مبلغ اختصاصی قابل رزرو نیست. فعلاً واریز نکنید و از پشتیبانی کمک بگیرید.',null,null);return false;
+        }
         $kb=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
         $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
         if($smsMode)$body.=deltaSmsPresentationText($binding);
@@ -352,6 +355,9 @@ function deltaCardSwitchAction($callback) {
         global $botState,$isChildBot;
         $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
         $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
+        if($smsMode&&!$binding&&deltaSmsTaggedEnabled()){
+            answerQuery('مبلغ اختصاصی قابل رزرو نیست؛ فعلاً واریز نکنید.',true);return false;
+        }
         $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
         if($smsMode)$body.=deltaSmsPresentationText($binding);
         $keyboard=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
@@ -434,13 +440,21 @@ function deltaCardAdminReceiptNote($hash,$parse='HTML') {
     }
     $st->execute();$row=$st->get_result()->fetch_assoc();$st->close();
     if(!$row) return '';
-    $num=$row['card_number'];$holder=$row['holder_name'];
+    $num=$row['card_number'];$holder=$row['holder_name'];$amountNote='';
+    global $isChildBot;
+    if(empty($isChildBot)&&$id>0){
+        try{
+            $q=$connection->prepare('SELECT amount_irr,nominal_toman,bank FROM delta_sms_invoice_bindings WHERE display_id=? AND BINARY hash_id=BINARY ? LIMIT 1');
+            $q->bind_param('is',$id,$hash);$q->execute();$b=$q->get_result()->fetch_assoc();$q->close();
+            if($b&&$b['bank']==='nominal_tag')$amountNote="\n💰 مبلغ اختصاصی مورد انتظار: ".number_format((int)$b['amount_irr'])." ریال (اصل فاکتور ".number_format((int)$b['nominal_toman'])." تومان)";
+        }catch(Throwable $e){/* old installations have no binding table */}
+    }
     if(strcasecmp((string)$parse,'HTML')===0 || strtolower((string)$parse)==='html') {
         return "\n\n💳 <b>شماره کارت نمایش‌داده‌شده به مشتری:</b> <code>".
             htmlspecialchars($num,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."</code>\n".
-            "👤 صاحب کارت: ".htmlspecialchars($holder,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+            "👤 صاحب کارت: ".htmlspecialchars($holder,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8').$amountNote;
     }
-    return "\n\n💳 کارت نمایش‌داده‌شده به مشتری: ".$num."\n👤 صاحب کارت: ".$holder;
+    return "\n\n💳 کارت نمایش‌داده‌شده به مشتری: ".$num."\n👤 صاحب کارت: ".$holder.$amountNote;
 }
 function deltaCardAppendAdminReceipt($body,$hash,$parse='HTML',$photo=false) {
     $note=deltaCardAdminReceiptNote((string)$hash,$parse);

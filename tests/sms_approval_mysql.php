@@ -26,7 +26,7 @@ ok(deltaSmsApprovalSchema(),'schema migration');
 $row=$connection->query("SHOW INDEX FROM delta_sms_invoice_bindings WHERE Key_name='sms_amount'")->fetch_assoc();
 ok((int)$row['Non_unique']===1,'old unique amount restriction removed');
 ok($connection->query("SELECT event_id FROM delta_sms_invoice_bindings WHERE display_id=10")->fetch_assoc()['event_id']===$oldEvent,'old consumed events preserved');
-$botState=['cartToCartAutoAcceptState'=>'off','cartToCartSmsAcceptState'=>'on'];mode('off','on');
+$botState=['cartToCartAutoAcceptState'=>'off','cartToCartSmsAcceptState'=>'on'];mode('off','on');upsertSettingValue('SMS_DISTINCT_AMOUNT','0');
 $connection->query("INSERT INTO pays VALUES (1,'test-a',123,80000,'have_sent'),(2,'test-b',123,80000,'pending'),(3,'test-c',123,90000,'have_sent'),(4,'test-d',123,80000,'have_sent')");
 $a=['id'=>1,'hash_id'=>'test-a','user_id'=>123,'price'=>80000,'request_date'=>$now-60];
 $b=['id'=>2,'hash_id'=>'test-b','user_id'=>123,'price'=>80000,'request_date'=>$now-60];
@@ -404,6 +404,35 @@ ok(deltaSmsReviewEventUsed($re['event_id'])&&!deltaSmsReviewEventUsed($ro['event
 ok(deltaSmsReviewPay(91)['state']==='approved'&&deltaSmsReviewPay(92)['state']==='have_sent','no financial state change');
 ok(deltaSmsApprovalEpoch()===$beforeEpoch,'repair preserves epoch');
 ok(deltaSmsReviewRepairConflicts(123,$rep)['linked']===0,'historical repair idempotent');
+// Distinct checkout amounts: same nominal, isolated actual amounts.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-1000));upsertSettingValue('SMS_DISTINCT_AMOUNT','1');mode('off','on');
+$connection->query("INSERT INTO pays(id,hash_id,user_id,price,state) VALUES (111,'tag-a',1401,80000,'have_sent'),(112,'tag-b',1402,80000,'have_sent'),(113,'tag-manual',1403,80000,'have_sent')");
+$tag=[];
+foreach([[111,'tag-a',1401],[112,'tag-b',1402],[113,'tag-manual',1403]] as [$id,$hash,$uid]){
+    $p=deltaSmsReviewPay($id);$p['request_date']=$now-10;
+    $tag[$id]=deltaSmsReservePresentation($p,['id'=>$id]);
+    ok($tag[$id]&&$tag[$id]['bank']==='nominal_tag','new exact distinct amount');
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$now)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$now);
+}
+ok(count(array_unique(array_column($tag,'amount_irr')))===3,'same nominal concurrent invoices get distinct amounts');
+ok($tag[111]['amount_irr']>=800010&&$tag[111]['amount_irr']<=800990,'bounded transparent surcharge');
+$p=deltaSmsReviewPay(111);$p['request_date']=$now-10;
+$again=deltaSmsReservePresentation($p,['id'=>121]);ok($again['amount_irr']===$tag[111]['amount_irr'],'same invoice retains amount on redisplay');
+$ev=['event_id'=>str_repeat('8',63).'9','bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>$tag[111]['amount_irr'],'received_at'=>$now,'ingested_at'=>$now];
+$ev2=array_replace($ev,['event_id'=>str_repeat('9',63).'8','amount_irr'=>$tag[112]['amount_irr']]);
+$ev3=array_replace($ev,['event_id'=>str_repeat('a',63).'8','amount_irr'=>$tag[113]['amount_irr']]);
+$all=[$ev,$ev2,$ev3];
+$match=deltaSmsFindBinding(deltaSmsReviewPay(111),$now,$all);
+ok($match&&$match['matched_event']===$ev['event_id'],'same nominal different tagged amount does not compete');
+ok(deltaSmsClaimInvoice(deltaSmsReviewPay(111),$match,'sms',$all),'tagged payment claims exact actual amount');
+ok(deltaSmsReviewPay(111)['price']==80000,'nominal accounting unchanged');
+ok(!deltaSmsClaimInvoice(deltaSmsReviewPay(111),$match,'sms',$all),'tagged payment cannot replay');
+$m2=deltaSmsFindBinding(deltaSmsReviewPay(112),$now,$all);
+ok($m2&&$m2['matched_event']===$ev2['event_id'],'second tagged invoice independently matches');
+ok(deltaSmsReviewQueueFromStoredEvents(113,substr($ev3['event_id'],0,16),123,$all),'admin can reserve exact tagged amount');
+$q=deltaSmsReviewQueuedBinding(deltaSmsReviewPay(113));ok($q&&(int)$q['amount_irr']===$tag[113]['amount_irr'],'manual queue preserves actual amount');
+ok(deltaSmsClaimInvoice(deltaSmsReviewPay(113),$q,'sms',$all),'manual tagged claim retains amount');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";

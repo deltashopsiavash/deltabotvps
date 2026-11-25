@@ -4,7 +4,43 @@
 // events are already filtered by the exact configured sender; no second
 // card/account mapping or server-side copy of those rules is required.
 function deltaSmsSenderReservation(array $binding): bool {
-    return ($binding['bank']??'')==='nominal' && ($binding['account_hint']??'')==='00000';
+    return in_array($binding['bank']??'',['nominal','nominal_tag'],true) && ($binding['account_hint']??'')==='00000';
+}
+function deltaSmsTaggedEnabled(): bool {
+    return getSettingValue('SMS_DISTINCT_AMOUNT','1')==='1';
+}
+function deltaSmsBindingPriceValid(array $binding,int $price): bool {
+    if($price<=0||!deltaSmsSenderReservation($binding)||(int)($binding['nominal_toman']??0)!==$price)return false;
+    $diff=(int)($binding['amount_irr']??0)-$price*10;
+    return ($binding['bank']==='nominal')?$diff===0:($diff>=10&&$diff<=990&&$diff%10===0);
+}
+// New amounts are global across bank accounts; never recycle within 24h
+// after expiry. The same invoice keeps its amount on card redisplay.
+function deltaSmsAllocateAmount(array $pay,int $now): ?array {
+    global $connection;
+    $hash=(string)$pay['hash_id'];$price=(int)$pay['price'];$uid=(int)$pay['user_id'];
+    $s=$connection->prepare('SELECT * FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? ORDER BY display_id ASC LIMIT 101');
+    $s->bind_param('s',$hash);$s->execute();$rows=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
+    if(count($rows)>100)return null;
+    if($rows){
+        $first=reset($rows);
+        foreach($rows as $r)if((int)$r['user_id']!==$uid||!empty($r['event_id'])||!deltaSmsBindingPriceValid($r,$price)||$r['bank']!==$first['bank']||(int)$r['amount_irr']!==(int)$first['amount_irr'])return null;
+        return ['bank'=>$first['bank'],'amount_irr'=>(int)$first['amount_irr']];
+    }
+    if(!deltaSmsTaggedEnabled())return ['bank'=>'nominal','amount_irr'=>$price*10];
+    $lo=$price*10+10;$hi=$price*10+990;$cutoff=$now-86400;
+    $s=$connection->prepare('SELECT DISTINCT amount_irr FROM delta_sms_invoice_bindings WHERE amount_irr BETWEEN ? AND ? AND expires_at>=?');
+    $s->bind_param('iii',$lo,$hi,$cutoff);$s->execute();$used=array_fill_keys(array_column($s->get_result()->fetch_all(MYSQLI_ASSOC),'amount_irr'),true);$s->close();
+    // Protect amounts of ordinary/manual card invoices shown recently too.
+    $from=$price+1;$to=$price+99;
+    $s=$connection->prepare('SELECT DISTINCT p.price FROM pays p JOIN payment_card_displays d ON BINARY d.hash_id=BINARY p.hash_id WHERE p.price BETWEEN ? AND ? AND d.shown_at>=?');
+    $s->bind_param('iii',$from,$to,$cutoff);$s->execute();foreach($s->get_result()->fetch_all(MYSQLI_ASSOC) as $r)$used[(int)$r['price']*10]=true;$s->close();
+    $start=random_int(1,99);
+    for($i=0;$i<99;$i++){
+        $offset=1+(($start-1+$i)%99);$rial=($price+$offset)*10;
+        if(!isset($used[$rial]))return ['bank'=>'nominal_tag','amount_irr'=>$rial];
+    }
+    return null;
 }
 function deltaSmsApprovalSchema(): bool {
     global $connection,$isChildBot;
@@ -54,24 +90,31 @@ function deltaSmsReservePresentation(array $pay,array $card): ?array {
         if($bf) $expires=min($expires,(int)$bf['reserved_until']);
     }
     if($expires<=$now || $now<deltaSmsApprovalEpoch()) return null;
-    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank='nominal';$hint='00000';
-    $rial=$price*10;
-    $st=$connection->prepare('INSERT INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
-    $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
-    $st->execute();$inserted=$st->affected_rows===1;$st->close();
-    return $inserted?['amount_irr'=>$rial,'expires_at'=>$expires]:null;
+    $id=(int)$card['id'];$uid=(int)$pay['user_id'];$hint='00000';
+    $lock=$connection->query("SELECT GET_LOCK(CONCAT('delta_sms_amount_',LEFT(SHA1(DATABASE()),32)),5) AS acquired");
+    if(!$lock||(int)($lock->fetch_assoc()['acquired']??0)!==1)return null;
+    try{
+        $allocation=deltaSmsAllocateAmount($pay,$now);if(!$allocation)return null;
+        $bank=$allocation['bank'];$rial=$allocation['amount_irr'];
+        $st=$connection->prepare('INSERT INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
+        $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
+        $st->execute();$inserted=$st->affected_rows===1;$st->close();
+        return $inserted?['amount_irr'=>$rial,'nominal_toman'=>$price,'bank'=>$bank,'expires_at'=>$expires]:null;
+    }finally{$connection->query("SELECT RELEASE_LOCK(CONCAT('delta_sms_amount_',LEFT(SHA1(DATABASE()),32)))");}
 }
 function deltaSmsPresentationText(?array $binding): string {
     if(!$binding) return "\n\n⚠️ این فاکتور برای بررسی دستی است؛ مبلغ اصلی فاکتور را واریز کنید.";
-    return "\n\n📲 مبلغ دقیق قابل پرداخت: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nفقط در زمان اعتبار فاکتور واریز کنید؛ پس از لغو یا ارسال رسید دوباره واریز نکنید. واریزی دیرهنگام را به پشتیبانی اطلاع دهید. موارد هم‌مبلغ مبهم نیاز به بررسی دارند.";
+    $extra=($binding['bank']??'')==='nominal_tag'?"\nمبلغ اصلی: ".number_format((int)$binding['nominal_toman'])." تومان\nمابه‌التفاوت شناسه پرداخت: ".number_format(intdiv((int)$binding['amount_irr'],10)-(int)$binding['nominal_toman'])." تومان (به اعتبار کیف پول اضافه نمی‌شود).":"";
+    return $extra."\n\n📲 مبلغ دقیق قابل پرداخت: <code>".number_format($binding['amount_irr'],0,'.','')."</code> ریال\nفقط در زمان اعتبار فاکتور واریز کنید؛ پس از لغو یا ارسال رسید دوباره واریز نکنید. واریزی دیرهنگام را به پشتیبانی اطلاع دهید. موارد هم‌مبلغ مبهم نیاز به بررسی دارند.";
 }
 // Never exclude a possible owner just because it is pending, archived,
 // manually approved, declined, or has an earlier customer receipt.
 // A prior invoice stops competing only if it was actually linked to a
 // different, earlier trusted SMS, and its payment state is settled.
-function deltaSmsCompetitionRowsSql(): array {
+function deltaSmsCompetitionRowsSql(bool $tagged=false): array {
     $fields="p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint,COALESCE(n.value,0) AS no_payment_through";
-    return [
+    $amountCondition=$tagged?'b.amount_irr=?*10':'b.nominal_toman=?';
+    $queries=[
       "SELECT DISTINCT BINARY d.hash_id AS hash_id,$fields FROM payment_card_displays d
         JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY d.hash_id AND c.event_id IS NOT NULL
@@ -81,8 +124,16 @@ function deltaSmsCompetitionRowsSql(): array {
         LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY b.hash_id AND c.event_id IS NOT NULL
         LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(b.hash_id))
-        WHERE BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at BETWEEN ? AND ?"
+        WHERE BINARY b.hash_id<>BINARY ? AND $amountCondition AND b.shown_at BETWEEN ? AND ?"
     ];
+    // Legacy invoices can still compete with a tagged invoice whose actual
+    // amount equals the legacy nominal amount (including orphan bindings).
+    $queries[]="SELECT DISTINCT BINARY b.hash_id AS hash_id,$fields FROM delta_sms_invoice_bindings b
+        LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id
+        LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY b.hash_id AND c.event_id IS NOT NULL
+        LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(b.hash_id))
+        WHERE BINARY b.hash_id<>BINARY ? AND ".($tagged?'b.nominal_toman=?':'b.amount_irr=?*10')." AND b.shown_at BETWEEN ? AND ?";
+    return $queries;
 }
 // Each hash gets a snapshot of its receipt and latest card presentation.
 // A previously verified declined receipt can be retired for NEW checkouts
@@ -114,7 +165,7 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
             $settled=in_array($r['state']??'',['paid','approved'],true)
               && $id!=='' && $id!==$eventId && is_array($e)
               && deltaSmsSenderReservation($r)
-              && (int)$r['amount_irr']===(int)$r['nominal_toman']*10
+              && deltaSmsBindingPriceValid($r,(int)$r['nominal_toman'])
               && ($e['source']??'')==='sms'
               && in_array($e['bank']??'',['melli','pasargad','khavar'],true)
               && is_string($e['sender']??null)&&trim($e['sender'])!==''
@@ -156,11 +207,13 @@ function deltaSmsCompetitionHistory(array $rows): array {
     }
     return $history;
 }
-function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null,int $candidateShown=0): bool {
+function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null,int $candidateShown=0,?array $binding=null): bool {
     global $connection;
+    $tagged=($binding['bank']??'')==='nominal_tag';
+    if($tagged)$price=intdiv((int)$binding['amount_irr'],10);
     $from=$eventAt-3600;
     $rows=[];
-    foreach(deltaSmsCompetitionRowsSql() as $sql){
+    foreach(deltaSmsCompetitionRowsSql($tagged) as $sql){
         $st=$connection->prepare($sql);
         $st->bind_param('siii',$hash,$price,$from,$eventAt);
         $st->execute();$rows=array_merge($rows,$st->get_result()->fetch_all(MYSQLI_ASSOC));$st->close();
@@ -222,14 +275,14 @@ function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=nul
     if(!$b||(int)$b['nominal_toman']!==(int)$pay['price'])return null;
     // Older account-bound reservations cannot silently acquire broader
     // sender-only eligibility after the upgrade.
-    if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
+    if(!deltaSmsBindingPriceValid($b,(int)$pay['price']))return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
     $events=$trustedEvents??deltaSmsMatchingEvents();
     foreach($events as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now,$settledReconciliation)&&!deltaSmsEventAlreadyUsed($event['event_id']))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);
     $b['matched_event_at']=(int)$hits[$b['matched_event']]['received_at'];
-    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events,(int)$b['shown_at']))return null;
+    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events,(int)$b['shown_at'],$b))return null;
     return $b;
 }
 // Atomic invoice+event claim. No bank event is released on a panel failure;
@@ -257,8 +310,9 @@ function deltaSmsClaimInvoice(array $pay,?array $binding,string $mode,?array $tr
             if(!$fresh||(string)$fresh['matched_event']!==(string)($binding['matched_event']??'')
                 ||(int)$fresh['display_id']!==(int)($binding['display_id']??0))throw new RuntimeException('match no longer unique');
             $display=(int)$fresh['display_id'];$event=(string)$fresh['matched_event'];$now=time();
-            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND bank=\'nominal\' AND account_hint=\'00000\' AND amount_irr=nominal_toman*10 AND event_id IS NULL');
-            $st->bind_param('siisii',$event,$now,$display,$hash,$uid,$price);
+            $actual=(int)$fresh['amount_irr'];$bank=(string)$fresh['bank'];
+            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND bank=? AND account_hint=\'00000\' AND amount_irr=? AND event_id IS NULL');
+            $st->bind_param('siisiisi',$event,$now,$display,$hash,$uid,$price,$bank,$actual);
             $st->execute();$ok=$st->affected_rows===1;$st->close();
             if(!$ok)throw new RuntimeException('event already used');
             }
