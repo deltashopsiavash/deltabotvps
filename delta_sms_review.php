@@ -36,10 +36,10 @@ function deltaSmsReviewBinding(array $pay): ?array {
 function deltaSmsReviewEventEligible(array $pay,array $b,array $e,int $receiptAt,int $now): bool {
     $at=$e['received_at']??null;$ingested=$e['ingested_at']??null;
     return ($pay['state']??'')==='have_sent' && $receiptAt>0
-      && empty($b['event_id']) && deltaSmsBindingPriceValid($b,(int)$pay['price'])
+      && empty($b['event_id']) && (int)$b['nominal_toman']===(int)$pay['price']
       && ($e['source']??'')==='sms' && in_array($e['bank']??'',['melli','pasargad','khavar'],true)
       && trim((string)($e['sender']??''))!=='' && preg_match('/^[a-f0-9]{64}$/D',(string)($e['event_id']??''))
-      && is_int($e['amount_irr']??null) && $e['amount_irr']===(int)$b['amount_irr']
+      && is_int($e['amount_irr']??null) && $e['amount_irr']===(int)$pay['price']*10
       && is_int($at) && $at>=(int)$b['shown_at'] && $at<=(int)$b['expires_at']
       && $receiptAt>=(int)$b['shown_at'] && $receiptAt<=(int)$b['expires_at']
       && is_int($ingested) && $ingested>=(int)$b['shown_at'] && $ingested<=$now && $ingested>=$at-300;
@@ -96,17 +96,17 @@ function deltaSmsReviewQueuedBinding(array $pay): ?array {
     global $connection;
     if(!deltaSmsReviewSchema())return null;
     $hash=(string)$pay['hash_id'];$id=(int)$pay['id'];$epoch=deltaSmsApprovalEpoch();
-    $s=$connection->prepare("SELECT a.id AS review_id,a.actor_id,a.event_id AS matched_event,a.event_at AS matched_event_at,a.amount_irr,a.created_at,b.display_id,b.shown_at,b.nominal_toman,b.bank,b.account_hint FROM delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id WHERE a.action='link' AND a.status='queued' AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.created_at>=? LIMIT 1");
+    $s=$connection->prepare("SELECT a.id AS review_id,a.actor_id,a.event_id AS matched_event,a.event_at AS matched_event_at,a.amount_irr,a.created_at,b.display_id,b.shown_at,b.nominal_toman FROM delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id WHERE a.action='link' AND a.status='queued' AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.created_at>=? LIMIT 1");
     $s->bind_param('isi',$id,$hash,$epoch);$s->execute();$b=$s->get_result()->fetch_assoc();$s->close();
-    if(!$b||!deltaSmsBindingPriceValid($b,(int)$pay['price']))return null;
+    if(!$b||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $b['admin_review']=true;return $b;
 }
 function deltaSmsReviewClaim(array $pay,array $b): bool {
     global $connection;
-    $review=(int)($b['review_id']??0);$display=(int)$b['display_id'];$hash=(string)$pay['hash_id'];$id=(int)$pay['id'];$eid=(string)$b['matched_event'];$price=(int)$b['amount_irr'];$nominal=(int)$pay['price'];$epoch=deltaSmsApprovalEpoch();if(!deltaSmsBindingPriceValid($b,$nominal))return false;
+    $review=(int)($b['review_id']??0);$display=(int)$b['display_id'];$hash=(string)$pay['hash_id'];$id=(int)$pay['id'];$eid=(string)$b['matched_event'];$price=(int)$pay['price']*10;$epoch=deltaSmsApprovalEpoch();
     if((int)getSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),'0')!==$display)return false;
-    $s=$connection->prepare("UPDATE delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id SET a.status='claimed' WHERE a.id=? AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.display_id=? AND a.event_id=? AND a.amount_irr=? AND b.amount_irr=a.amount_irr AND b.nominal_toman=? AND a.created_at>=? AND a.action='link' AND a.status='queued'");
-    $s->bind_param('iisisiii', $review,$id,$hash,$display,$eid,$price,$nominal,$epoch);
+    $s=$connection->prepare("UPDATE delta_sms_admin_audit a JOIN delta_sms_invoice_bindings b ON b.display_id=a.display_id AND BINARY b.event_id=BINARY a.event_id AND BINARY b.hash_id=BINARY a.hash_id SET a.status='claimed' WHERE a.id=? AND a.invoice_id=? AND BINARY a.hash_id=BINARY ? AND a.display_id=? AND a.event_id=? AND a.amount_irr=? AND a.created_at>=? AND a.action='link' AND a.status='queued'");
+    $s->bind_param('iisisii', $review,$id,$hash,$display,$eid,$price,$epoch);
     $s->execute();$ok=$s->affected_rows===1;$s->close();return $ok;
 }
 function deltaSmsReviewDelivered(array $b): void {
@@ -215,7 +215,7 @@ function deltaSmsReviewHistoricalMatch(array $pay,array $events): ?array {
     $hits=[];
     foreach($bindings as $b){
         if(!empty($b['event_id']))return null;
-        if(!deltaSmsBindingPriceValid($b,$price))continue;
+        if(!deltaSmsSenderReservation($b)||(int)$b['nominal_toman']!==$price||(int)$b['amount_irr']!==$price*10)continue;
         foreach($events as $e){
             if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now,true)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
             $eid=$e['event_id'];
@@ -225,7 +225,7 @@ function deltaSmsReviewHistoricalMatch(array $pay,array $events): ?array {
     }
     if(count($hits)!==1)return null;
     $hit=reset($hits);$b=$hit['binding'];$e=$hit['event'];
-    if(deltaSmsHasCompetingInvoice($hash,$price,(int)$e['received_at'],$e['event_id'],$events,(int)$b['shown_at'],$b))return null;
+    if(deltaSmsHasCompetingInvoice($hash,$price,(int)$e['received_at'],$e['event_id'],$events,(int)$b['shown_at']))return null;
     return $hit;
 }
 function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false,bool $historical=false): bool {
@@ -260,7 +260,7 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
             if(count($hits)!==1)throw new RuntimeException('no unique earlier SMS');
             $candidate=reset($hits);
             if(substr($candidate['event_id'],0,16)!==$prefix||
-                deltaSmsHasCompetingInvoice($hash,(int)$p['price'],(int)$candidate['received_at'],$candidate['event_id'],$events,(int)$b['shown_at'],$b))throw new RuntimeException('competing ownership');
+                deltaSmsHasCompetingInvoice($hash,(int)$p['price'],(int)$candidate['received_at'],$candidate['event_id'],$events,(int)$b['shown_at']))throw new RuntimeException('competing ownership');
         }else{
             $hits=array_filter(deltaSmsReviewClosedCandidates($p,$b,$trustedEvents),static function($e)use($prefix){return substr($e['event_id'],0,16)===$prefix;});
         }
@@ -320,8 +320,8 @@ function deltaSmsReviewConflictHashes(array $p,?array $trustedEvents=null): arra
     global $connection;
     foreach($events as $e){
         if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now,$settled)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
-        $at=(int)$e['received_at'];$from=$at-3600;$hash=(string)$p['hash_id'];$tagged=($b['bank']??'')==='nominal_tag';$price=$tagged?intdiv((int)$b['amount_irr'],10):(int)$p['price'];$rows=[];
-        foreach(deltaSmsCompetitionRowsSql($tagged) as $sql){
+        $at=(int)$e['received_at'];$from=$at-3600;$hash=(string)$p['hash_id'];$price=(int)$p['price'];$rows=[];
+        foreach(deltaSmsCompetitionRowsSql() as $sql){
             $s=$connection->prepare($sql);$s->bind_param('siii',$hash,$price,$from,$at);$s->execute();$rows=array_merge($rows,$s->get_result()->fetch_all(MYSQLI_ASSOC));$s->close();
         }
         foreach(deltaSmsCompetingHashes($rows,$events,$at,$e['event_id'],deltaSmsCompetitionHistory($rows),(int)$b['shown_at']) as $h)$out[$h]=true;
