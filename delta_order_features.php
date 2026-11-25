@@ -100,6 +100,18 @@ if(!function_exists('deltaForceAutoApprove')){
 // Text receipts use the same worker-facing state and timestamp as photos.
 // Commit metadata and the state transition together: the worker must never
 // see a new text receipt with a missing/late submission marker.
+// Mother bot: superseding a pending checkout must preserve the original
+// invoice and card-presentation evidence. A cancelled invoice is not proof
+// that a customer never paid; the SMS matcher still checks actual ambiguity.
+if(!function_exists('deltaSupersedePendingInvoiceSql')){
+    function deltaSupersedePendingInvoiceSql(string $deleteSql,bool $child=false): string {
+        if($child)return $deleteSql;
+        if(!preg_match('/^DELETE FROM `?pays`? WHERE (.+)$/D',$deleteSql,$m) ||
+           strpos($m[1],"`state` = 'pending'")===false)
+            throw new InvalidArgumentException('expected pending invoice cleanup');
+        return "UPDATE pays SET state='cancelled_by_user' WHERE ".$m[1];
+    }
+}
 if(!function_exists('deltaRegisterTextReceipt')){
     function deltaRegisterTextReceipt(string $hash,int $uid,int $submittedAt,int $messageId,int $chatId): bool {
         global $connection;
