@@ -354,6 +354,10 @@ ok(deltaSupersedePendingInvoiceSql($sql,true)===$sql,'child cleanup unchanged');
 $s=$connection->prepare(deltaSupersedePendingInvoiceSql($sql));$uid=1201;$s->bind_param('i',$uid);$s->execute();$s->close();
 ok(deltaSmsReviewPay(81)['state']==='cancelled_by_user','mother replacement keeps previous checkout history');
 ok(deltaSmsReviewPay(82)['state']==='have_sent','other buyer unaffected');
+foreach(['payWithWalletsuperseded-old','payCustomWithWalletsuperseded-old','payPhotoReceiptsuperseded-old~81','payTextReceipt|superseded-old|payWithCartToCartsuperseded-old','awaitingPayChoice|payRenewWithCartToCartsuperseded-old','payWithTronWalletsuperseded-old','payWithWeSwapsuperseded-old','haveDiscountSelectPlan_1_2_81','discountRenew1_81'] as $flow)
+    ok(deltaIsCancelledCheckoutFlow($flow),'cancelled old payment entry blocked: '.$flow);
+ok(!deltaIsCancelledCheckoutFlow('payWithWalletsuperseded-new'),'current buyer checkout unaffected');
+ok(!deltaIsCancelledCheckoutFlow('smsReviewInvoice81'),'management review unaffected');
 $eid=str_repeat('3',63).'4';
 ok(deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'cancelled checkout remains a real possible competitor');
 ok(deltaSmsReviewNoPayment(81,123),'owner can review cancelled checkout');
