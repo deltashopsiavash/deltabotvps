@@ -12,10 +12,105 @@ wait
 echo " "
 
 PS3=" Please Select Action: "
-options=("Update bot" "Update panel" "Backup" "Delete" "Donate" "Exit")
+# Isolated Delta Android module update. Do not reinstall or modify payment/runtime files.
+update_delta_app_only() (
+    set -euo pipefail
+    umask 077
+    cd /var/www/html/deltabotvps
+    local_dir="$PWD"
+    [ -f baseInfo.php ] && [ -f admin_service_manager.php ] || exit 1
+    command -v git >/dev/null
+    command -v php >/dev/null
+    command -v python3 >/dev/null
+    backup=$(mktemp -d /root/delta-app-backup.XXXXXXXX)
+    stage=$(mktemp -d /var/www/.delta-app-stage.XXXXXXXX)
+    installed=()
+    complete=0
+    cleanup() {
+        rc=$?
+        if [ "$complete" -ne 1 ]; then
+            for f in "${installed[@]}"; do
+                if [ -e "$backup/$f" ]; then
+                    cp -a "$backup/$f" "$stage/restore-$f" &&
+                        mv -f "$stage/restore-$f" "$local_dir/$f" || echo "RESTORE REQUIRED: $backup/$f" >&2
+                else
+                    rm -f -- "$local_dir/$f"
+                fi
+            done
+            echo "Delta app update did not complete. Backup: $backup" >&2
+        fi
+        rm -rf -- "$stage"
+        return "$rc"
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    files=(delta_app_core.php delta_app_admin.php delta_app_api.php admin_service_manager.php)
+    for f in "${files[@]}"; do
+        if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+            echo "Unexpected file type: $f" >&2
+            exit 1
+        fi
+        if [ -f "$f" ]; then cp -a "$f" "$backup/$f"; fi
+    done
+    git -c safe.directory="$local_dir" fetch --no-tags https://github.com/deltashopsiavash/deltabotvps.git refs/heads/main
+    rev=$(git -c safe.directory="$local_dir" rev-parse FETCH_HEAD)
+    for f in delta_app_core.php delta_app_admin.php delta_app_api.php; do
+        git -c safe.directory="$local_dir" show "$rev:$f" > "$stage/$f"
+    done
+    python3 - "$stage" <<'PY'
+from pathlib import Path
+import sys
+p = Path("admin_service_manager.php")
+s = p.read_bytes()
+anchor = b"function deltaSvcHandleRequest(){"
+hook = b"\n    require_once __DIR__ . '/delta_app_admin.php';\n    if (deltaAppAdminHandle()) return true;"
+if s.count(anchor) != 1:
+    raise SystemExit("Unexpected admin handler; no files changed")
+if anchor + hook not in s:
+    if b"deltaAppAdminHandle()" in s:
+        raise SystemExit("Unexpected existing Delta app hook; no files changed")
+    s = s.replace(anchor, anchor + hook, 1)
+Path(sys.argv[1], p.name).write_bytes(s)
+PY
+    for f in "${files[@]}"; do
+        php -l "$stage/$f"
+        chown --reference=admin_service_manager.php "$stage/$f"
+        if [ "$f" = admin_service_manager.php ]; then
+            chmod --reference=admin_service_manager.php "$stage/$f"
+        else
+            chmod 644 "$stage/$f"
+        fi
+    done
+    # Install the hook last. Existing account tables are never altered here.
+    for f in "${files[@]}"; do
+        installed+=("$f")
+        mv -f "$stage/$f" "$f"
+    done
+    complete=1
+    echo "DELTA APP UPDATE OK"
+    echo "Source: $rev"
+    echo "Backup: $backup"
+    echo "Next: configure the mother webhook secret, then use /delta."
+)
+
+options=("Update bot" "Update panel" "Backup" "Delete" "Donate" "Exit" "Update Delta VPN app only")
 select opt in "${options[@]}"
 do
 	case $opt in
+		"Update Delta VPN app only")
+			read -r -p "Update only the Delta Android module? [y/N]: " answer
+			if [[ "$answer" == [Yy] ]]; then
+				update_delta_app_only
+				result=$?
+				if [ "$result" -ne 0 ]; then
+					echo "Delta app update failed. Check the output." >&2
+					exit "$result"
+				fi
+			else
+				echo "Cancelled."
+			fi
+			break ;;
 		"Update bot")
 			echo " "
 			read -p "Are you sure you want to update?[y/n]: " answer

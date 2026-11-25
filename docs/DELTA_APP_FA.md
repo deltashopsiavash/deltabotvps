@@ -7,3 +7,6 @@
 - آزمون: /delta برای مالک با webhook secret، رد دیگر کاربران؛ ساخت پلن، ثبت دو ساب، ایجاد دو کاربر، جلوگیری از ثبت تکراری، ورود/نشست/تغییر رمز و انقضا.
 
 API requires actual HTTPS at PHP origin (trusted web-server configuration must set HTTPS=on); do not trust arbitrary forwarded headers. A missing/invalid webhook secret makes /delta silent. No credentials are returned to unverified webhooks.
+
+## Isolated deployment
+Run the normal remote `update.sh` command and select option 7 (Update Delta VPN app only). It fetches the current module source, backs up existing module files in `/root`, checks PHP syntax, preserves the local admin handler and installs its hook last. It does not change webhook settings, payment files, or existing DB data. Configure the webhook secret separately.
