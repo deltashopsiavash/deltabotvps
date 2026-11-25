@@ -81,7 +81,7 @@ try{
             if(in_array($r['state']??'',['paid','approved'],true)&&!empty($r['event_id'])){
                 $history[$ch]=['early_verified_event'=>(string)setting($p,'SMS_EARLY_RECONCILE_'.sha1($ch))];continue;
             }
-            if(($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+            if(!in_array($r['state']??'',['declined','cancelled_by_user'],true)||(int)($r['no_payment_through']??0)<=0)continue;
             $latest=0;
             foreach(deltaSmsCompetitionHistoryQueries() as $sql)$latest=max($latest,(int)(query($p,$sql,[$ch])[0]['latest']??0));
             $history[$ch]=['receipt_at'=>(int)setting($p,'RECEIPT_AT_'.sha1($ch)),'latest_shown'=>$latest];
@@ -90,9 +90,13 @@ try{
         output('COMPETING_INVOICES',count($competitors));
         foreach($competitors as $ch){
             $cp=query($p,'SELECT id,hash_id,price,state,request_date FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1',[$ch])[0]??[];
+            if(!$cp){
+                $old=query($p,'SELECT nominal_toman,shown_at,expires_at FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? ORDER BY shown_at DESC LIMIT 1',[$ch])[0]??[];
+                output('ORPHAN_BINDING',['hash'=>$ch,'price_toman'=>(int)($old['nominal_toman']??0),'shown_utc'=>isset($old['shown_at'])?gmdate('c',(int)$old['shown_at']):'unknown','expires_utc'=>isset($old['expires_at'])?gmdate('c',(int)$old['expires_at']):'unknown']);
+            }
             $id=(int)($cp['id']??0);
             output('CONFLICT',['tracking_code'=>$id>0&&$id<90000000?10000000+(($id*32452843+27182818)%90000000):'unknown',
-                'hash'=>$ch,'state'=>$cp['state']??'missing','price_toman'=>$cp['price']??0,'created_iran'=>gmdate('Y-m-d H:i:s',(int)($cp['request_date']??0)+12600)]);
+                'hash'=>$ch,'state'=>$cp['state']??'missing','price_toman'=>$cp['price']??0,'created_iran'=>isset($cp['request_date'])?gmdate('Y-m-d H:i:s',(int)$cp['request_date']+12600):'unknown']);
         }
         output('BLOCKER',$competitors?'AMBIGUOUS_INVOICE':($policy==='never'?'USER_POLICY_NEVER':'NO_MATCHING_BLOCKER_FOUND_CHECK_WORKER'));
     }
