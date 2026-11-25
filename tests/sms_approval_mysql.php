@@ -341,6 +341,26 @@ ok(deltaSmsClaimInvoice($txt,$tb,'sms',[$te]),'text receipt claims payment once'
 ok(!deltaSmsClaimInvoice($txt,$tb,'sms',[$te]),'text payment cannot be replayed');
 ok(deltaSmsReviewPay(71)['state']==='paid','text receipt paid');
 ok(deltaSmsReviewPay(72)['state']==='pending','unpaid text invoice not approved');
+
+// Replacing a mother's checkout must not erase the invoice behind a
+// bank binding. Cancellation alone is never treated as proof of no payment.
+$now=time();
+$connection->query("INSERT INTO pays(id,hash_id,user_id,price,state) VALUES (81,'superseded-old',1201,97500,'pending'),(82,'superseded-new',1202,97500,'have_sent')");
+$shown=$now-120;$expires=$shown+3600;
+$connection->query("INSERT INTO payment_card_displays VALUES (81,'superseded-old',1201,'0000000000000000',$shown)");
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (81,'superseded-old',1201,'nominal','00000',975000,97500,$shown,$expires)");
+$sql="DELETE FROM `pays` WHERE `user_id` = ? AND `state` = 'pending'";
+ok(deltaSupersedePendingInvoiceSql($sql,true)===$sql,'child cleanup unchanged');
+$s=$connection->prepare(deltaSupersedePendingInvoiceSql($sql));$uid=1201;$s->bind_param('i',$uid);$s->execute();$s->close();
+ok(deltaSmsReviewPay(81)['state']==='cancelled_by_user','mother replacement keeps previous checkout history');
+ok(deltaSmsReviewPay(82)['state']==='have_sent','other buyer unaffected');
+$eid=str_repeat('3',63).'4';
+ok(deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'cancelled checkout remains a real possible competitor');
+ok(deltaSmsReviewNoPayment(81,123),'owner can review cancelled checkout');
+ok(!deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'verified unpaid cancelled checkout no longer competes');
+ok(deltaSmsReviewPay(81)['state']==='cancelled_by_user','review preserves cancellation state');
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (83,'old-orphan',1203,'nominal','00000',975000,97500,$shown,$expires)");
+ok(deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'preexisting orphan not silently assumed unpaid');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
