@@ -9,6 +9,7 @@ function query(PDO $p,string $sql,array $args=[]):array{
 }
 function setting(PDO $p,string $key):string{return (string)(query($p,'SELECT value FROM setting WHERE type=? LIMIT 1',[$key])[0]['value']??'');}
 $hash=$argv[1]??'';
+$textOnly=$hash==='--text';if($textOnly)$hash='';
 if($hash!==''&&!preg_match('/^[A-Za-z0-9_-]{5,128}$/D',$hash)){output('ERROR','INVALID_HASH');exit(2);}
 try{
     $m=deltaSmsMotherDbInfo();
@@ -23,8 +24,9 @@ try{
     $botFile='/var/www/html/deltabotvps/delta_sms_approval.php';
     if(!is_readable($botFile)){output('ERROR','BOT_SMS_CODE_MISSING');exit(3);}
     require_once $botFile;
-    $rows=$hash!==''?query($p,'SELECT id,hash_id,price,state,request_date,user_id FROM pays WHERE hash_id=? LIMIT 1',[$hash]):
-        query($p,"SELECT id,hash_id,price,state,request_date,user_id FROM pays WHERE state='have_sent' ORDER BY id DESC LIMIT 3");
+    $rows=$hash!==''?query($p,'SELECT id,hash_id,price,state,request_date,user_id,type FROM pays WHERE hash_id=? LIMIT 1',[$hash]):
+        ($textOnly?query($p,"SELECT p.id,p.hash_id,p.price,p.state,p.request_date,p.user_id,p.type FROM pays p JOIN setting s ON BINARY s.type=BINARY CONCAT('RECEIPT_KIND_',SHA1(p.hash_id)) WHERE s.value='text' AND p.state='have_sent' ORDER BY p.id DESC LIMIT 5"):
+        query($p,"SELECT id,hash_id,price,state,request_date,user_id,type FROM pays WHERE state='have_sent' ORDER BY id DESC LIMIT 3"));
     if(!$rows){output('INVOICES','NONE');exit;}
     $table=query($p,"SHOW TABLES LIKE 'delta_sms_invoice_bindings'");
     if(!$table){output('ERROR','SMS_BINDING_TABLE_MISSING');exit(3);}
@@ -36,6 +38,8 @@ try{
         $h=(string)$pay['hash_id'];$price=(int)$pay['price'];$receipt=(int)setting($p,'RECEIPT_AT_'.sha1($h));
         $display=(int)setting($p,'PAYMENT_CARD_SELECTED_'.sha1($h));
         output('INVOICE',$h);output('STATE',$pay['state']);output('PRICE_RIAL',$price*10);
+        output('RECEIPT_KIND',setting($p,'RECEIPT_KIND_'.sha1($h))?:'photo_or_unknown');
+        output('PAY_TYPE',$pay['type']);
         output('RECEIPT_UTC',$receipt?gmdate('c',$receipt):'MISSING');
         output('SELECTED_PRESENTATION',$display);
         output('DELIVERY_FAILURE_FLAG',setting($p,'AUTOAPPROVE_FAILED_'.(int)$pay['id'])==='1'?'YES':'NO');
