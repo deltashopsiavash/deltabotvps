@@ -12,6 +12,17 @@ require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
 if(deltaSvcHandleRequest() || dsHandleCustomer()) exit;
 
+// Superseded invoices still exist for SMS evidence. Treat stale payment
+// buttons like deleted invoices, without blocking admin review or menus.
+if(empty($isChildBot)){
+    if(deltaIsCancelledCheckoutFlow((string)($data??''))){
+        answerQuery('این فاکتور لغو شده است؛ اگر قبلاً واریز کرده‌اید با پشتیبانی تماس بگیرید.',true);exit;
+    }
+    if(isset($update->message) && empty($data) && !in_array(trim((string)($text??'')),['/start',(string)($buttonValues['cancel']??'')],true) &&
+       deltaIsCancelledCheckoutFlow((string)($userInfo['step']??''))){
+        setUser();sendMessage('این فاکتور لغو شده است؛ اگر قبلاً واریز کرده‌اید با پشتیبانی تماس بگیرید.',getMainKeys());exit;
+    }
+}
 if(function_exists('deltaFeatureHandleRequest')) deltaFeatureHandleRequest();
 
 function pgUserRenewSuggestionEnabled($userId){
