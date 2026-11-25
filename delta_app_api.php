@@ -3,6 +3,7 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 function daRespond(int $code,array $body): never {http_response_code($code);echo json_encode($body,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);exit;}
+if(!in_array(strtolower((string)($_SERVER['HTTPS']??'')),['on','1'],true))daRespond(403,['error'=>'https_required']);
 if(($_SERVER['REQUEST_METHOD']??'')!=='POST')daRespond(405,['error'=>'method']);
 if((int)($_SERVER['CONTENT_LENGTH']??0)>4096)daRespond(413,['error'=>'size']);
 $raw=file_get_contents('php://input',false,null,0,4097);
@@ -21,11 +22,15 @@ try{
         $name=$j['username']??'';$password=$j['password']??'';
         if(!is_string($name)||!is_string($password)||!daName($name)||strlen($password)>128)daRespond(401,['error'=>'login']);
         if(!daLimit($db,'login:'.$name,10))daRespond(429,['error'=>'rate']);
-        $a=daRow($db,'SELECT a.*,s.url,s.active AS stock_active FROM delta_app_accounts a JOIN delta_app_stock s ON s.id=a.stock_id WHERE a.username=?','s',$name);
-        if(!$a||!password_verify($password,$a['password_hash'])||!daAllowed($a))daRespond(401,['error'=>'login']);
-        $token=bin2hex(random_bytes(32));$id=(int)$a['id'];$exp=min(time()+86400,(int)$a['expires']);
-        daExec($db,'DELETE FROM delta_app_sessions WHERE expires<=? OR account_id=?','ii',time(),$id);
-        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',hash('sha256',$token),$id,$exp);
+        $db->begin_transaction();
+        try {
+            $a=daRow($db,'SELECT a.*,s.url,s.active AS stock_active FROM delta_app_accounts a JOIN delta_app_stock s ON s.id=a.stock_id WHERE a.username=? FOR UPDATE','s',$name);
+            if(!$a||!password_verify($password,$a['password_hash'])||!daAllowed($a)){$db->rollback();daRespond(401,['error'=>'login']);}
+            $token=bin2hex(random_bytes(32));$id=(int)$a['id'];$exp=min(time()+86400,(int)$a['expires']);
+            daExec($db,'DELETE FROM delta_app_sessions WHERE expires<=? OR account_id=?','ii',time(),$id);
+            daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',hash('sha256',$token),$id,$exp);
+            $db->commit();
+        }catch(Throwable $e){$db->rollback();throw $e;}
     }elseif($action==='session'||$action==='logout'){
         $token=$j['token']??'';
         if(!is_string($token)||!preg_match('/^[a-f0-9]{64}$/D',$token))daRespond(401,['error'=>'session']);

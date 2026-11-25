@@ -49,7 +49,6 @@ function deltaAppAdminHandle(): bool {
     if(!empty($isChildBot)||(string)$from_id!==(string)$admin||(string)$chat_id!==(string)$admin)return false;
     // A hidden command alone is not authentication. Require the actual Telegram webhook secret.
     if(!is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
-        if($command)daSend('برای فعال‌سازی مدیریت برنامه، secret_token وبهوک ربات مادر را مطابق راهنمای DELTA_APP_FA تنظیم کنید.');
         return true;
     }
     if($cb!==''&&isset($update->callback_query->id))answerQuery();

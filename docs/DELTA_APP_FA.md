@@ -5,3 +5,5 @@
 - مسیر HTTPS: همان botUrl فعلی + delta_app_api.php. فقط POST JSON، action=login (username/password)، session/logout (token). توکن نشست هش و ۲۴ ساعت اعتبار دارد. HTTPS در وب‌سرور اجباری و log body ممنوع باشد.
 - هیچ دکمه خرید یا پرداخت عمومی اضافه نشده است. از فروش واقعی قبل از تست و provisioning/قطع دسترسی سمت پنل استفاده نشود.
 - آزمون: /delta برای مالک با webhook secret، رد دیگر کاربران؛ ساخت پلن، ثبت دو ساب، ایجاد دو کاربر، جلوگیری از ثبت تکراری، ورود/نشست/تغییر رمز و انقضا.
+
+API requires actual HTTPS at PHP origin (trusted web-server configuration must set HTTPS=on); do not trust arbitrary forwarded headers. A missing/invalid webhook secret makes /delta silent. No credentials are returned to unverified webhooks.

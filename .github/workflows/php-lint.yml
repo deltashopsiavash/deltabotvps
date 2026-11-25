@@ -32,6 +32,10 @@ jobs:
           php -l tests/black_friday.php
           php -l tests/payment_card_rotation.php
           php -l tests/phone_registration.php
+          php -l delta_app_core.php
+          php -l delta_app_admin.php
+          php -l delta_app_api.php
+          php -l tests/delta_app_mysql.php
           php -l admin_service_manager.php
           php -l service_subscription_ui.php
           php -l reseller_webhook.php
@@ -99,3 +103,4 @@ jobs:
           php tests/black_friday_storefront_mysql.php
           php -l tests/sms_approval_mysql.php
           php tests/sms_approval_mysql.php
+          php tests/delta_app_mysql.php
