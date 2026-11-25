@@ -315,6 +315,32 @@ ok(!deltaSmsReviewRecordClosed(61,substr($early['event_id'],0,16),123,$fixtures)
 $next=deltaSmsReviewPay(62);$nb=deltaSmsFindBinding($next,$now-140,$fixtures);
 ok($nb&&$nb['matched_event']===$later['event_id'],'verified early deposit no longer blocks new distinct event');
 ok(deltaSmsClaimInvoice($next,$nb,'sms',$fixtures),'live approval still claims its own event');
+
+// Text receipts register the original arrival time and the same state as
+// photo receipts; a slow Telegram admin report cannot shift the timestamp.
+$connection->query("ALTER TABLE pays ADD COLUMN message_id BIGINT NOT NULL DEFAULT 0, ADD COLUMN chat_id BIGINT NOT NULL DEFAULT 0");
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-1000));mode('off','on');
+$connection->query("INSERT INTO pays(id,hash_id,user_id,price,state) VALUES (71,'text-live',1101,96000,'pending'),(72,'text-other',1102,97000,'pending')");
+$shown=$now-200;$expires=$shown+3600;
+$connection->query("INSERT INTO payment_card_displays VALUES (71,'text-live',1101,'0000000000000000',$shown)");
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (71,'text-live',1101,'nominal','00000',960000,96000,$shown,$expires)");
+upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1('text-live'),'71');
+ok(!deltaRegisterTextReceipt('text-live',1102,$now-80,10,123),'other user cannot register text receipt');
+ok(!deltaReceiptHasSubmissionMarker('text-live'),'failed registration does not create marker');
+ok(deltaRegisterTextReceipt('text-live',1101,$now-80,10,123),'text receipt registration succeeds');
+$txt=deltaSmsReviewPay(71);
+ok($txt['state']==='have_sent'&&(int)$txt['message_id']===10&&(int)$txt['chat_id']===123,'text receipt has worker state and admin target');
+ok(getSettingValue('RECEIPT_KIND_'.sha1('text-live'))==='text','text receipt type stored');
+ok(deltaReceiptSubmittedAt('text-live')===$now-80,'original receipt arrival retained');
+ok(!deltaRegisterTextReceipt('text-live',1101,$now-5,11,123),'duplicate receipt cannot overwrite timestamp');
+ok(deltaReceiptSubmittedAt('text-live')===$now-80,'duplicate leaves original receipt timestamp');
+$te=['event_id'=>str_repeat('2',63).'3','bank'=>'pasargad','source'=>'sms','sender'=>'fixture','amount_irr'=>960000,'received_at'=>$now-70,'ingested_at'=>$now-69];
+$tb=deltaSmsFindBinding($txt,deltaReceiptSubmittedAt('text-live'),[$te]);
+ok($tb&&$tb['matched_event']===$te['event_id'],'text receipt uses the same bank SMS matching as photo');
+ok(deltaSmsClaimInvoice($txt,$tb,'sms',[$te]),'text receipt claims payment once');
+ok(!deltaSmsClaimInvoice($txt,$tb,'sms',[$te]),'text payment cannot be replayed');
+ok(deltaSmsReviewPay(71)['state']==='paid','text receipt paid');
+ok(deltaSmsReviewPay(72)['state']==='pending','unpaid text invoice not approved');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
