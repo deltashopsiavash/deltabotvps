@@ -6,6 +6,22 @@
 function deltaSmsSenderReservation(array $binding): bool {
     return ($binding['bank']??'')==='nominal' && ($binding['account_hint']??'')==='00000';
 }
+// New account-scoped bindings use an explicit prefix. Old bank-specific
+// reservations from the historical suffix scheme are not reactivated.
+function deltaSmsAccountScope(array $b): ?array {
+    $bank=(string)($b['bank']??'');$hint=(string)($b['account_hint']??'');
+    if(!in_array($bank,['acct_melli','acct_pasargad','acct_khavar'],true)||!preg_match('/^[0-9]{5}$/D',$hint))return null;
+    return ['bank'=>substr($bank,5),'account_hint'=>$hint];
+}
+function deltaSmsExactReservation(array $b): bool {
+    return deltaSmsSenderReservation($b)||deltaSmsAccountScope($b)!==null;
+}
+function deltaSmsTrustedAccountMatches(array $b,array $e): bool {
+    $scope=deltaSmsAccountScope($b);
+    return ($e['source']??'')==='sms'&&is_string($e['sender']??null)&&trim($e['sender'])!==''&&
+      in_array($e['bank']??'',['melli','pasargad','khavar'],true)&&
+      ($scope===null||($e['bank']===$scope['bank']&&($e['account_hint']??'')===$scope['account_hint']));
+}
 function deltaSmsApprovalSchema(): bool {
     global $connection,$isChildBot;
     if(!empty($isChildBot)) return false;
@@ -55,6 +71,8 @@ function deltaSmsReservePresentation(array $pay,array $card): ?array {
     }
     if($expires<=$now || $now<deltaSmsApprovalEpoch()) return null;
     $id=(int)$card['id'];$uid=(int)$pay['user_id'];$bank='nominal';$hint='00000';
+    $scope=deltaSmsAccountScope(['bank'=>'acct_'.($card['sms_bank']??''),'account_hint'=>$card['sms_hint']??'']);
+    if($scope!==null){$bank='acct_'.$scope['bank'];$hint=$scope['account_hint'];}
     $rial=$price*10;
     $st=$connection->prepare('INSERT INTO delta_sms_invoice_bindings (display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)');
     $st->bind_param('isissiiii',$id,$hash,$uid,$bank,$hint,$rial,$price,$now,$expires);
@@ -72,12 +90,13 @@ function deltaSmsPresentationText(?array $binding): string {
 function deltaSmsCompetitionRowsSql(): array {
     $fields="p.state,c.event_id,c.nominal_toman,c.amount_irr,c.shown_at,c.expires_at,c.bank,c.account_hint,COALESCE(n.value,0) AS no_payment_through";
     return [
-      "SELECT DISTINCT BINARY d.hash_id AS hash_id,$fields FROM payment_card_displays d
+      "SELECT DISTINCT BINARY d.hash_id AS hash_id,$fields,sb.bank AS scope_bank,sb.account_hint AS scope_hint FROM payment_card_displays d
         JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id
+        LEFT JOIN delta_sms_invoice_bindings sb ON sb.display_id=d.id AND BINARY sb.hash_id=BINARY d.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY d.hash_id AND c.event_id IS NOT NULL
         LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(d.hash_id))
         WHERE BINARY d.hash_id<>BINARY ? AND p.price=? AND d.shown_at BETWEEN ? AND ?",
-      "SELECT DISTINCT BINARY b.hash_id AS hash_id,$fields FROM delta_sms_invoice_bindings b
+      "SELECT DISTINCT BINARY b.hash_id AS hash_id,$fields,b.bank AS scope_bank,b.account_hint AS scope_hint FROM delta_sms_invoice_bindings b
         LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id
         LEFT JOIN delta_sms_invoice_bindings c ON BINARY c.hash_id=BINARY b.hash_id AND c.event_id IS NOT NULL
         LEFT JOIN setting n ON BINARY n.type=BINARY CONCAT('SMS_NO_PAYMENT_',SHA1(b.hash_id))
@@ -97,13 +116,20 @@ function deltaSmsVerifiedClosedReceipt(array $row,array $history,int $candidateS
       && $receipt+deltaSmsReceiptGraceSeconds()<=$marker
       && $candidateShown>$marker && $eventAt>=$candidateShown;
 }
-function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $eventId,array $history=[],int $candidateShown=0): array {
-    $byHash=[];$byEvent=[];
+function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $eventId,array $history=[],int $candidateShown=0,?array $candidateBinding=null): array {
+    $byHash=[];$byEvent=[];$scope=deltaSmsAccountScope($candidateBinding??[]);
     foreach($events as $e){
         $id=(string)($e['event_id']??'');
         if(preg_match('/^[a-f0-9]{64}$/D',$id))$byEvent[$id]=$e;
     }
-    foreach($rows as $row)$byHash[(string)$row['hash_id']][serialize($row)]=$row;
+    foreach($rows as $row){
+        $other=deltaSmsAccountScope(['bank'=>$row['scope_bank']??'','account_hint'=>$row['scope_hint']??'']);
+        // Only proven different destination accounts can be excluded.
+        // Unmapped history and orphan records remain possible competitors.
+        if($scope!==null&&$other!==null&&$scope!==$other)continue;
+        unset($row['scope_bank'],$row['scope_hint']);
+        $byHash[(string)$row['hash_id']][serialize($row)]=$row;
+    }
     $out=[];
     foreach($byHash as $hash=>$group){
         $settled=false;
@@ -113,7 +139,7 @@ function deltaSmsCompetingHashes(array $rows,array $events,int $eventAt,string $
             $at=$e['received_at']??null;$ing=$e['ingested_at']??null;
             $settled=in_array($r['state']??'',['paid','approved'],true)
               && $id!=='' && $id!==$eventId && is_array($e)
-              && deltaSmsSenderReservation($r)
+              && deltaSmsExactReservation($r)&&deltaSmsTrustedAccountMatches($r,$e??[])
               && (int)$r['amount_irr']===(int)$r['nominal_toman']*10
               && ($e['source']??'')==='sms'
               && in_array($e['bank']??'',['melli','pasargad','khavar'],true)
@@ -156,7 +182,7 @@ function deltaSmsCompetitionHistory(array $rows): array {
     }
     return $history;
 }
-function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null,int $candidateShown=0): bool {
+function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string $eventId='',?array $events=null,int $candidateShown=0,?array $candidateBinding=null): bool {
     global $connection;
     $from=$eventAt-3600;
     $rows=[];
@@ -165,7 +191,7 @@ function deltaSmsHasCompetingInvoice(string $hash,int $price,int $eventAt,string
         $st->bind_param('siii',$hash,$price,$from,$eventAt);
         $st->execute();$rows=array_merge($rows,$st->get_result()->fetch_all(MYSQLI_ASSOC));$st->close();
     }
-    return (bool)deltaSmsCompetingHashes($rows,$events??[],$eventAt,$eventId,deltaSmsCompetitionHistory($rows),$candidateShown);
+    return (bool)deltaSmsCompetingHashes($rows,$events??[],$eventAt,$eventId,deltaSmsCompetitionHistory($rows),$candidateShown,$candidateBinding);
 }
 function deltaSmsEventAlreadyUsed(string $id): bool {
     global $connection;
@@ -184,9 +210,8 @@ function deltaSmsEventMatches(array $binding,array $event,int $receiptAt,int $ep
       && ($settledReconciliation || $now <= $expires+900)
       && ($event['source']??'')==='sms'
       && preg_match('/^[a-f0-9]{64}$/D',(string)($event['event_id']??''))
-      && (deltaSmsSenderReservation($binding)
-          ? (in_array($event['bank']??'',['melli','pasargad','khavar'],true)
-              && is_string($event['sender']??null) && trim($event['sender'])!=='')
+      && (deltaSmsExactReservation($binding)
+          ? deltaSmsTrustedAccountMatches($binding,$event)
           : (($event['bank']??'')===$binding['bank'] && ($event['account_hint']??'')===$binding['account_hint']))
       && is_int($event['amount_irr']??null) && $event['amount_irr']===(int)$binding['amount_irr']
       && is_int($received) && $received >= $shown && $received <= min($expires,$receiptAt+deltaSmsReceiptGraceSeconds())
@@ -222,14 +247,14 @@ function deltaSmsFindBinding(array $pay,int $receiptAt,?array $trustedEvents=nul
     if(!$b||(int)$b['nominal_toman']!==(int)$pay['price'])return null;
     // Older account-bound reservations cannot silently acquire broader
     // sender-only eligibility after the upgrade.
-    if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
+    if(!deltaSmsExactReservation($b)||(int)$b['amount_irr']!==(int)$pay['price']*10)return null;
     $hits=[];$epoch=deltaSmsApprovalEpoch();$now=time();
     $events=$trustedEvents??deltaSmsMatchingEvents();
     foreach($events as $event) if(deltaSmsEventMatches($b,$event,$receiptAt,$epoch,$now,$settledReconciliation)&&!deltaSmsEventAlreadyUsed($event['event_id']))$hits[$event['event_id']]=$event;
     if(count($hits)!==1)return null;
     $b['matched_event']=array_key_first($hits);
     $b['matched_event_at']=(int)$hits[$b['matched_event']]['received_at'];
-    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events,(int)$b['shown_at']))return null;
+    if(deltaSmsHasCompetingInvoice($hash,(int)$pay['price'],$b['matched_event_at'],$b['matched_event'],$events,(int)$b['shown_at'],$b))return null;
     return $b;
 }
 // Atomic invoice+event claim. No bank event is released on a panel failure;
@@ -257,8 +282,9 @@ function deltaSmsClaimInvoice(array $pay,?array $binding,string $mode,?array $tr
             if(!$fresh||(string)$fresh['matched_event']!==(string)($binding['matched_event']??'')
                 ||(int)$fresh['display_id']!==(int)($binding['display_id']??0))throw new RuntimeException('match no longer unique');
             $display=(int)$fresh['display_id'];$event=(string)$fresh['matched_event'];$now=time();
-            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND bank=\'nominal\' AND account_hint=\'00000\' AND amount_irr=nominal_toman*10 AND event_id IS NULL');
-            $st->bind_param('siisii',$event,$now,$display,$hash,$uid,$price);
+            $bank=(string)$fresh['bank'];$hint=(string)$fresh['account_hint'];
+            $st=$connection->prepare('UPDATE delta_sms_invoice_bindings SET event_id=?,claimed_at=? WHERE display_id=? AND hash_id=? AND user_id=? AND nominal_toman=? AND bank=? AND account_hint=? AND amount_irr=nominal_toman*10 AND event_id IS NULL');
+            $st->bind_param('siisiiss',$event,$now,$display,$hash,$uid,$price,$bank,$hint);
             $st->execute();$ok=$st->affected_rows===1;$st->close();
             if(!$ok)throw new RuntimeException('event already used');
             }

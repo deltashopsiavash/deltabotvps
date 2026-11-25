@@ -51,7 +51,7 @@ try{
         output('BINDING_MODE',$b['bank']);output('EXPECTED_RIAL',$b['amount_irr']);
         output('DISPLAY_UTC',gmdate('c',(int)$b['shown_at']));output('EXPIRES_UTC',gmdate('c',(int)$b['expires_at']));
         if(!empty($b['event_id'])){output('BLOCKER','EVENT_ALREADY_CLAIMED');continue;}
-        if(!deltaSmsSenderReservation($b)||(int)$b['amount_irr']!==$price*10){output('BLOCKER','OLD_OR_WRONG_AMOUNT_BINDING');continue;}
+        if(!deltaSmsExactReservation($b)||(int)$b['amount_irr']!==$price*10){output('BLOCKER','OLD_OR_WRONG_AMOUNT_BINDING');continue;}
         $hits=[];$sameAmount=0;$usedCount=0;
         $settled=in_array($pay['state'],['paid','approved'],true);
         output('MATCH_MODE',$settled?'SETTLED_RECONCILIATION':'NEW_PAYMENT');
@@ -86,7 +86,7 @@ try{
             foreach(deltaSmsCompetitionHistoryQueries() as $sql)$latest=max($latest,(int)(query($p,$sql,[$ch])[0]['latest']??0));
             $history[$ch]=['receipt_at'=>(int)setting($p,'RECEIPT_AT_'.sha1($ch)),'latest_shown'=>$latest];
         }
-        $competitors=deltaSmsCompetingHashes($rows,$events,$at,(string)$event['event_id'],$history,(int)$b['shown_at']);
+        $competitors=deltaSmsCompetingHashes($rows,$events,$at,(string)$event['event_id'],$history,(int)$b['shown_at'],$b);
         output('COMPETING_INVOICES',count($competitors));
         foreach($competitors as $ch){
             $cp=query($p,'SELECT id,hash_id,price,state,request_date FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1',[$ch])[0]??[];
