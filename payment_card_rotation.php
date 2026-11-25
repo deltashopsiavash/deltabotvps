@@ -22,6 +22,10 @@ function deltaCardPoolDecode($raw) {
         $holder=trim((string)($card['holder']??''));
         if(!deltaCardValidNumber($number) || $holder==='' || mb_strlen($holder,'UTF-8')>190) continue;
         $out[$slot]=['number'=>$number,'holder'=>$holder];
+        $bank=(string)($card['sms_bank']??'');$hint=(string)($card['sms_hint']??'');
+        if(in_array($bank,['melli','pasargad','khavar'],true)&&preg_match('/^[0-9]{5}$/D',$hint)){
+            $out[$slot]['sms_bank']=$bank;$out[$slot]['sms_hint']=$hint;
+        }
     }
     ksort($out,SORT_NUMERIC);
     return $out;
@@ -61,6 +65,28 @@ function deltaCardPick($cards,$previous='') {
     if(!$choices) return null;
     return $choices[random_int(0,count($choices)-1)];
 }
+// Prefer a verified destination with the fewest same-amount displays in
+// the last hour. Different cards mapped to one account share a score.
+function deltaCardSmartPick(array $cards,string $previous,array $recent): ?array {
+    $choices=array_values($cards);
+    if(count($choices)>1&&$previous!==''){
+        $others=array_values(array_filter($choices,static fn($c)=>$c['number']!==$previous));
+        if($others)$choices=$others;
+    }
+    $best=[];$minimum=PHP_INT_MAX;
+    foreach($choices as $c){
+        $scope=deltaSmsAccountScope(['bank'=>'acct_'.($c['sms_bank']??''),'account_hint'=>$c['sms_hint']??'']);
+        // Prefer configured accounts; unknown histories count against all.
+        $score=$scope===null?1000000:0;
+        foreach($recent as $r){
+            $other=deltaSmsAccountScope($r);
+            if($scope===null||$other===null||$scope===$other)$score++;
+        }
+        if($score<$minimum){$best=[];$minimum=$score;}
+        if($score===$minimum)$best[]=$c;
+    }
+    return $best?$best[random_int(0,count($best)-1)]:null;
+}
 function deltaCardAdminMarkup() {
     $pool=deltaCardPool(); $rows=[];
     for($i=1;$i<=10;$i++){
@@ -78,11 +104,11 @@ function deltaCardShowAdminMenu() {
     $msg="💳 <b>مدیریت کارت‌های کارت‌به‌کارت</b>\n\n".
         "تعداد کارت‌ها: <b>".deltaCardPoolCount()." از ۱۰</b>\n".
         "برای افزودن یا ویرایش، شماره ردیف را انتخاب کنید. هر شماره کارت، نام صاحب حساب خودش را دارد.\n".
-        "در هر درخواست پرداخت، یک کارت به‌صورت تصادفی نمایش داده می‌شود.";
+        "در حالت پیامکی، کارت‌های دارای حساب تأییدشده با کمترین تداخل مبلغ اولویت دارند.";
     smartSendOrEdit($message_id,$msg,deltaCardAdminMarkup(),'HTML');
 }
 function deltaCardAdminSlot($slot) {
-    global $message_id;
+    global $message_id,$isChildBot,$from_id,$admin;
     $pool=deltaCardPool();
     if(isset($pool[$slot])) {
         $card=$pool[$slot];
@@ -93,6 +119,10 @@ function deltaCardAdminSlot($slot) {
             [['text'=>'🗑 حذف کارت','callback_data'=>'deltaCardDeleteAsk_'.$slot]],
             [['text'=>'↩️ بازگشت','callback_data'=>'deltaCardMenu']]
         ];
+        if(empty($isChildBot)&&(string)$from_id===(string)$admin){
+            $txt.="\nحساب پیامکی: ".(isset($card['sms_bank'])?$card['sms_bank'].':'.$card['sms_hint']:'تنظیم نشده');
+            array_splice($rows,1,0,[[['text'=>'🏦 تنظیم حساب پیامکی','callback_data'=>'deltaCardSmsAccount_'.$slot]]]);
+        }
     }else{
         $txt="💳 جایگاه کارت شماره $slot خالی است.";
         $rows=[[['text'=>'➕ ثبت کارت','callback_data'=>'deltaCardEdit_'.$slot]],
@@ -132,6 +162,25 @@ function deltaCardHandle() {
         if(preg_match('/^deltaCardSlot_(10|[1-9])$/',$cb,$m)) {
             deltaCardAdminSlot((int)$m[1]); return true;
         }
+        if(preg_match('/^deltaCardSmsAccount_(10|[1-9])$/',$cb,$m)){
+            global $isChildBot;
+            if(!empty($isChildBot)||(string)$from_id!==(string)$admin)return true;
+            $cards=deltaCardPool();$slot=(int)$m[1];if(!isset($cards[$slot]))return true;
+            setUser('deltaCardSmsAccount_'.$slot,'step');setUser($cards[$slot]['number'],'temp');
+            sendMessage("🏦 بانک و پنج رقم آخر شناسه حساب در پیامک واقعی همان کارت را وارد کنید.\nمثال: <code>pasargad:12345</code>\nبانک‌های مجاز: melli / pasargad / khavar\nبرای حذف اتصال: <code>off</code>\nپنج رقم آخر شماره کارت را وارد نکنید. ابتدا با گردش حساب مطابقت دهید.",deltaCardAdminCancelKeys(),'HTML');return true;
+        }
+        if(preg_match('/^deltaCardSmsAccount_(10|[1-9])$/',$step,$m)&&isset($update->message)){
+            global $isChildBot;
+            if(!empty($isChildBot)||(string)$from_id!==(string)$admin)return true;
+            $cards=deltaCardPool();$slot=(int)$m[1];$raw=trim((string)($update->message->text??''));
+            if(!isset($cards[$slot])||$cards[$slot]['number']!==(string)($userInfo['temp']??'')){setUser('none','step');sendMessage('کارت تغییر کرده است؛ دوباره شروع کنید.');return true;}
+            if($raw==='off'){unset($cards[$slot]['sms_bank'],$cards[$slot]['sms_hint']);}
+            elseif(preg_match('/^(melli|pasargad|khavar):([0-9]{5})$/D',$raw,$v)){
+                $cards[$slot]['sms_bank']=$v[1];$cards[$slot]['sms_hint']=$v[2];
+            }else{sendMessage('فرمت نامعتبر است. مانند pasargad:12345 ارسال کنید.',deltaCardAdminCancelKeys());return true;}
+            if(!deltaCardSavePool($cards))throw new RuntimeException('account save failed');
+            setUser('none','step');setUser('','temp');sendMessage('✅ تنظیم حساب برای نمایش‌های جدید ذخیره شد. سوابق قدیمی تغییر نکردند.');deltaCardAdminSlot($slot);return true;
+        }
         if(preg_match('/^deltaCardEdit_(10|[1-9])$/',$cb,$m)) {
             $slot=(int)$m[1];
             setUser('deltaCardNumber_'.$slot,'step'); setUser('','temp');
@@ -158,7 +207,11 @@ function deltaCardHandle() {
             if($holder==='' || mb_strlen($holder,'UTF-8')>190) {
                 sendMessage('❌ نام صاحب حساب باید متن غیرخالی و حداکثر ۱۹۰ کاراکتر باشد.',deltaCardAdminCancelKeys(),null); return true;
             }
-            $cards=deltaCardPool(); $cards[(int)$m[1]]=['number'=>$number,'holder'=>$holder];
+            $cards=deltaCardPool();$old=$cards[(int)$m[1]]??[];
+            $cards[(int)$m[1]]=['number'=>$number,'holder'=>$holder];
+            if(($old['number']??'')===$number&&isset($old['sms_bank'],$old['sms_hint'])){
+                $cards[(int)$m[1]]['sms_bank']=$old['sms_bank'];$cards[(int)$m[1]]['sms_hint']=$old['sms_hint'];
+            }
             deltaCardSavePool($cards);
             setUser('none','step'); setUser('','temp');
             sendMessage("✅ کارت شماره ".$m[1]." با نام صاحب حساب ذخیره شد.",null,null);
@@ -223,13 +276,29 @@ function deltaCardChoosePresentation($hash,$uid,$previousNumber=null) {
     $st=$connection->prepare('SELECT card_number FROM payment_card_displays WHERE hash_id=? ORDER BY id DESC LIMIT 1');
     $st->bind_param('s',$hash);$st->execute();
     $last=$st->get_result()->fetch_assoc();$st->close();
-    $pick=deltaCardPick($cards,$previousNumber===null ? ($last['card_number']??'') : (string)$previousNumber);
+    $previous=$previousNumber===null?($last['card_number']??''):(string)$previousNumber;
+    global $botState,$isChildBot;
+    $pick=null;
+    if(empty($isChildBot)&&deltaReceiptApprovalMode($botState??[])==='sms'&&deltaSmsApprovalSchema()){
+        $p=$connection->prepare('SELECT price FROM pays WHERE BINARY hash_id=BINARY ? AND user_id=? LIMIT 1');
+        $p->bind_param('si',$hash,$uid);$p->execute();$pay=$p->get_result()->fetch_assoc();$p->close();
+        if($pay){
+            $price=(int)$pay['price'];$from=time()-3600;
+            $q=$connection->prepare('SELECT b.bank,b.account_hint FROM payment_card_displays d JOIN pays p ON BINARY p.hash_id=BINARY d.hash_id LEFT JOIN delta_sms_invoice_bindings b ON b.display_id=d.id AND BINARY b.hash_id=BINARY d.hash_id WHERE BINARY d.hash_id<>BINARY ? AND p.price=? AND d.shown_at>=?');
+            $q->bind_param('sii',$hash,$price,$from);$q->execute();$recent=$q->get_result()->fetch_all(MYSQLI_ASSOC);$q->close();
+            // Include orphan bindings too.
+            $q=$connection->prepare('SELECT b.bank,b.account_hint FROM delta_sms_invoice_bindings b LEFT JOIN pays p ON BINARY p.hash_id=BINARY b.hash_id WHERE p.id IS NULL AND BINARY b.hash_id<>BINARY ? AND b.nominal_toman=? AND b.shown_at>=?');
+            $q->bind_param('sii',$hash,$price,$from);$q->execute();$recent=array_merge($recent,$q->get_result()->fetch_all(MYSQLI_ASSOC));$q->close();
+            $pick=deltaCardSmartPick($cards,$previous,$recent);
+        }
+    }
+    $pick=$pick??deltaCardPick($cards,$previous);
     if(!$pick) return null;
     $number=$pick['number'];$holder=$pick['holder'];$now=time();
     $st=$connection->prepare('INSERT INTO payment_card_displays (hash_id,user_id,card_number,holder_name,shown_at) VALUES (?,?,?,?,?)');
     $st->bind_param('sissi',$hash,$uid,$number,$holder,$now);
     $st->execute();$id=(int)$connection->insert_id;$st->close();
-    return ['id'=>$id,'number'=>$number,'holder'=>$holder];
+    return array_merge($pick,['id'=>$id,'number'=>$number,'holder'=>$holder]);
 }
 function deltaCardDefaultText() {
     return "جهت خرید و یا افزایش موجودی، هزینه را به شماره کارت زیر واریز کنید 👇🏻\n\n".

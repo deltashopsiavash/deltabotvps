@@ -404,6 +404,30 @@ ok(deltaSmsReviewEventUsed($re['event_id'])&&!deltaSmsReviewEventUsed($ro['event
 ok(deltaSmsReviewPay(91)['state']==='approved'&&deltaSmsReviewPay(92)['state']==='have_sent','no financial state change');
 ok(deltaSmsApprovalEpoch()===$beforeEpoch,'repair preserves epoch');
 ok(deltaSmsReviewRepairConflicts(123,$rep)['linked']===0,'historical repair idempotent');
+// Exact-price account separation: same amount, distinct verified accounts.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-600));mode('off','on');
+$connection->query("INSERT INTO pays(id,hash_id,user_id,price,state) VALUES (111,'scope-a',1401,98700,'have_sent'),(112,'scope-b',1402,98700,'have_sent')");
+foreach([[111,'scope-a',1401,'melli','11111'],[112,'scope-b',1402,'pasargad','22222']] as [$id,$hash,$uid,$bank,$hint]){
+    $p=deltaSmsReviewPay($id);$p['request_date']=$now-10;
+    $r=deltaSmsReservePresentation($p,['id'=>$id,'sms_bank'=>$bank,'sms_hint'=>$hint]);
+    ok($r&&$r['amount_irr']===987000,'mapped account keeps exact nominal amount');
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$now)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$now);
+}
+$ea=['event_id'=>str_repeat('8',63).'9','bank'=>'melli','source'=>'sms','sender'=>'fixture','account_hint'=>'11111','amount_irr'=>987000,'received_at'=>$now,'ingested_at'=>$now];
+$eb=array_replace($ea,['event_id'=>str_repeat('9',63).'8','bank'=>'pasargad','account_hint'=>'22222']);
+$pa=deltaSmsReviewPay(111);$pb=deltaSmsReviewPay(112);
+ok(deltaSmsFindBinding($pa,$now,[$eb])===null,'wrong destination never matches');
+ok(deltaSmsFindBinding($pa,$now,[array_replace($ea,['account_hint'=>''])])===null,'missing account never matches mapped invoice');
+$ma=deltaSmsFindBinding($pa,$now,[$ea,$eb]);ok($ma&&$ma['matched_event']===$ea['event_id'],'different proven accounts do not compete');
+ok(deltaSmsClaimInvoice($pa,$ma,'sms',[$ea,$eb]),'mapped invoice exact amount claim');
+$mb=deltaSmsFindBinding($pb,$now,[$ea,$eb]);ok($mb&&$mb['matched_event']===$eb['event_id'],'second account matches independently');
+$connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (113,'scope-orphan',1403,'nominal','00000',987000,98700,$now,".($now+3600).")");
+ok(deltaSmsFindBinding($pb,$now,[$ea,$eb])===null,'unknown orphan remains competitor');
+$connection->query("UPDATE delta_sms_invoice_bindings SET bank='acct_pasargad',account_hint='22222' WHERE display_id=113");
+ok(deltaSmsFindBinding($pb,$now,[$ea,$eb])===null,'same-account orphan remains competitor');
+$connection->query("UPDATE delta_sms_invoice_bindings SET bank='acct_melli',account_hint='11111' WHERE display_id=113");
+ok(deltaSmsFindBinding($pb,$now,[$ea,$eb])!==null,'different immutable account scope can be separated');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
