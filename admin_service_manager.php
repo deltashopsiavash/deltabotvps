@@ -435,6 +435,8 @@ function deltaSvcExecute($id,$kind,$value,$nonce,$expectedStep,$expectedUsed=0){
     }
 }
 function deltaSvcHandleRequest(){
+    require_once __DIR__ . '/delta_app_admin.php';
+    if (deltaAppAdminHandle()) return true;
     global $data,$text,$userInfo,$buttonValues,$from_id;
     if(!deltaSvcIsAdmin()) return false;
     $data=(string)($data??'');

@@ -1,0 +1,98 @@
+<?php
+require_once __DIR__.'/delta_app_core.php';
+function daEsc($s): string {return htmlspecialchars((string)$s,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
+function daKeys(array $rows): string {return json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE);}
+function daBtn(string $name,string $cb): array {return [['text'=>$name,'callback_data'=>$cb]];}
+function daSend(string $txt,array $rows=[]): void {sendMessage($txt,$rows?daKeys($rows):null,'HTML');}
+function daHome(): void {
+    global $botUrl;
+    $endpoint=rtrim((string)$botUrl,'/').'/delta_app_api.php';
+    daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر ساب اختصاصی فقط یک بار تخصیص می‌یابد.",[
+        daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
+        daBtn('🔗 موجودی اشتراک','da_stock_0'),daBtn('➕ افزودن اشتراک','da_addstock'),
+        daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser')]);
+}
+function daList(mysqli $db,string $kind,int $page): void {
+    $off=$page*8;$rows=[];$txt='';
+    if($kind==='plans'){
+        $txt="📦 پلن‌ها\n";
+        $items=daRows($db,'SELECT * FROM delta_app_plans ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
+        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | ".daEsc($p['name'])." | ".$p['gb']." GB | ".$p['days']." روز | ".number_format((int)$p['price'])." تومان";$rows[]=daBtn(($p['active']?'غیرفعال':'فعال')." #$id",'da_pt_'.$id);}
+        $rows[]=daBtn('➕ ساخت پلن','da_addplan');
+    }elseif($kind==='stock'){
+        $txt="🔗 موجودی اشتراک‌های اختصاصی (لینک‌ها نمایش داده نمی‌شوند)\n";
+        $items=daRows($db,'SELECT s.id,s.plan_id,s.active,a.id AS account_id FROM delta_app_stock s LEFT JOIN delta_app_accounts a ON a.stock_id=s.id ORDER BY s.id DESC LIMIT 9 OFFSET ?','i',$off);
+        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | پلن ".$p['plan_id']." | ".($p['account_id']?'تخصیص‌یافته':($p['active']?'آماده':'غیرفعال'));if(!$p['account_id'])$rows[]=daBtn(($p['active']?'غیرفعال':'فعال')." #$id",'da_st_'.$id);}
+        $rows[]=daBtn('➕ افزودن اشتراک','da_addstock');
+    }else{
+        $txt="👥 کاربران برنامه\n";
+        $items=daRows($db,'SELECT id,username,active,expires FROM delta_app_accounts ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
+        foreach(array_slice($items,0,8) as $p)$rows[]=daBtn(($p['active']&&$p['expires']>time()?'🟢 ':'🔴 ').$p['username'],'da_u_'.$p['id']);
+        $rows[]=daBtn('➕ ساخت کاربر','da_adduser');
+    }
+    if(!$items)$txt.="\nخالی است.";
+    if($page>0)$rows[]=daBtn('قبلی',"da_".$kind.'_'.($page-1));
+    if(count($items)>8)$rows[]=daBtn('بعدی',"da_".$kind.'_'.($page+1));
+    $rows[]=daBtn('بازگشت','da_home');daSend($txt,$rows);
+}
+function daUser(mysqli $db,int $id): void {
+    $a=daAccount($db,$id);if(!$a){daSend('کاربر یافت نشد.');return;}
+    daSend("👤 <code>".daEsc($a['username'])."</code>\nحجم پلن: ".$a['gb']." GB\nپایان حساب: ".gmdate('Y-m-d H:i',$a['expires']+12600)." ایران\nساب اختصاصی: #".$a['stock_id']."\nوضعیت: ".(daAllowed($a)?'فعال':'غیرفعال')."\nرمز ذخیره‌شده قابل مشاهده نیست.",[
+        daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id),
+        daBtn($a['active']?'⛔ غیرفعال کردن ورود':'✅ فعال کردن ورود','da_ut_'.$id),daBtn('بازگشت','da_users_0')]);
+}
+function deltaAppAdminHandle(): bool {
+    global $connection,$from_id,$admin,$chat_id,$isChildBot,$update,$data,$text,$userInfo,$botToken,$message_id;
+    $cb=(string)($data??'');$input=trim((string)($text??''));$step=(string)($userInfo['step']??'');
+    $command=$cb===''&&$input==='/delta';
+    if(!$command&&!str_starts_with($cb,'da_')&&!str_starts_with($step,'da_'))return false;
+    if(!empty($isChildBot)||(string)$from_id!==(string)$admin||(string)$chat_id!==(string)$admin)return false;
+    // A hidden command alone is not authentication. Require the actual Telegram webhook secret.
+    if(!is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
+        if($command)daSend('برای فعال‌سازی مدیریت برنامه، secret_token وبهوک ربات مادر را مطابق راهنمای DELTA_APP_FA تنظیم کنید.');
+        return true;
+    }
+    if($cb!==''&&isset($update->callback_query->id))answerQuery();
+    try{
+        daSchema($connection);
+        if($command||$cb==='da_home'){setUser();daHome();return true;}
+        if($input==='/start'&&$cb===''){setUser();return false;}
+        if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if(preg_match('/^da_(plans|stock|users)_(\d{1,5})$/D',$cb,$m)){setUser();daList($connection,$m[1],(int)$m[2]);return true;}
+        if(preg_match('/^da_(pt|st|ut|u|rename|resetask|reset)_(\d{1,10})$/D',$cb,$m)){
+            $id=(int)$m[2];setUser();
+            switch($m[1]){
+                case 'pt': daExec($connection,'UPDATE delta_app_plans SET active=1-active WHERE id=?','i',$id);daList($connection,'plans',0);break;
+                case 'st': daExec($connection,'UPDATE delta_app_stock s LEFT JOIN delta_app_accounts a ON a.stock_id=s.id SET s.active=1-s.active WHERE s.id=? AND a.id IS NULL','i',$id);daList($connection,'stock',0);break;
+                case 'ut': daExec($connection,'UPDATE delta_app_accounts SET active=1-active WHERE id=?','i',$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daUser($connection,$id);break;
+                case 'rename':setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
+                case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
+                case 'reset':
+                    if(!daAccount($connection,$id))throw new InvalidArgumentException('کاربر یافت نشد.');
+                    $p=daPassword();$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}
+                    daSend("رمز تازه (فقط این بار): <code>".$p."</code>",[daBtn('بازگشت','da_u_'.$id)]);break;
+                default:daUser($connection,$id);
+            }return true;
+        }
+        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'شماره پلن | لینک ساب اختصاصی'."\n".'ساب باید در پنل با حجم و زمان همان پلن تنظیم شده باشد.','da_adduser'=>'شماره پلن | نام کاربری انگلیسی'."\n".'مثال: 1 | delta_test'];
+        if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
+        if($cb!==''||!isset($update->message->text))return true;
+        if($step==='da_addplan'){
+            $a=array_map('trim',explode('|',$input));if(count($a)!==4||$a[0]===''||strlen($a[0])>80||!ctype_digit($a[1])||!ctype_digit($a[2])||!ctype_digit($a[3])||(int)$a[1]<1||(int)$a[1]>100000||(int)$a[2]<1||(int)$a[2]>3650||(int)$a[3]>1000000000)throw new InvalidArgumentException('فرمت یا مقادیر پلن نامعتبر است.');
+            daExec($connection,'INSERT INTO delta_app_plans(name,gb,days,price) VALUES(?,?,?,?)','siii',$a[0],(int)$a[1],(int)$a[2],(int)$a[3]);setUser();daList($connection,'plans',0);
+        }elseif($step==='da_addstock'){
+            $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0])||!daValidUrl($a[1]))throw new InvalidArgumentException('لینک یا شماره پلن نامعتبر است.');
+            $id=(int)$a[0];if(!daRow($connection,'SELECT id FROM delta_app_plans WHERE id=? AND active=1','i',$id))throw new InvalidArgumentException('پلن فعال پیدا نشد.');
+            daExec($connection,'INSERT INTO delta_app_stock(plan_id,url,url_hash) VALUES(?,?,?)','iss',$id,$a[1],hash('sha256',$a[1]));setUser();
+            bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);daList($connection,'stock',0);
+        }elseif($step==='da_adduser'){
+            $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0]))throw new InvalidArgumentException('فرمت نامعتبر است.');
+            $p=daCreate($connection,(int)$a[0],$a[1]);setUser();daSend("✅ حساب آزمایشی\nنام: <code>".daEsc($a[1])."</code>\nرمز (فقط این بار): <code>".$p."</code>",[daBtn('کاربران','da_users_0')]);
+        }elseif(preg_match('/^da_rename_(\d+)$/D',$step,$m)){
+            if(!daName($input))throw new InvalidArgumentException('نام کاربری نامعتبر است.');
+            $id=(int)$m[1];$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
+        }
+    }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
+    catch(Throwable $e){daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
+    return true;
+}
