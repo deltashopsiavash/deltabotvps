@@ -18,6 +18,15 @@ ok($a&&password_verify($secret,$a['password_hash'])&&$a['stock_id']===null);
 ok(daAllowed(daAccount($db,(int)$a['id'])));
 $nodes=['vless://example@invalid:443#test','ss://example#test'];
 ok(daExtract(base64_encode(implode("\n",$nodes)))===$nodes);
+$xray='{"inbounds":[],"outbounds":[{"protocol":"vless","settings":{}}],"routing":{"rules":[]}}';
+ok(daExtract($xray)===[$xray]);
+ok(daExtract('['.$xray.','.$xray.']')===[$xray]);
+ok(daExtract(base64_encode('['.$xray.']'))===[$xray]);
+ok(daExtract("vless://example@invalid:443#test name")===['vless://example@invalid:443#test%20name']);
+$wg="[Interface]\nPrivateKey = test\n[Peer]\nPublicKey = test";
+ok(daExtract($wg)===[$wg]);
+$bad=false;try{daExtract('<html>not a subscription</html>');}catch(InvalidArgumentException $e){$bad=true;}ok($bad);
+
 daSaveSource($db,'https://pmainp1.deltamarket2.ir:8000/sub/'.$tag,$nodes);
 daSaveSource($db,'https://pmainp1.deltamarket2.ir:8000/sub/'.$tag.'_2',[$nodes[0]]);
 ok(daCatalog($db)===$nodes);

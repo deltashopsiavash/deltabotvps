@@ -92,9 +92,10 @@ function deltaAppAdminHandle(): bool {
             bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
             foreach($urls as $ix=>$url){
                 try{$nodes=daFetchSource($url);daSaveSource($connection,$url,$nodes);$ok++;$report[]='ساب '.($ix+1).': '.count($nodes).' سرور ثبت شد.';}
-                catch(Throwable $e){$report[]='ساب '.($ix+1).': دریافت یا ثبت ناموفق.';}
+                catch(InvalidArgumentException $e){$report[]='ساب '.($ix+1).': '.$e->getMessage();}
+                catch(Throwable $e){$report[]='ساب '.($ix+1).': خطای ذخیره یا پردازش (کد '.(int)$e->getCode().').';}
             }
-            daSend("✅ ".$ok." ساب ثبت شد.\n".implode("\n",$report)."\nلینک بعدی را بفرستید یا فهرست را باز کنید.",[daBtn('فهرست ساب‌ها','da_stock_0'),daBtn('بازگشت','da_home')]);
+            daSend(($ok>0?"✅ ":"❌ ").$ok." ساب ثبت شد.\n".daEsc(implode("\n",$report))."\nلینک بعدی را بفرستید یا فهرست را باز کنید.",[daBtn('فهرست ساب‌ها','da_stock_0'),daBtn('بازگشت','da_home')]);
         }elseif($step==='da_adduser'){
             $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0]))throw new InvalidArgumentException('فرمت نامعتبر است.');
             $p=daCreate($connection,(int)$a[0],$a[1]);setUser();daSend("✅ حساب آزمایشی\nنام: <code>".daEsc($a[1])."</code>\nرمز (فقط این بار): <code>".$p."</code>",[daBtn('کاربران','da_users_0')]);

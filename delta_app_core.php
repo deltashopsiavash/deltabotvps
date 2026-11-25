@@ -57,22 +57,44 @@ function daLimit(mysqli $db,string $key,int $max): bool {
 function daExtract(string $body): array {
     $clean=trim(preg_replace('/^\xEF\xBB\xBF/','',$body));
     $b64=base64_decode(strtr(preg_replace('/\s+/','',$clean),'-_','+/'),true);
-    foreach([$clean,$b64===false?'':$b64] as $candidate){
+    foreach([$clean,$b64===false?'':trim(preg_replace('/^\xEF\xBB\xBF/','',$b64))] as $candidate){
+        if($candidate==='')continue;
+        // Xray full config object or array, preserved without discarding transport/routing.
+        if($candidate[0]==='{'||$candidate[0]==='['){
+            $json=json_decode($candidate,false,128);
+            if(json_last_error()===JSON_ERROR_NONE){
+                $items=is_array($json)?$json:[$json];$out=[];
+                if(count($items)<=500){
+                    foreach($items as $item){
+                        if(!is_object($item)||!is_array($item->inbounds??null)||!is_array($item->outbounds??null)||!is_object($item->routing??null)){$out=[];break;}
+                        $encoded=json_encode($item,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR);
+                        if(strlen($encoded)>262144)throw new InvalidArgumentException('اندازه یک کانفیگ JSON بیش از حد مجاز است.');
+                        $out[$encoded]=true;
+                    }
+                    if($out)return array_keys($out);
+                }
+            }
+        }
+        if(str_starts_with($candidate,'[Interface]')&&str_contains($candidate,'[Peer]')&&strlen($candidate)<=262144)return [$candidate];
         $out=[];
         foreach(preg_split('/\r\n|\r|\n/',$candidate) as $line){
             $line=trim($line);
+            // Some panels leave spaces in display names after '#', not in the URI.
+            $parts=explode('#',$line,2);
+            if(isset($parts[1])&&preg_match('/\s/u',$parts[1]))$line=$parts[0].'#'.rawurlencode(rawurldecode($parts[1]));
             if(strlen($line)<=16384 && preg_match('~^(vless|vmess|trojan|ss|socks|socks4|socks5|wireguard|hysteria2|hy2|v2rayn)://[^\s<>]+$~D',$line))$out[$line]=true;
         }
         if($out)return array_slice(array_keys($out),0,500);
     }
-    throw new InvalidArgumentException('ساب هیچ کانفیگ متنی یا Base64 قابل شناسایی ندارد.');
+    $kind=str_starts_with($clean,'<')?'HTML':((str_starts_with($clean,'{')||str_starts_with($clean,'['))?'JSON ناشناخته':'متن یا Base64 ناشناخته');
+    throw new InvalidArgumentException('فرمت ساب قابل استخراج نیست: '.$kind.' ('.strlen($body).' بایت).');
 }
 function daFetchSource(string $url): array {
     if(!daValidUrl($url))throw new InvalidArgumentException('ساختار لینک ساب مجاز نیست.');
     $body='';$c=curl_init($url);
     curl_setopt_array($c,[CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>12,CURLOPT_PROXY=>'',CURLOPT_USERAGENT=>'v2rayNG/2.3.15',CURLOPT_WRITEFUNCTION=>function($c,$part)use(&$body){if(strlen($body)+strlen($part)>2000000)return 0;$body.=$part;return strlen($part);}]);
     try{$ok=curl_exec($c);$code=curl_getinfo($c,CURLINFO_HTTP_CODE);}finally{curl_close($c);}
-    if($ok===false||$code!==200)throw new InvalidArgumentException('دریافت ساب از میزبان ناموفق بود.');
+    if($ok===false||$code!==200)throw new InvalidArgumentException('دریافت ساب ناموفق بود؛ HTTP '.(int)$code.'.');
     return daExtract($body);
 }
 function daSaveSource(mysqli $db,string $url,array $nodes): void {
