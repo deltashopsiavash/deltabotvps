@@ -7,9 +7,9 @@ function daSend(string $txt,array $rows=[]): void {sendMessage($txt,$rows?daKeys
 function daHome(): void {
     global $botUrl;
     $endpoint=rtrim((string)$botUrl,'/').'/delta_app_api.php';
-    daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر ساب اختصاصی فقط یک بار تخصیص می‌یابد.",[
+    daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nساب‌های مشترک برای تمام حساب‌ها؛ حجم پلن فعلاً سقف اجرایی نیست.",[
         daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
-        daBtn('🔗 موجودی اشتراک','da_stock_0'),daBtn('➕ افزودن اشتراک','da_addstock'),
+        daBtn('🔗 ساب‌های مشترک','da_stock_0'),daBtn('➕ افزودن اشتراک','da_addstock'),
         daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser')]);
 }
 function daList(mysqli $db,string $kind,int $page): void {
@@ -20,9 +20,9 @@ function daList(mysqli $db,string $kind,int $page): void {
         foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | ".daEsc($p['name'])." | ".$p['gb']." GB | ".$p['days']." روز | ".number_format((int)$p['price'])." تومان";$rows[]=daBtn(($p['active']?'غیرفعال':'فعال')." #$id",'da_pt_'.$id);}
         $rows[]=daBtn('➕ ساخت پلن','da_addplan');
     }elseif($kind==='stock'){
-        $txt="🔗 موجودی اشتراک‌های اختصاصی (لینک‌ها نمایش داده نمی‌شوند)\n";
-        $items=daRows($db,'SELECT s.id,s.plan_id,s.active,a.id AS account_id FROM delta_app_stock s LEFT JOIN delta_app_accounts a ON a.stock_id=s.id ORDER BY s.id DESC LIMIT 9 OFFSET ?','i',$off);
-        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | پلن ".$p['plan_id']." | ".($p['account_id']?'تخصیص‌یافته':($p['active']?'آماده':'غیرفعال'));if(!$p['account_id'])$rows[]=daBtn(($p['active']?'غیرفعال':'فعال')." #$id",'da_st_'.$id);}
+        $txt="🔗 ساب‌های مشترک (حداکثر ۲۰ لینک)\n";
+        $items=daRows($db,'SELECT id,nodes,active,updated FROM delta_app_sources ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
+        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | ".$p['nodes']." سرور | ".($p['active']?'فعال':'غیرفعال');$rows[]=daBtn(($p['active']?'غیرفعال':'فعال')." #$id",'da_st_'.$id);$rows[]=daBtn("🔄 دریافت مجدد #$id",'da_sf_'.$id);$rows[]=daBtn("حذف #$id",'da_sdask_'.$id);}
         $rows[]=daBtn('➕ افزودن اشتراک','da_addstock');
     }else{
         $txt="👥 کاربران برنامه\n";
@@ -37,7 +37,7 @@ function daList(mysqli $db,string $kind,int $page): void {
 }
 function daUser(mysqli $db,int $id): void {
     $a=daAccount($db,$id);if(!$a){daSend('کاربر یافت نشد.');return;}
-    daSend("👤 <code>".daEsc($a['username'])."</code>\nحجم پلن: ".$a['gb']." GB\nپایان حساب: ".gmdate('Y-m-d H:i',$a['expires']+12600)." ایران\nساب اختصاصی: #".$a['stock_id']."\nوضعیت: ".(daAllowed($a)?'فعال':'غیرفعال')."\nرمز ذخیره‌شده قابل مشاهده نیست.",[
+    daSend("👤 <code>".daEsc($a['username'])."</code>\nحجم پلن: ".$a['gb']." GB\nپایان حساب: ".gmdate('Y-m-d H:i',$a['expires']+12600)." ایران\nسرورها: فهرست مشترک\nحجم: مشخصات پلن (بدون کسر مصرف)\nوضعیت: ".(daAllowed($a)?'فعال':'غیرفعال')."\nرمز ذخیره‌شده قابل مشاهده نیست.",[
         daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id),
         daBtn($a['active']?'⛔ غیرفعال کردن ورود':'✅ فعال کردن ورود','da_ut_'.$id),daBtn('بازگشت','da_users_0')]);
 }
@@ -58,11 +58,14 @@ function deltaAppAdminHandle(): bool {
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
         if(preg_match('/^da_(plans|stock|users)_(\d{1,5})$/D',$cb,$m)){setUser();daList($connection,$m[1],(int)$m[2]);return true;}
-        if(preg_match('/^da_(pt|st|ut|u|rename|resetask|reset)_(\d{1,10})$/D',$cb,$m)){
+        if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset)_(\d{1,10})$/D',$cb,$m)){
             $id=(int)$m[2];setUser();
             switch($m[1]){
                 case 'pt': daExec($connection,'UPDATE delta_app_plans SET active=1-active WHERE id=?','i',$id);daList($connection,'plans',0);break;
-                case 'st': daExec($connection,'UPDATE delta_app_stock s LEFT JOIN delta_app_accounts a ON a.stock_id=s.id SET s.active=1-s.active WHERE s.id=? AND a.id IS NULL','i',$id);daList($connection,'stock',0);break;
+                case 'st': daExec($connection,'UPDATE delta_app_sources SET active=1-active WHERE id=?','i',$id);daList($connection,'stock',0);break;
+                case 'sf': $s=daRow($connection,'SELECT url FROM delta_app_sources WHERE id=?','i',$id);if(!$s)throw new InvalidArgumentException('ساب یافت نشد.');$nodes=daFetchSource($s['url']);daExec($connection,'UPDATE delta_app_sources SET payload=?,nodes=?,updated=? WHERE id=?','siii',json_encode($nodes,JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR),count($nodes),time(),$id);daList($connection,'stock',0);break;
+                case 'sdask': daSend('این ساب از فهرست مشترک حذف شود؟',[daBtn('تأیید حذف','da_sd_'.$id),daBtn('انصراف','da_stock_0')]);break;
+                case 'sd': daExec($connection,'DELETE FROM delta_app_sources WHERE id=?','i',$id);daList($connection,'stock',0);break;
                 case 'ut': daExec($connection,'UPDATE delta_app_accounts SET active=1-active WHERE id=?','i',$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daUser($connection,$id);break;
                 case 'rename':setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
                 case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
@@ -73,17 +76,25 @@ function deltaAppAdminHandle(): bool {
                 default:daUser($connection,$id);
             }return true;
         }
-        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'شماره پلن | لینک ساب اختصاصی'."\n".'ساب باید در پنل با حجم و زمان همان پلن تنظیم شده باشد.','da_adduser'=>'شماره پلن | نام کاربری انگلیسی'."\n".'مثال: 1 | delta_test'];
+        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).','da_adduser'=>'شماره پلن | نام کاربری انگلیسی'."\n".'مثال: 1 | delta_test'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
         if($step==='da_addplan'){
             $a=array_map('trim',explode('|',$input));if(count($a)!==4||$a[0]===''||strlen($a[0])>80||!ctype_digit($a[1])||!ctype_digit($a[2])||!ctype_digit($a[3])||(int)$a[1]<1||(int)$a[1]>100000||(int)$a[2]<1||(int)$a[2]>3650||(int)$a[3]>1000000000)throw new InvalidArgumentException('فرمت یا مقادیر پلن نامعتبر است.');
             daExec($connection,'INSERT INTO delta_app_plans(name,gb,days,price) VALUES(?,?,?,?)','siii',$a[0],(int)$a[1],(int)$a[2],(int)$a[3]);setUser();daList($connection,'plans',0);
         }elseif($step==='da_addstock'){
-            $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0])||!daValidUrl($a[1]))throw new InvalidArgumentException('لینک یا شماره پلن نامعتبر است.');
-            $id=(int)$a[0];if(!daRow($connection,'SELECT id FROM delta_app_plans WHERE id=? AND active=1','i',$id))throw new InvalidArgumentException('پلن فعال پیدا نشد.');
-            daExec($connection,'INSERT INTO delta_app_stock(plan_id,url,url_hash) VALUES(?,?,?)','iss',$id,$a[1],hash('sha256',$a[1]));setUser();
-            bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);daList($connection,'stock',0);
+            $urls=array_values(array_unique(preg_split('/\s+/',trim($input),-1,PREG_SPLIT_NO_EMPTY)));
+            if(!$urls||count($urls)>20)throw new InvalidArgumentException('۱ تا ۲۰ لینک ارسال کنید.');
+            foreach($urls as $url)if(!daValidUrl($url))throw new InvalidArgumentException('فقط لینک ساب با ساختار مجاز ارسال کنید.');
+            $ok=0;$report=[];
+            // Bound webhook latency: process at most 3 links per message; accept further messages.
+            if(count($urls)>3){daSend('برای جلوگیری از قطع وبهوک، حداکثر ۳ لینک در هر پیام بفرستید. مجموعاً ۲۰ ساب قابل ثبت است.');return true;}
+            bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
+            foreach($urls as $ix=>$url){
+                try{$nodes=daFetchSource($url);daSaveSource($connection,$url,$nodes);$ok++;$report[]='ساب '.($ix+1).': '.count($nodes).' سرور ثبت شد.';}
+                catch(Throwable $e){$report[]='ساب '.($ix+1).': دریافت یا ثبت ناموفق.';}
+            }
+            daSend("✅ ".$ok." ساب ثبت شد.\n".implode("\n",$report)."\nلینک بعدی را بفرستید یا فهرست را باز کنید.",[daBtn('فهرست ساب‌ها','da_stock_0'),daBtn('بازگشت','da_home')]);
         }elseif($step==='da_adduser'){
             $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0]))throw new InvalidArgumentException('فرمت نامعتبر است.');
             $p=daCreate($connection,(int)$a[0],$a[1]);setUser();daSend("✅ حساب آزمایشی\nنام: <code>".daEsc($a[1])."</code>\nرمز (فقط این بار): <code>".$p."</code>",[daBtn('کاربران','da_users_0')]);
