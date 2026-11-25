@@ -97,6 +97,27 @@ if(!function_exists('deltaForceAutoApprove')){
         return (int)getSettingValue(deltaReceiptMarkerKey($hash),'0')>0;
     }
 }
+// Text receipts use the same worker-facing state and timestamp as photos.
+// Commit metadata and the state transition together: the worker must never
+// see a new text receipt with a missing/late submission marker.
+if(!function_exists('deltaRegisterTextReceipt')){
+    function deltaRegisterTextReceipt(string $hash,int $uid,int $submittedAt,int $messageId,int $chatId): bool {
+        global $connection;
+        if($hash===''||$uid<=0||$submittedAt<=0||$submittedAt>time())return false;
+        $connection->begin_transaction();
+        try{
+            $s=$connection->prepare("SELECT state,user_id FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1 FOR UPDATE");
+            $s->bind_param('s',$hash);$s->execute();$p=$s->get_result()->fetch_assoc();$s->close();
+            if(!$p||(int)$p['user_id']!==$uid||$p['state']!=='pending')throw new RuntimeException('receipt no longer pending');
+            if(!upsertSettingValue('RECEIPT_KIND_'.sha1($hash),'text')||!deltaMarkReceiptSubmitted($hash,$submittedAt))
+                throw new RuntimeException('cannot register receipt metadata');
+            $s=$connection->prepare("UPDATE pays SET state='have_sent',message_id=?,chat_id=? WHERE BINARY hash_id=BINARY ? AND user_id=? AND state='pending'");
+            $s->bind_param('iisi',$messageId,$chatId,$hash,$uid);$s->execute();$ok=$s->affected_rows===1;$s->close();
+            if(!$ok)throw new RuntimeException('cannot register receipt');
+            $connection->commit();return true;
+        }catch(Throwable $e){$connection->rollback();return false;}
+    }
+}
 if(!function_exists('deltaRememberReceiptAdminMessage')){
     function deltaReceiptAdminMessagesKey($hash){ return 'RECEIPT_ADMIN_MSG_'.sha1((string)$hash); }
     function deltaRememberReceiptAdminMessage($hash,$adminId,$response){
