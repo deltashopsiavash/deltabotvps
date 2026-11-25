@@ -39,8 +39,9 @@ function deltaSmsReviewHandle(string $data): void {
             if($result===null||empty($result['available'])){alert('رفع تداخل در حالت تأیید پیامکی فعال قابل اجرا است.',true);return;}
             $items=$result['rows'];$rows=[];
             $text="🛠 <b>رفع تداخل پیامکی</b>\n\n";
-            if($run)$text.="✅ اتصال ایمن واریزهای قبلی: ".(int)$result['linked']."\n";
+            if($run)$text.="✅ اتصال ایمن واریزهای قبلی: ".(int)$result['linked']."\nاز نمایش قبلی همان فاکتور: ".(int)$result['historical_linked']."\n";
             $text.="فاکتورهای بررسی‌شده: ".(int)$result['scanned']."\nعوامل تداخل باقی‌مانده: ".count($items)."\nسوابق بدون فاکتور: ".(int)$result['orphans']."\n";
+            if(!empty($result['orphan_hashes']))foreach(array_slice($result['orphan_hashes'],0,8) as $h)$text.="سابقه بدون فاکتور: <code>".deltaSmsReviewEsc($h)."</code>\n";
             if($result['limited'])$text.="⚠️ گزارش فقط ۱۰۰ فاکتور اخیر واجد بررسی را پوشش می‌دهد.\n";
             $text.="\nفاکتورهای مبهم حذف یا ریست مالی نمی‌شوند. برای رفع تداخل باقی‌مانده، واریز واقعی هر فاکتور را بررسی کنید. هیچ سرویس مجدد تحویل داده نشده است.";
             foreach(array_slice($items,$page*8,8) as $p)$rows[]=[['text'=>deltaTrackingCode($p['hash_id']).' | '.number_format((int)$p['price']).' تومان | '.$p['state'],'callback_data'=>'smsReviewInvoice'.(int)$p['id']]];
@@ -78,7 +79,8 @@ function deltaSmsReviewHandle(string $data): void {
     if(preg_match('/^smsReviewInvoice(\d+)$/D',$data,$m)){
         $id=(int)$m[1];$p=deltaSmsReviewPay($id);if(!$p){alert('فاکتور پیدا نشد.',true);return;}
         $b=deltaSmsReviewBinding($p);$rows=[];$text=deltaSmsReviewInvoiceText($p);
-        if($b&&!empty($b['event_id']))$text.="\n\nاین فاکتور پیامک رزروشده یا مصرف‌شده دارد؛ دوباره تأیید نکنید.";
+        $st=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? AND event_id IS NOT NULL LIMIT 1');$hash=(string)$p['hash_id'];$st->bind_param('s',$hash);$st->execute();$linkedAny=(bool)$st->get_result()->fetch_row();$st->close();
+        if($linkedAny)$text.="\n\nاین فاکتور پیامک رزروشده یا مصرف‌شده دارد؛ دوباره تأیید نکنید.";
         elseif($b&&$p['state']==='have_sent'){
             $events=deltaSmsReviewCandidates($p,$b);
             $text.="\n\nپیامک‌های احتمالی استفاده‌نشده: ".count($events)."\nفقط پس از تطبیق رسید و تراکنش واقعی انتخاب کنید.";
@@ -92,7 +94,7 @@ function deltaSmsReviewHandle(string $data): void {
                 $rows[]=[['text'=>((int)$e['received_at']<(int)$b['shown_at']?'⚠️ قبل از فاکتور | ':'ثبت واریز قبلی | ').strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600),'callback_data'=>'smsReviewClosedAsk'.$id.'_'.substr($e['event_id'],0,16)]];
             }
         }else $text.="\n\nپیامک قابل اتصال ثبت نشده یا رسید هنوز ارسال نشده است.";
-        if(in_array($p['state'],['declined','cancelled_by_user'],true)&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
+        if(in_array($p['state'],['declined','cancelled_by_user'],true)&&!$linkedAny)$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
         if($p['state']==='have_sent')$rows[]=[['text'=>'⚠️ نمایش عوامل تداخل','callback_data'=>'smsReviewConflicts'.$id.'_0']];
         if(in_array($p['state'],['pending','have_sent'],true)&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'❌ رد این فاکتور پس از بررسی','callback_data'=>'smsReviewRejectAsk'.$id]];
         $rows[]=[['text'=>'فهرست فاکتورها','callback_data'=>'smsReviewList0']];$rows[]=$home;

@@ -199,7 +199,36 @@ function deltaSmsReviewClosedCandidates(array $pay,array $b,?array $trustedEvent
     uasort($out,static function($a,$b){return $b['received_at']<=>$a['received_at'];});
     return $out;
 }
-function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false): bool {
+// A settled invoice may have shown the card more than once. Recover a
+// unique earlier presentation of the SAME invoice only when it satisfies
+// the existing strict matcher and no other invoice can own the event.
+// No early-timestamp tolerance, state changes, or live fulfillment.
+function deltaSmsReviewHistoricalMatch(array $pay,array $events): ?array {
+    global $connection,$isChildBot;
+    if(!empty($isChildBot)||!in_array($pay['state']??'',['paid','approved'],true))return null;
+    $hash=(string)$pay['hash_id'];$uid=(int)$pay['user_id'];$price=(int)$pay['price'];
+    if($price<=0||deltaIsUsdtInvoice($hash)||getSettingValue('AUTOAPPROVE_FAILED_'.(int)$pay['id'],'0')==='1')return null;
+    $receipt=deltaReceiptSubmittedAt($hash,0);$epoch=deltaSmsApprovalEpoch();$now=time();
+    $s=$connection->prepare('SELECT b.* FROM delta_sms_invoice_bindings b JOIN payment_card_displays d ON d.id=b.display_id AND BINARY d.hash_id=BINARY b.hash_id AND d.user_id=b.user_id WHERE BINARY b.hash_id=BINARY ? AND b.user_id=? ORDER BY b.shown_at DESC,b.display_id DESC LIMIT 101');
+    $s->bind_param('si',$hash,$uid);$s->execute();$bindings=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
+    if(count($bindings)>100)return null;
+    $hits=[];
+    foreach($bindings as $b){
+        if(!empty($b['event_id']))return null;
+        if(!deltaSmsSenderReservation($b)||(int)$b['nominal_toman']!==$price||(int)$b['amount_irr']!==$price*10)continue;
+        foreach($events as $e){
+            if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now,true)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
+            $eid=$e['event_id'];
+            // For the same event, choose the latest valid presentation.
+            if(!isset($hits[$eid]))$hits[$eid]=['binding'=>$b,'event'=>$e];
+        }
+    }
+    if(count($hits)!==1)return null;
+    $hit=reset($hits);$b=$hit['binding'];$e=$hit['event'];
+    if(deltaSmsHasCompetingInvoice($hash,$price,(int)$e['received_at'],$e['event_id'],$events,(int)$b['shown_at']))return null;
+    return $hit;
+}
+function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $trustedEvents=null,bool $automatic=false,bool $historical=false): bool {
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsReviewSchema()||!preg_match('/^[a-f0-9]{16}$/D',$prefix))return false;
     $connection->begin_transaction();
@@ -211,11 +240,16 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
         }
         $s=$connection->prepare('SELECT * FROM pays WHERE id=? FOR UPDATE');$s->bind_param('i',$id);$s->execute();$p=$s->get_result()->fetch_assoc();$s->close();
         if(!$p||!in_array($p['state'],['paid','approved'],true))throw new RuntimeException('not settled');
-        $b=deltaSmsReviewBinding($p);if(!$b||!deltaSmsSenderReservation($b))throw new RuntimeException('no nominal binding');
+        $b=deltaSmsReviewBinding($p);if(!$historical&&(!$b||!deltaSmsSenderReservation($b)))throw new RuntimeException('no nominal binding');
         $hash=(string)$p['hash_id'];
         $s=$connection->prepare('SELECT display_id FROM delta_sms_invoice_bindings WHERE BINARY hash_id=BINARY ? AND event_id IS NOT NULL LIMIT 1');$s->bind_param('s',$hash);$s->execute();$used=(bool)$s->get_result()->fetch_row();$s->close();
         if($used)throw new RuntimeException('already linked');
-        if($automatic){
+        if($historical){
+            if(!$automatic||$actor<=0)throw new RuntimeException('historical repair requires admin');
+            $hit=deltaSmsReviewHistoricalMatch($p,$trustedEvents??deltaSmsMatchingEvents());
+            if(!$hit||substr($hit['event']['event_id'],0,16)!==$prefix)throw new RuntimeException('historical match no longer unique');
+            $b=$hit['binding'];$hits=[$hit['event']['event_id']=>$hit['event']];
+        }elseif($automatic){
             if(getSettingValue('AUTOAPPROVE_FAILED_'.$id,'0')==='1'||deltaIsUsdtInvoice($hash))throw new RuntimeException('not settled card payment');
             $events=$trustedEvents??deltaSmsMatchingEvents();
             $receipt=deltaReceiptSubmittedAt($hash,0);
@@ -236,7 +270,7 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
         if(!$ok)throw new RuntimeException('cannot reconcile');
         $early=(int)$e['received_at']<(int)$b['shown_at'];
         if($early&&($automatic||$actor<=0||!upsertSettingValue('SMS_EARLY_RECONCILE_'.sha1($hash),$eid)))throw new RuntimeException('early event requires owner verification');
-        $detail=$automatic?'unique stored SMS for settled payment; no delivery':($early?'owner verified pre-presentation deposit; no delivery':'owner verified previously settled deposit; no delivery');
+        $detail=$historical?'unique SMS from same invoice earlier presentation; no delivery':($automatic?'unique stored SMS for settled payment; no delivery':($early?'owner verified pre-presentation deposit; no delivery':'owner verified previously settled deposit; no delivery'));
         if(!deltaSmsReviewAudit('reconcile',$actor,$p,$b,$e,'done',$detail))throw new RuntimeException('audit failed');
         $connection->commit();return true;
     }catch(Throwable $e){$connection->rollback();return false;}
@@ -320,7 +354,7 @@ function deltaSmsReviewConflictScan(?array $trustedEvents=null): array {
         }
     }
     ksort($out);
-    return ['rows'=>array_values($out),'orphans'=>count($orphans),'scanned'=>$scanned,'limited'=>count($all)>100,'available'=>true];
+    return ['rows'=>array_values($out),'orphans'=>count($orphans),'orphan_hashes'=>array_keys($orphans),'scanned'=>$scanned,'limited'=>count($all)>100,'available'=>true];
 }
 function deltaSmsReviewRepairConflicts(int $actor,?array $trustedEvents=null): ?array {
     global $isChildBot,$admin;
@@ -331,7 +365,24 @@ function deltaSmsReviewRepairConflicts(int $actor,?array $trustedEvents=null): ?
     // Existing atomic reconciler revalidates every candidate under lock.
     // Ambiguous evidence remains blocked; no new service is delivered.
     $linked=deltaSmsReconcileSettled($events,$actor);
+    // Process oldest first, repeat bounded passes when a new link frees
+    // another invoice. Only already settled invoices are eligible.
+    global $connection;
+    $from=time()-deltaSmsReconciliationLookbackSeconds();
+    $historicalLinked=0;
+    for($pass=0;$pass<3;$pass++){
+        $q=$connection->prepare("SELECT p.* FROM pays p WHERE p.state IN ('paid','approved') AND EXISTS(SELECT 1 FROM delta_sms_invoice_bindings b WHERE BINARY b.hash_id=BINARY p.hash_id AND b.shown_at>=?) AND NOT EXISTS(SELECT 1 FROM delta_sms_invoice_bindings c WHERE BINARY c.hash_id=BINARY p.hash_id AND c.event_id IS NOT NULL) ORDER BY p.id ASC LIMIT 100");
+        $q->bind_param('i',$from);$q->execute();$rows=$q->get_result()->fetch_all(MYSQLI_ASSOC);$q->close();
+        $changed=0;
+        foreach($rows as $p){
+            $hit=deltaSmsReviewHistoricalMatch($p,$events);
+            if($hit&&deltaSmsReviewRecordClosed((int)$p['id'],substr($hit['event']['event_id'],0,16),$actor,$events,true,true))$changed++;
+        }
+        $historicalLinked+=$changed;
+        if(!$changed)break;
+    }
     $scan=deltaSmsReviewConflictScan($events);
-    $scan['linked']=$linked;
+    $scan['linked']=$linked+$historicalLinked;
+    $scan['historical_linked']=$historicalLinked;
     return $scan;
 }

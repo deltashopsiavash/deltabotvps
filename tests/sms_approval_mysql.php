@@ -377,6 +377,33 @@ ok(!deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'verifie
 ok(deltaSmsReviewPay(81)['state']==='cancelled_by_user','review preserves cancellation state');
 $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES (83,'old-orphan',1203,'nominal','00000',975000,97500,$shown,$expires)");
 ok(deltaSmsHasCompetingInvoice('superseded-new',97500,$now-10,$eid,[]),'preexisting orphan not silently assumed unpaid');
+// Recover a unique earlier display on the same already-settled invoice.
+// Never use this fallback for a live invoice or an unrelated orphan.
+$now=time();upsertSettingValue('SMS_APPROVAL_FROM_TS',(string)($now-5000));mode('off','on');$admin=123;
+$connection->query("INSERT INTO pays(id,hash_id,user_id,price,state) VALUES (91,'redisplay-settled',1301,98300,'approved'),(92,'redisplay-open',1302,98400,'have_sent'),(93,'redisplay-ambiguous',1303,98500,'approved')");
+foreach([[91,'redisplay-settled',1301,98300],[92,'redisplay-open',1302,98400],[93,'redisplay-ambiguous',1303,98500]] as [$id,$hash,$uid,$price]){
+    foreach([[$id,$now-600],[$id+10,$now-100]] as [$display,$shown]){
+        $expires=$shown+3600;$amount=$price*10;
+        $connection->query("INSERT INTO payment_card_displays VALUES ($display,'$hash',$uid,'0000000000000000',$shown)");
+        $connection->query("INSERT INTO delta_sms_invoice_bindings(display_id,hash_id,user_id,bank,account_hint,amount_irr,nominal_toman,shown_at,expires_at) VALUES ($display,'$hash',$uid,'nominal','00000',$amount,$price,$shown,$expires)");
+    }
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)($id+10));deltaMarkReceiptSubmitted($hash,$now-50);
+}
+$re=['event_id'=>str_repeat('4',63).'5','bank'=>'melli','source'=>'sms','sender'=>'fixture','amount_irr'=>983000,'received_at'=>$now-300,'ingested_at'=>$now-299];
+$ro=array_replace($re,['event_id'=>str_repeat('5',63).'6','amount_irr'=>984000]);
+$ra=array_replace($re,['event_id'=>str_repeat('6',63).'7','amount_irr'=>985000]);
+$rb=array_replace($ra,['event_id'=>str_repeat('7',63).'8','received_at'=>$now-250,'ingested_at'=>$now-249]);
+$rep=[$re,$ro,$ra,$rb];
+ok(deltaSmsFindBinding(deltaSmsReviewPay(91),$now-50,$rep,true)===null,'latest display alone cannot match earlier event');
+ok(deltaSmsReviewHistoricalMatch(deltaSmsReviewPay(92),$rep)===null,'open invoice never recovered');
+ok(deltaSmsReviewHistoricalMatch(deltaSmsReviewPay(93),$rep)===null,'multiple possible events remain blocked');
+$beforeEpoch=deltaSmsApprovalEpoch();
+$fixed=deltaSmsReviewRepairConflicts(123,$rep);
+ok($fixed['historical_linked']===1,'one unique historical presentation recovered');
+ok(deltaSmsReviewEventUsed($re['event_id'])&&!deltaSmsReviewEventUsed($ro['event_id'])&&!deltaSmsReviewEventUsed($ra['event_id']),'only unique settled evidence consumed');
+ok(deltaSmsReviewPay(91)['state']==='approved'&&deltaSmsReviewPay(92)['state']==='have_sent','no financial state change');
+ok(deltaSmsApprovalEpoch()===$beforeEpoch,'repair preserves epoch');
+ok(deltaSmsReviewRepairConflicts(123,$rep)['linked']===0,'historical repair idempotent');
 $connection->query("DROP TABLE delta_sms_admin_audit");
 $connection->query("DROP TABLE delta_sms_invoice_bindings");
 echo "SMS claim integration PASS\\n";
