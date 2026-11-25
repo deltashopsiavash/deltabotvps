@@ -963,10 +963,12 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
         sendMessage('❌ این بخش فقط متن قبول می‌کند. برای ارسال عکس، از دکمه «ارسال عکس واریزی» استفاده کنید.');
         exit;
     }
-    if(trim((string)$text) === ''){
+    if(!isset($update->message->text) || trim((string)$text) === ''){
         sendMessage('❌ لطفاً اطلاعات واریزی را فقط به صورت متن ارسال کنید.');
         exit;
     }
+    // Capture receipt arrival before potentially slow Telegram admin fan-out.
+    $receiptSubmittedAt=min(time(),(int)($_SERVER['REQUEST_TIME']??time()));
     $hash = $match[1];
     $originStep = $match[2];
     $stmt = $connection->prepare("SELECT * FROM `pays` WHERE `hash_id`=? LIMIT 1");
@@ -974,7 +976,7 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
     $stmt->execute();
     $payInfo = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    if(!$payInfo){
+    if(!$payInfo || (int)$payInfo['user_id']!==(int)$from_id || ($payInfo['state']??'')!=='pending'){
         sendMessage('تراکنش پیدا نشد.', $removeKeyboard);
         setUser();
         exit;
@@ -1007,12 +1009,13 @@ if(preg_match('/^payTextReceipt\|([^|]+)\|(.*)$/', $userInfo['step'] ?? '', $mat
         exit;
     }
     if((int)($payInfo['special_offer_id'] ?? 0)>0) specialOfferExtendReservation($payInfo,86400);
-    $stmt = $connection->prepare("UPDATE `pays` SET `state`='have_sent' WHERE `hash_id`=? AND `state`='pending'");
-    $stmt->bind_param('s', $hash);
-    $stmt->execute();
-    $stmt->close();
-    upsertSettingValue('RECEIPT_KIND_'.sha1($hash),'text');
-    if(function_exists('deltaMarkReceiptSubmitted')) deltaMarkReceiptSubmitted($hash);
+    $receiptAdminChat=(int)($res->result->chat->id??0);
+    $receiptAdminMessage=$receiptAdminChat!==0?(int)($res->result->message_id??0):0;
+    if(!deltaRegisterTextReceipt($hash,(int)$from_id,$receiptSubmittedAt,$receiptAdminMessage,$receiptAdminChat)){
+        sendMessage('رسید به مدیریت ارسال شد اما ثبت نهایی انجام نشد؛ وضعیت سفارش را بررسی کنید و دوباره پرداخت نکنید.');
+        setUser();
+        exit;
+    }
     sendMessage(deltaAppendTracking($mainValues['order_buy_sent'] ?? 'رسید شما ثبت شد و برای ادمین ارسال شد.',$hash), $removeKeyboard, 'HTML');
     sendMessage($mainValues['reached_main_menu'], getMainKeys());
     setUser();
