@@ -26,10 +26,29 @@ function deltaSmsReviewHandle(string $data): void {
             [['text'=>'🧹 شروع فهرست جدید','callback_data'=>'smsReviewClearAsk']],
             [['text'=>'🔎 جستجو با کد پیگیری','callback_data'=>'smsReviewTrackAsk']],
             [['text'=>'📨 پیامک‌های ثبت‌شده اخیر','callback_data'=>'smsReviewEvents0']],
+            [['text'=>'🛠 رفع تداخل','callback_data'=>'smsReviewRepairDo']],
             [['text'=>'🔄 ریست مبدأ پیامکی','callback_data'=>'smsReviewResetAsk']],
             [['text'=>'📊 گزارش عملیات مدیریت','callback_data'=>'smsReviewLog0']],
             [['text'=>'بازگشت به تنظیمات','callback_data'=>'botSettings']]
         ]);return;
+    }
+    if($data==='smsReviewRepairDo'||preg_match('/^smsReviewRepairList(\d{1,6})$/D',$data,$repairMatch)){
+        try{
+            $run=$data==='smsReviewRepairDo';$page=$run?0:(int)$repairMatch[1];
+            $result=$run?deltaSmsReviewRepairConflicts((int)$from_id):deltaSmsReviewConflictScan();
+            if($result===null||empty($result['available'])){alert('رفع تداخل در حالت تأیید پیامکی فعال قابل اجرا است.',true);return;}
+            $items=$result['rows'];$rows=[];
+            $text="🛠 <b>رفع تداخل پیامکی</b>\n\n";
+            if($run)$text.="✅ اتصال ایمن واریزهای قبلی: ".(int)$result['linked']."\n";
+            $text.="فاکتورهای بررسی‌شده: ".(int)$result['scanned']."\nعوامل تداخل باقی‌مانده: ".count($items)."\nسوابق بدون فاکتور: ".(int)$result['orphans']."\n";
+            if($result['limited'])$text.="⚠️ گزارش فقط ۱۰۰ فاکتور اخیر واجد بررسی را پوشش می‌دهد.\n";
+            $text.="\nفاکتورهای مبهم حذف یا ریست مالی نمی‌شوند. برای رفع تداخل باقی‌مانده، واریز واقعی هر فاکتور را بررسی کنید. هیچ سرویس مجدد تحویل داده نشده است.";
+            foreach(array_slice($items,$page*8,8) as $p)$rows[]=[['text'=>deltaTrackingCode($p['hash_id']).' | '.number_format((int)$p['price']).' تومان | '.$p['state'],'callback_data'=>'smsReviewInvoice'.(int)$p['id']]];
+            $nav=[];if($page>0)$nav[]=['text'=>'قبلی','callback_data'=>'smsReviewRepairList'.($page-1)];if(count($items)>($page+1)*8)$nav[]=['text'=>'بعدی','callback_data'=>'smsReviewRepairList'.($page+1)];if($nav)$rows[]=$nav;
+            $rows[]=[['text'=>'🔄 بررسی و رفع مجدد','callback_data'=>'smsReviewRepairDo']];$rows[]=$home;
+            deltaSmsReviewRender($text,$rows);
+        }catch(Throwable $e){alert('بررسی کامل نشد. اتصال‌های ایمن ثبت‌شده حفظ می‌شوند؛ دوباره بررسی کنید.',true);}
+        return;
     }
     if($data==='smsReviewTrackAsk'){
         global $cancelKey;

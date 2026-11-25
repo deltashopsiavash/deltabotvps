@@ -244,7 +244,7 @@ function deltaSmsReviewRecordClosed(int $id,string $prefix,int $actor,?array $tr
 // Resolve older manually settled invoices before processing new receipts.
 // Reconciliation only attaches unused, unambiguous bank evidence. It never
 // credits a wallet, creates a service or changes a payment state.
-function deltaSmsReconcileSettled(?array $trustedEvents=null): int {
+function deltaSmsReconcileSettled(?array $trustedEvents=null,int $actor=0): int {
     global $connection,$isChildBot;
     if(!empty($isChildBot)||!deltaSmsReviewSchema())return 0;
     $events=$trustedEvents??deltaSmsMatchingEvents();if(!$events)return 0;
@@ -257,7 +257,7 @@ function deltaSmsReconcileSettled(?array $trustedEvents=null): int {
         if(deltaIsUsdtInvoice($hash)||getSettingValue('AUTOAPPROVE_FAILED_'.(int)$p['id'],'0')==='1')continue;
         $receipt=deltaReceiptSubmittedAt($hash,0);
         $b=deltaSmsFindBinding($p,$receipt,$events,true);
-        if($b&&deltaSmsReviewRecordClosed((int)$p['id'],substr($b['matched_event'],0,16),0,$events,true))$count++;
+        if($b&&deltaSmsReviewRecordClosed((int)$p['id'],substr($b['matched_event'],0,16),$actor,$events,true))$count++;
     }
     return $count;
 }
@@ -279,19 +279,59 @@ function deltaSmsReviewNoPayment(int $id,int $actor): bool {
     }catch(Throwable $e){$connection->rollback();return false;}
 }
 // Same matcher as automatic approval; list actual competitors for the chosen receipt.
-function deltaSmsReviewConflicts(array $p): array {
+function deltaSmsReviewConflictHashes(array $p,?array $trustedEvents=null): array {
     $b=deltaSmsReviewBinding($p);if(!$b||!empty($b['event_id']))return [];
-    $events=deltaSmsMatchingEvents();$receipt=deltaReceiptSubmittedAt($p['hash_id'],0);$now=time();$epoch=deltaSmsApprovalEpoch();$out=[];
+    $events=$trustedEvents??deltaSmsMatchingEvents();$receipt=deltaReceiptSubmittedAt($p['hash_id'],0);$now=time();$epoch=deltaSmsApprovalEpoch();$out=[];
+    $settled=in_array($p['state']??'',['paid','approved'],true);
     global $connection;
     foreach($events as $e){
-        if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
+        if(!deltaSmsEventMatches($b,$e,$receipt,$epoch,$now,$settled)||deltaSmsEventAlreadyUsed($e['event_id']))continue;
         $at=(int)$e['received_at'];$from=$at-3600;$hash=(string)$p['hash_id'];$price=(int)$p['price'];$rows=[];
         foreach(deltaSmsCompetitionRowsSql() as $sql){
             $s=$connection->prepare($sql);$s->bind_param('siii',$hash,$price,$from,$at);$s->execute();$rows=array_merge($rows,$s->get_result()->fetch_all(MYSQLI_ASSOC));$s->close();
         }
-        foreach(deltaSmsCompetingHashes($rows,$events,$at,$e['event_id'],deltaSmsCompetitionHistory($rows),(int)$b['shown_at']) as $h){
-            $s=$connection->prepare('SELECT * FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1');$s->bind_param('s',$h);$s->execute();$r=$s->get_result()->fetch_assoc();$s->close();if($r)$out[(int)$r['id']]=$r;
-        }
+        foreach(deltaSmsCompetingHashes($rows,$events,$at,$e['event_id'],deltaSmsCompetitionHistory($rows),(int)$b['shown_at']) as $h)$out[$h]=true;
+    }
+    return array_keys($out);
+}
+function deltaSmsReviewConflicts(array $p,?array $trustedEvents=null): array {
+    global $connection;$out=[];
+    foreach(deltaSmsReviewConflictHashes($p,$trustedEvents) as $h){
+        $s=$connection->prepare('SELECT * FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1');$s->bind_param('s',$h);$s->execute();$r=$s->get_result()->fetch_assoc();$s->close();if($r)$out[(int)$r['id']]=$r;
     }
     ksort($out);return array_values($out);
+}
+// Administrative scan uses the same matching rules. It never resets money,
+// invoice states, timestamps, reservations, or the global approval epoch.
+function deltaSmsReviewConflictScan(?array $trustedEvents=null): array {
+    global $connection,$isChildBot;
+    if(!empty($isChildBot)||!deltaSmsReviewSchema())return ['rows'=>[],'orphans'=>0,'scanned'=>0,'limited'=>false,'available'=>false];
+    $events=$trustedEvents??deltaSmsMatchingEvents();
+    $from=time()-deltaSmsReconciliationLookbackSeconds();
+    $s=$connection->prepare("SELECT p.* FROM pays p WHERE p.state IN ('have_sent','approved','paid') AND EXISTS(SELECT 1 FROM delta_sms_invoice_bindings b WHERE BINARY b.hash_id=BINARY p.hash_id AND b.event_id IS NULL AND b.shown_at>=?) AND NOT EXISTS(SELECT 1 FROM delta_sms_invoice_bindings c WHERE BINARY c.hash_id=BINARY p.hash_id AND c.event_id IS NOT NULL) ORDER BY p.id DESC LIMIT 101");
+    $s->bind_param('i',$from);$s->execute();$all=$s->get_result()->fetch_all(MYSQLI_ASSOC);$s->close();
+    $out=[];$orphans=[];$scanned=0;
+    foreach(array_slice($all,0,100) as $p){
+        $scanned++;
+        if(deltaIsUsdtInvoice((string)$p['hash_id'])||getSettingValue('AUTOAPPROVE_FAILED_'.(int)$p['id'],'0')==='1')continue;
+        foreach(deltaSmsReviewConflictHashes($p,$events) as $h){
+            $s=$connection->prepare('SELECT * FROM pays WHERE BINARY hash_id=BINARY ? LIMIT 1');$s->bind_param('s',$h);$s->execute();$r=$s->get_result()->fetch_assoc();$s->close();
+            if($r)$out[(int)$r['id']]=$r;else $orphans[$h]=true;
+        }
+    }
+    ksort($out);
+    return ['rows'=>array_values($out),'orphans'=>count($orphans),'scanned'=>$scanned,'limited'=>count($all)>100,'available'=>true];
+}
+function deltaSmsReviewRepairConflicts(int $actor,?array $trustedEvents=null): ?array {
+    global $isChildBot,$admin;
+    if(!empty($isChildBot)||$actor<=0||(string)$actor!==(string)$admin||!deltaSmsReviewSchema())return null;
+    $state=json_decode((string)getSettingValue('BOT_STATES','{}'),true);
+    if(!is_array($state)||deltaReceiptApprovalMode($state)!=='sms')return null;
+    $events=$trustedEvents??deltaSmsMatchingEvents();
+    // Existing atomic reconciler revalidates every candidate under lock.
+    // Ambiguous evidence remains blocked; no new service is delivered.
+    $linked=deltaSmsReconcileSettled($events,$actor);
+    $scan=deltaSmsReviewConflictScan($events);
+    $scan['linked']=$linked;
+    return $scan;
 }

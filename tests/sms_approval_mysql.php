@@ -303,6 +303,18 @@ $tooOld=array_replace($early,['event_id'=>str_repeat('1',63).'2','received_at'=>
 $fixtures=[$early,$later,$tooOld];
 $prior=deltaSmsReviewPay(61);$b=deltaSmsReviewBinding($prior);
 ok(deltaSmsFindBinding($prior,$now-1292,$fixtures,true)===null,'early event never auto reconciled');
+$admin=123;
+$beforeEpoch=deltaSmsApprovalEpoch();
+$blocked=deltaSmsReviewRepairConflicts(123,$fixtures);
+ok(is_array($blocked)&&$blocked['linked']===0,'repair never guesses early evidence');
+ok(in_array(61,array_map('intval',array_column($blocked['rows'],'id')),true),'repair lists actual blocker');
+ok(!deltaSmsReviewEventUsed($early['event_id'])&&deltaSmsReviewPay(62)['state']==='have_sent','repair cannot consume ambiguous money or fulfill live invoice');
+ok(deltaSmsApprovalEpoch()===$beforeEpoch,'repair does not reset approval epoch');
+ok(deltaSmsReviewRepairConflicts(124,$fixtures)===null,'non-owner repair denied');
+$isChildBot=true;
+ok(deltaSmsReviewRepairConflicts(123,$fixtures)===null,'child repair denied');
+$isChildBot=false;
+
 ok(deltaSmsReconcileSettled($fixtures)===0,'worker cannot attach early event');
 ok(isset(deltaSmsReviewClosedCandidates($prior,$b,$fixtures)[$early['event_id']]),'owner can review early settled evidence');
 ok(!isset(deltaSmsReviewClosedCandidates($prior,$b,$fixtures)[$tooOld['event_id']]),'early exception limited to five minutes');
