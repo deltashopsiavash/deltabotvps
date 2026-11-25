@@ -35,6 +35,15 @@ function daList(mysqli $db,string $kind,int $page): void {
     if(count($items)>8)$rows[]=daBtn('بعدی',"da_".$kind.'_'.($page+1));
     $rows[]=daBtn('بازگشت','da_home');daSend($txt,$rows);
 }
+function daChoosePlan(mysqli $db,int $page=0): void {
+    $off=$page*8;$items=daRows($db,'SELECT id,name,gb,days FROM delta_app_plans WHERE active=1 ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
+    $rows=[];
+    foreach(array_slice($items,0,8) as $p)$rows[]=daBtn($p['name'].' | '.$p['gb'].' GB | '.$p['days'].' روز','da_make_'.$p['id']);
+    if($page>0)$rows[]=daBtn('قبلی','da_choose_'.($page-1));
+    if(count($items)>8)$rows[]=daBtn('بعدی','da_choose_'.($page+1));
+    $rows[]=daBtn('بازگشت','da_home');
+    daSend($items?'پلن کاربر جدید را انتخاب کنید؛ نام و رمز خودکار ساخته می‌شوند.':'پلن فعال وجود ندارد؛ ابتدا پلن بسازید.',$rows);
+}
 function daUser(mysqli $db,int $id): void {
     $a=daAccount($db,$id);if(!$a){daSend('کاربر یافت نشد.');return;}
     daSend("👤 <code>".daEsc($a['username'])."</code>\nحجم پلن: ".$a['gb']." GB\nپایان حساب: ".gmdate('Y-m-d H:i',$a['expires']+12600)." ایران\nسرورها: فهرست مشترک\nحجم: مشخصات پلن (بدون کسر مصرف)\nوضعیت: ".(daAllowed($a)?'فعال':'غیرفعال')."\nرمز ذخیره‌شده قابل مشاهده نیست.",[
@@ -57,6 +66,18 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if($cb==='da_adduser'||preg_match('/^da_choose_(\d{1,5})$/D',$cb,$m)){
+            setUser('da_choose');daChoosePlan($connection,$cb==='da_adduser'?0:(int)$m[1]);return true;
+        }
+        if(preg_match('/^da_make_(\d{1,10})$/D',$cb,$m)){
+            if($step!=='da_choose'){daSend('برای ایجاد حساب جدید دوباره ساخت کاربر را بزنید.');return true;}
+            $p=daRow($connection,'SELECT * FROM delta_app_plans WHERE id=? AND active=1','i',(int)$m[1]);
+            if(!$p)throw new InvalidArgumentException('پلن فعال پیدا نشد.');
+            setUser();
+            $a=daAutoCreate($connection,(int)$m[1]);
+            daSend("✅ حساب ساخته شد\nنام: <code>".daEsc($a['username'])."</code>\nرمز: <code>".daEsc($a['password'])."</code>\nحجم: ".$p['gb']." GB\nاعتبار: ".$p['days']." روز",[daBtn('➕ ساخت کاربر دیگر','da_adduser'),daBtn('کاربران','da_users_0')]);
+            return true;
+        }
         if(preg_match('/^da_(plans|stock|users)_(\d{1,5})$/D',$cb,$m)){setUser();daList($connection,$m[1],(int)$m[2]);return true;}
         if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset)_(\d{1,10})$/D',$cb,$m)){
             $id=(int)$m[2];setUser();
@@ -76,7 +97,7 @@ function deltaAppAdminHandle(): bool {
                 default:daUser($connection,$id);
             }return true;
         }
-        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).','da_adduser'=>'شماره پلن | نام کاربری انگلیسی'."\n".'مثال: 1 | delta_test'];
+        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
         if($step==='da_addplan'){
@@ -96,9 +117,6 @@ function deltaAppAdminHandle(): bool {
                 catch(Throwable $e){$report[]='ساب '.($ix+1).': خطای ذخیره یا پردازش (کد '.(int)$e->getCode().').';}
             }
             daSend(($ok>0?"✅ ":"❌ ").$ok." ساب ثبت شد.\n".daEsc(implode("\n",$report))."\nلینک بعدی را بفرستید یا فهرست را باز کنید.",[daBtn('فهرست ساب‌ها','da_stock_0'),daBtn('بازگشت','da_home')]);
-        }elseif($step==='da_adduser'){
-            $a=array_map('trim',explode('|',$input,2));if(count($a)!==2||!ctype_digit($a[0]))throw new InvalidArgumentException('فرمت نامعتبر است.');
-            $p=daCreate($connection,(int)$a[0],$a[1]);setUser();daSend("✅ حساب آزمایشی\nنام: <code>".daEsc($a[1])."</code>\nرمز (فقط این بار): <code>".$p."</code>",[daBtn('کاربران','da_users_0')]);
         }elseif(preg_match('/^da_rename_(\d+)$/D',$step,$m)){
             if(!daName($input))throw new InvalidArgumentException('نام کاربری نامعتبر است.');
             $id=(int)$m[1];$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);

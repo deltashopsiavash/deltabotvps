@@ -30,7 +30,16 @@ function daValidUrl(string $url): bool {
     return strlen($url)<=512 && preg_match('~^https://pmainp1\.deltamarket2\.ir:8000/sub/[A-Za-z0-9._\~-]+$~D',$url)===1;
 }
 function daName(string $name): bool {return preg_match('/^[a-z0-9_]{4,48}$/D',$name)===1;}
-function daPassword(): string {return bin2hex(random_bytes(12));}
+function daPassword(): string {return (string)random_int(10000,99999);}
+function daAutoCreate(mysqli $db,int $plan): array {
+    for($i=0;$i<40;$i++){
+        $name='delta'.random_int(10000,99999);
+        if(daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$name))continue;
+        try{return ['username'=>$name,'password'=>daCreate($db,$plan,$name)];}
+        catch(Throwable $e){if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$name))throw $e;}
+    }
+    throw new InvalidArgumentException('نام کاربری آزاد پیدا نشد؛ دوباره تلاش کنید.');
+}
 function daCreate(mysqli $db,int $plan,string $name): string {
     if(!daName($name))throw new InvalidArgumentException('نام کاربری ۴ تا ۴۸ حرف کوچک انگلیسی، عدد یا _ باشد.');
     $pass=daPassword();$hash=password_hash($pass,PASSWORD_DEFAULT);$db->begin_transaction();
@@ -46,8 +55,8 @@ function daAccount(mysqli $db,int $id): ?array {
     return daRow($db,'SELECT * FROM delta_app_accounts WHERE id=?','i',$id);
 }
 function daAllowed(?array $a): bool {return $a!==null && (int)$a['active']===1 && (int)$a['expires']>time();}
-function daLimit(mysqli $db,string $key,int $max): bool {
-    $h=hash('sha256',$key);$b=intdiv(time(),300);
+function daLimit(mysqli $db,string $key,int $max,int $seconds=300): bool {
+    $h=hash('sha256',$key);$b=intdiv(time(),$seconds);
     daExec($db,'INSERT INTO delta_app_limits(key_hash,hits,bucket) VALUES(?,1,?) ON DUPLICATE KEY UPDATE hits=IF(bucket=VALUES(bucket),hits+1,1),bucket=VALUES(bucket)','si',$h,$b);
     $r=daRow($db,'SELECT hits FROM delta_app_limits WHERE key_hash=?','s',$h);
     return (int)$r['hits']<=$max;

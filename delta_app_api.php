@@ -21,7 +21,7 @@ try{
     if($action==='login'){
         $name=$j['username']??'';$password=$j['password']??'';
         if(!is_string($name)||!is_string($password)||!daName($name)||strlen($password)>128)daRespond(401,['error'=>'login']);
-        if(!daLimit($db,'login:'.$name,10))daRespond(429,['error'=>'rate']);
+        if(!daLimit($db,'login:'.$name,5)||!daLimit($db,'login-day:'.$name,20,86400))daRespond(429,['error'=>'rate']);
         $db->begin_transaction();
         try {
             $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE username=? FOR UPDATE','s',$name);
