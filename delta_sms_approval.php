@@ -90,7 +90,7 @@ function deltaSmsCompetitionRowsSql(): array {
 // ambiguous if they relate to an earlier or changed checkout.
 function deltaSmsVerifiedClosedReceipt(array $row,array $history,int $candidateShown,int $eventAt): bool {
     $marker=(int)($row['no_payment_through']??0);
-    if(($row['state']??'')!=='declined'||!empty($row['event_id'])||$marker<=0)return false;
+    if(!in_array($row['state']??'',['declined','cancelled_by_user'],true)||!empty($row['event_id'])||$marker<=0)return false;
     if($marker>=$eventAt)return true;
     $receipt=(int)($history['receipt_at']??0);$latest=(int)($history['latest_shown']??0);
     return $receipt>0 && $latest>0 && $latest<=$receipt
@@ -147,7 +147,7 @@ function deltaSmsCompetitionHistory(array $rows): array {
         if(in_array($r['state']??'',['paid','approved'],true)&&!empty($r['event_id'])){
             $history[$h]=['early_verified_event'=>(string)getSettingValue('SMS_EARLY_RECONCILE_'.sha1($h),'')];continue;
         }
-        if(($r['state']??'')!=='declined'||(int)($r['no_payment_through']??0)<=0)continue;
+        if(!in_array($r['state']??'',['declined','cancelled_by_user'],true)||(int)($r['no_payment_through']??0)<=0)continue;
         $latest=0;
         foreach(deltaSmsCompetitionHistoryQueries() as $sql){
             $s=$connection->prepare($sql);$s->bind_param('s',$h);$s->execute();$row=$s->get_result()->fetch_assoc();$s->close();$latest=max($latest,(int)($row['latest']??0));
