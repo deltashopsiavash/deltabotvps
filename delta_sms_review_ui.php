@@ -73,7 +73,7 @@ function deltaSmsReviewHandle(string $data): void {
                 $rows[]=[['text'=>((int)$e['received_at']<(int)$b['shown_at']?'⚠️ قبل از فاکتور | ':'ثبت واریز قبلی | ').strtoupper($e['bank']).' | '.gmdate('m/d H:i:s',(int)$e['received_at']+12600),'callback_data'=>'smsReviewClosedAsk'.$id.'_'.substr($e['event_id'],0,16)]];
             }
         }else $text.="\n\nپیامک قابل اتصال ثبت نشده یا رسید هنوز ارسال نشده است.";
-        if($p['state']==='declined'&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
+        if(in_array($p['state'],['declined','cancelled_by_user'],true)&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'✅ بررسی شد؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayAsk'.$id]];
         if($p['state']==='have_sent')$rows[]=[['text'=>'⚠️ نمایش عوامل تداخل','callback_data'=>'smsReviewConflicts'.$id.'_0']];
         if(in_array($p['state'],['pending','have_sent'],true)&&(!$b||empty($b['event_id'])))$rows[]=[['text'=>'❌ رد این فاکتور پس از بررسی','callback_data'=>'smsReviewRejectAsk'.$id]];
         $rows[]=[['text'=>'فهرست فاکتورها','callback_data'=>'smsReviewList0']];$rows[]=$home;
@@ -90,7 +90,7 @@ function deltaSmsReviewHandle(string $data): void {
     }
     if(preg_match('/^smsReviewNoPay(Ask|Do)(\d+)$/D',$data,$m)){
         $id=(int)$m[2];$p=deltaSmsReviewPay($id);
-        if(!$p||$p['state']!=='declined'){alert('فاکتور ردشده پیدا نشد.',true);return;}
+        if(!$p||!in_array($p['state'],['declined','cancelled_by_user'],true)){alert('فاکتور ردشده یا لغوشده پیدا نشد.',true);return;}
         if($m[1]==='Ask'){
             deltaSmsReviewRender(deltaSmsReviewInvoiceText($p)."\n\n⚠️ فقط پس از بررسی گردش حساب و اطمینان از اینکه تا همین لحظه هیچ واریزی متعلق به این فاکتور نیست، تأیید کنید. اگر کل بازه رسید قبلی بررسی شده باشد، فاکتور بسته برای خریدهای جدید بعد از بررسی مزاحم نمی‌شود. اگر مشتری پس از لغو دوباره پول واریز کرد، باید دستی بررسی شود.",[
                 [['text'=>'تأیید بررسی؛ هیچ واریزی ندارد','callback_data'=>'smsReviewNoPayDo'.$id]],
