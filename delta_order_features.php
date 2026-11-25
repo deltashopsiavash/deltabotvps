@@ -112,6 +112,32 @@ if(!function_exists('deltaSupersedePendingInvoiceSql')){
         return "UPDATE pays SET state='cancelled_by_user' WHERE ".$m[1];
     }
 }
+// Keep superseded rows available for financial review, but never let an
+// old customer payment button or a stale receipt step reopen them.
+if(!function_exists('deltaCancelledCheckoutReference')){
+    function deltaCancelledCheckoutReference(string $flow): ?array {
+        if(str_starts_with($flow,'awaitingPayChoice|'))$flow=substr($flow,strlen('awaitingPayChoice|'));
+        if(preg_match('/^payTextReceipt\|([^|]+)\|/D',$flow,$m))return ['hash'=>$m[1]];
+        if(preg_match('/^(?:payWith(?:Wallet|CartToCart|TronWallet|WeSwap|Usdt)|havePaiedWeSwap|payCustomWith(?:Wallet|CartToCart)|increaseWalletWithCartToCart|payRenewWith(?:Wallet|CartToCart)|payIncrease(?:Day)?WithCartToCart|payIncrase(?:Day)?WithWallet|payPhotoReceipt|payTextReceipt|pgRenewPay(?:Cart|Wallet)|deltaUsdtReceipt_)([A-Za-z0-9_-]{5,128})(?:~[0-9]+)?$/D',$flow,$m))
+            return ['hash'=>$m[1]];
+        if(preg_match('/^(?:haveDiscountSelectPlan_|discountSelectPlan)\d+_\d+_(\d+)$/D',$flow,$m)||
+           preg_match('/^(?:haveDiscountRenew_|discountRenew)\d+_(\d+)$/D',$flow,$m))
+            return ['id'=>(int)$m[1]];
+        return null;
+    }
+    function deltaIsCancelledCheckoutFlow(string $flow): bool {
+        global $connection;
+        $ref=deltaCancelledCheckoutReference($flow);if(!$ref)return false;
+        if(isset($ref['id'])){
+            $s=$connection->prepare("SELECT id FROM pays WHERE id=? AND state='cancelled_by_user' LIMIT 1");
+            $s->bind_param('i',$ref['id']);
+        }else{
+            $s=$connection->prepare("SELECT id FROM pays WHERE BINARY hash_id=BINARY ? AND state='cancelled_by_user' LIMIT 1");
+            $s->bind_param('s',$ref['hash']);
+        }
+        $s->execute();$found=(bool)$s->get_result()->fetch_row();$s->close();return $found;
+    }
+}
 if(!function_exists('deltaRegisterTextReceipt')){
     function deltaRegisterTextReceipt(string $hash,int $uid,int $submittedAt,int $messageId,int $chatId): bool {
         global $connection;
