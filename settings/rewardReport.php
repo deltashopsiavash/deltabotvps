@@ -102,7 +102,7 @@ if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 if(empty($isChildBot)){
     try{
         if(daRow($connection,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_real_orders'")){
-            $recover=daRows($connection,"SELECT o.pay_hash FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.state IN ('pending','paid','provisioning') AND p.state IN ('paid','approved','paid_with_wallet') ORDER BY o.id LIMIT 10",'i',(int)$admin);
+            $recover=daRows($connection,"SELECT o.pay_hash FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.state IN ('pending','paid','provisioning') AND ((o.method='card' AND p.state IN ('paid','approved')) OR (o.method='wallet' AND p.state='paid_with_wallet')) ORDER BY o.id LIMIT 10");
             foreach($recover as $item){
                 try{daRealDeliverPaidHash($connection,(string)$item['pay_hash']);}
                 catch(Throwable $e){error_log('Delta app paid recovery: '.get_class($e));}
@@ -140,7 +140,7 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
         if(!function_exists('deltaReceiptHasSubmissionMarker') || !deltaReceiptHasSubmissionMarker($payInfo['hash_id'])) continue;
         if($payType==='DELTA_APP_BUY'){
             // No receipt-only legacy auto acceptance for the app.
-            if(!$smsMode||!empty($isChildBot)||(int)$user_id!==(int)$admin)continue;
+            if(!$smsMode||!empty($isChildBot))continue;
             try{
                 $appOrder=daRow($connection,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=?','si',$payInfo['hash_id'],(int)$user_id);
                 if(!$appOrder||$appOrder['state']!=='pending'||$appOrder['method']!=='card'||(int)$appOrder['price']!==(int)$price)continue;
@@ -203,7 +203,7 @@ if($smsMode || deltaLegacyReceiptWorkerAllowed($botState,!empty($isChildBot),$de
                 $delivery=daRealDeliverPaidHash($connection,(string)$payInfo['hash_id']);
                 if(!empty($smsBinding['admin_review']))deltaSmsReviewDelivered($smsBinding);
                 deltaSyncAutoApprovedReceiptMessages($payInfo);
-                sendToAdmins('✅ خرید برنامه دلتا با پیامک بانکی تأیید و تحویل شد'."\n".deltaTrackingLine($payInfo['hash_id'])."\nمبلغ: ".number_format((int)$price).' تومان',null,'HTML');
+
             }catch(Throwable $e){
                 // The event remains claimed and payment remains settled.
                 // Recovery uses the same reserved account, never another debit.
