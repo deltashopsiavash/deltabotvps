@@ -130,7 +130,7 @@ function deltaAppAdminHandle(): bool {
             setUser();
             daRealSchema($connection);
             if(str_starts_with($cb,'dab_')){daSend('این منوی قدیمی دیگر معتبر نیست.',[daBtn('خرید سرویس','dar_home')]);return true;}
-            if($input==='/buy'||$cb==='dar_home'){daSend('اشتراک اختصاصی برنامه دلتا — خرید اختصاصی مدیر',[daBtn('خرید سرویس','dar_categories'),daBtn('🧾 فاکتورهای من','dar_orders'),daBtn('سرویس‌های من','dar_mine')]);return true;}
+            if($input==='/buy'||$cb==='dar_home'){daSend('اشتراک اختصاصی برنامه دلتا — خرید کارت‌به‌کارت مدیر',[daBtn('خرید سرویس','dar_categories'),daBtn('🧾 فاکتورهای من','dar_orders'),daBtn('سرویس‌های من','dar_mine')]);return true;}
             if($cb==='dar_categories'){$rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dar_cat_'.$r['id']);$rows[]=daBtn('بازگشت','dar_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_cat_(\d+)$/D',$cb,$m)){$rows=[];foreach(daRows($connection,'SELECT id,name,price FROM delta_app_plans WHERE active=1 AND category_id=? ORDER BY id','i',(int)$m[1]) as $r)$rows[]=daBtn($r['name'].' - '.number_format((int)$r['price']).' تومان','dar_plan_'.$r['id']);$rows[]=daBtn('بازگشت','dar_categories');daSend('پلن را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_plan_(\d+)$/D',$cb,$m)){
@@ -157,17 +157,11 @@ function deltaAppAdminHandle(): bool {
                 catch(Throwable $e){daSend('پرداخت ثبت شد؛ تحویل هنوز کامل نشده است.',[daBtn('وضعیت فاکتور','dar_invoice_'.$o['id'])]);return true;}
                 daRealInvoiceView($connection,(int)$from_id,(int)$o['id']);return true;
             }
-            if(preg_match('/^dar_walletask_(\d+)$/D',$cb,$m)){
-                $o=daRealOrder($connection,(int)$from_id,(int)$m[1]);
-                if(($GLOBALS['botState']['walletState']??'off')!=='on'||$o['state']!=='pending')throw new InvalidArgumentException('پرداخت کیف پول در دسترس نیست.');
-                daSend('مبلغ '.number_format((int)$o['price']).' تومان واقعاً از کیف پول شما کسر خواهد شد. تأیید می‌کنید؟',[daBtn('✅ پرداخت واقعی','dar_wallet_'.$m[1]),daBtn('بازگشت','dar_invoice_'.$m[1])]);return true;
+            if(preg_match('/^dar_wallet(?:ask)?_(\d+)$/D',$cb,$m)){
+                daSend('در این مرحله فقط پرداخت واقعی کارت‌به‌کارت فعال است.',[daBtn('بازگشت','dar_invoice_'.$m[1])]);return true;
             }
-            if(preg_match('/^dar_(wallet|deliver)_(\d+)$/D',$cb,$m)){
-                $id=(int)$m[2];
-                if($m[1]==='wallet'){
-                    if(($GLOBALS['botState']['walletState']??'off')!=='on')throw new InvalidArgumentException('کیف پول غیرفعال است.');
-                    daRealWallet($connection,(int)$from_id,$id);
-                }
+            if(preg_match('/^dar_deliver_(\d+)$/D',$cb,$m)){
+                $id=(int)$m[1];
                 try{$order=daRealOrder($connection,(int)$from_id,$id);daRealSyncPaid($connection,(string)$order['pay_hash']);$result=daRealDeliver($connection,(int)$from_id,$id);}
                 catch(Throwable $e){daSend('تحویل هنوز کامل نشده است؛ وضعیت فاکتور را بررسی کنید و دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
                 $o=$result['order'];$a=daAccount($connection,(int)$o['account_id']);
@@ -417,7 +411,6 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     }elseif($o['state']==='pending'&&$p['state']==='pending'&&(int)$o['created']>=time()-3600){
         if(($GLOBALS['botState']['cartToCartState']??'off')==='on')$rows[]=daBtn('💳 کارت‌به‌کارت','dar_card_'.$id);
         if($o['method']!=='card'){
-            if(($GLOBALS['botState']['walletState']??'off')==='on')$rows[]=daBtn('💳 پرداخت از کیف پول','dar_walletask_'.$id);
             $rows[]=daBtn('❌ لغو فاکتور','dar_cancel_'.$id);
         }
     }
