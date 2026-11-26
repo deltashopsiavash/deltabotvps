@@ -55,3 +55,11 @@ function deltaUnifiedBackupHasTable(string $path,string $table): bool {
 function deltaUnifiedBackupHasRecoveryTable(string $path): bool {
     return deltaUnifiedBackupHasTable($path,'delta_app_backup_key');
 }
+
+function deltaLegacyBackupLooksComplete(string $path): bool {
+    $size=filesize($path);if($size===false||$size<1024)return false;
+    $tail=file_get_contents($path,false,null,max(0,$size-4096));
+    if(!is_string($tail)||!preg_match('/(?:-- Dump completed on [^\r\n]+|SET FOREIGN_KEY_CHECKS=1;)\s*\z/D',$tail))return false;
+    foreach(['users','pays','setting'] as $table)if(!deltaUnifiedBackupHasTable($path,$table))return false;
+    return true;
+}
