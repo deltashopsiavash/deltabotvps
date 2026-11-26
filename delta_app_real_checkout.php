@@ -69,7 +69,7 @@ function daRealDeliver(mysqli $db,int $buyer,int $id): array {
     try{
         $o=daRealOrder($db,$buyer,$id);
         $pay=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY'",'si',$o['pay_hash'],$buyer);
-        if(!$pay || (int)$pay['price']!==(int)$o['price'] || !in_array($pay['state'],['paid','approved','paid_with_wallet'],true))throw new InvalidArgumentException('پرداخت واقعی تأیید نشده است.');
+        if($o['method']!=='card'||!$pay || (int)$pay['price']!==(int)$o['price'] || !in_array($pay['state'],['paid','approved'],true))throw new InvalidArgumentException('پرداخت واقعی تأیید نشده است.');
         if($o['state']==='delivered')return ['order'=>$o,'password'=>null];
         if(!in_array($o['state'],['paid','provisioning'],true))throw new InvalidArgumentException('فاکتور قابل تأیید نیست.');
         if($o['account_id']===null){
@@ -136,10 +136,10 @@ function daRealSyncPaid(mysqli $db,string $hash): array {
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? FOR UPDATE','s',$hash);
         if(!$o)throw new RuntimeException('order missing');
         $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'s',$hash);
-        if(!$p || (int)$p['user_id']!==(int)$o['buyer'] || (int)$p['price']!==(int)$o['price'] || !in_array($p['state'],['paid','approved','paid_with_wallet'],true))throw new RuntimeException('payment not settled');
+        if(!$p || (int)$p['user_id']!==(int)$o['buyer'] || (int)$p['price']!==(int)$o['price'] || !in_array($p['state'],['paid','approved'],true))throw new RuntimeException('payment not settled');
         if($o['state']==='pending'){
-            if($o['method']!=='card'||$p['state']==='paid_with_wallet')throw new RuntimeException('card-only rollout');
-            daExec($db,"UPDATE delta_app_real_orders SET state='paid',method=?,approved_at=? WHERE id=? AND state='pending'",'sii',$p['state']==='paid_with_wallet'?'wallet':'card',time(),(int)$o['id']);
+            if($o['method']!=='card')throw new RuntimeException('card-only rollout');
+            daExec($db,"UPDATE delta_app_real_orders SET state='paid',method=?,approved_at=? WHERE id=? AND state='pending'",'sii','card',time(),(int)$o['id']);
         }elseif(!in_array($o['state'],['paid','provisioning','delivered'],true))throw new RuntimeException('order state mismatch');
         $db->commit();return daRealOrder($db,(int)$o['buyer'],(int)$o['id']);
     }catch(Throwable $e){$db->rollback();throw $e;}
@@ -189,8 +189,11 @@ function daRealPrepareCard(mysqli $db,int $buyer,int $id): array {
 }
 function daRealManualClaim(mysqli $db,string $hash): void {
     global $botState;
+    daRealFinancePreflight($db);
     $p=daRealPayByHash($db,$hash);
     if(!$p)throw new RuntimeException('invoice missing');
+    $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=?','si',$hash,(int)$p['user_id']);
+    if(!$o||$o['method']!=='card'||(int)$o['price']!==(int)$p['price'])throw new RuntimeException('order payment mismatch');
     if(in_array($p['state'],['paid','approved'],true))return;
     if($p['state']!=='have_sent'||!deltaReceiptHasSubmissionMarker($hash))throw new InvalidArgumentException('ابتدا رسید معتبر ثبت شود.');
     // In SMS mode never bypass the shared bank-event claim; ambiguous transfers
