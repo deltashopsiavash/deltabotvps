@@ -40,7 +40,7 @@ try{
             daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',hash('sha256',$token),$id,$exp);
             $db->commit();
         }catch(Throwable $e){$db->rollback();throw $e;}
-    }elseif($action==='session'||$action==='status'||$action==='logout'||$action==='devices'||$action==='revoke_device'){
+    }elseif($action==='session'||$action==='status'||$action==='logout'||$action==='devices'||$action==='revoke_device'||$action==='news'||$action==='news_read'||$action==='news_dismiss'){
         $token=$j['token']??'';
         if(!is_string($token)||!preg_match('/^[a-f0-9]{64}$/D',$token))daRespond(401,['error'=>'session']);
         $h=hash('sha256',$token);$s=daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND expires>? AND token_hash IN (SELECT token_hash FROM delta_app_devices)','si',$h,time());
@@ -49,6 +49,16 @@ try{
         if($action==='logout'){daDeviceRevoke($db,(int)$s['account_id'],(int)$dev['id']);daRespond(200,['ok'=>true]);}
         $a=daAccount($db,(int)$s['account_id']);if(!$a||(int)$a['active']!==1)daRespond(401,['error'=>'session']);
         daExec($db,'UPDATE delta_app_devices SET last_seen=? WHERE token_hash=?','is',time(),$h);
+        if(in_array($action,['news','news_read','news_dismiss'],true)){
+            if(!daLimit($db,'news:'.(int)$a['id'],120))daRespond(429,['error'=>'rate']);
+            if($action!=='news'){
+                $id=$j['id']??0;if(!is_int($id)||$id<1)daRespond(400,['error'=>'news']);
+                daNewsSeen($db,(int)$a['id'],$id,$action==='news_read'?'inbox':'float');
+            }
+            $before=$j['before']??0;
+            if(!is_int($before)||$before<0)daRespond(400,['error'=>'news']);
+            daRespond(200,daNewsFeed($db,(int)$a['id'],$before));
+        }
         if($action==='devices'||$action==='revoke_device'){
             if($action==='revoke_device'){if(!is_int($j['device']??null)||$j['device']<1||$j['device']==(int)$dev['id'])daRespond(400,['error'=>'device']);daDeviceRevoke($db,(int)$a['id'],$j['device']);}
             daRespond(200,['devices'=>daDeviceList($db,(int)$a['id']),'device_limit'=>(int)$a['device_limit'],'current_id'=>(int)$dev['id']]);
