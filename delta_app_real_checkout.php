@@ -30,7 +30,7 @@ function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
         if(!$p || (int)$p['price']<=0)throw new InvalidArgumentException('پلن پولی فعال یافت نشد.');
         $setting=daRow($db,"SELECT * FROM delta_app_pg_settings WHERE id=1 AND panel_kind='app'");
         if(!$setting)throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
-        $old=daRow($db,"SELECT o.id FROM delta_app_real_orders o JOIN pays p ON p.hash_id=o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.plan_id=? AND o.state='pending' AND p.state='pending' AND o.created>=? ORDER BY o.id DESC LIMIT 1",'iii',$buyer,$plan,time()-3600);
+        $old=daRow($db,"SELECT o.id FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.plan_id=? AND o.state='pending' AND p.state='pending' AND o.created>=? ORDER BY o.id DESC LIMIT 1",'iii',$buyer,$plan,time()-3600);
         if($old){$db->commit();return (int)$old['id'];}
         $hash='';
         for($i=0;$i<12;$i++){
@@ -47,26 +47,9 @@ function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
         $id=(int)$db->insert_id;$db->commit();return $id;
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
+// Disabled for the private card-only rollout: users may be MyISAM.
 function daRealWallet(mysqli $db,int $buyer,int $id): void {
-    daRealFinancePreflight($db);
-    $db->begin_transaction();
-    try{
-        $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
-        if(!$o)throw new InvalidArgumentException('فاکتور یافت نشد.');
-        $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$o['pay_hash'],$buyer);
-        if(!$p || (int)$p['price']!==(int)$o['price'])throw new RuntimeException('payment mismatch');
-        if(in_array($o['state'],['paid','provisioning','delivered'],true)&&$p['state']==='paid_with_wallet'){$db->commit();return;}
-        if($o['state']!=='pending'||$p['state']!=='pending'||(int)$o['created']<time()-3600||(int)$o['price']<=0)throw new InvalidArgumentException('فاکتور قابل پرداخت نیست.');
-        if($o['method']==='card'||daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
-        $price=(int)$o['price'];
-        $s=daQuery($db,'UPDATE users SET wallet=wallet-? WHERE userid=? AND wallet>=?','iii',$price,$buyer,$price);
-        $ok=$s->affected_rows===1;$s->close();
-        if(!$ok)throw new InvalidArgumentException('موجودی کیف پول کافی نیست.');
-        $s=daQuery($db,"UPDATE pays SET state='paid_with_wallet' WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' AND state='pending'",'si',$o['pay_hash'],$buyer);
-        $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new RuntimeException('payment claim');
-        daExec($db,"UPDATE delta_app_real_orders SET state='paid',method='wallet',approved_at=? WHERE id=?",'ii',time(),$id);
-        $db->commit();
-    }catch(Throwable $e){$db->rollback();throw $e;}
+    throw new InvalidArgumentException('پرداخت کیف پول در خرید اختصاصی دلتا فعلاً غیرفعال است.');
 }
 function daRealCancel(mysqli $db,int $buyer,int $id): void {
     $db->begin_transaction();
@@ -155,6 +138,7 @@ function daRealSyncPaid(mysqli $db,string $hash): array {
         $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'s',$hash);
         if(!$p || (int)$p['user_id']!==(int)$o['buyer'] || (int)$p['price']!==(int)$o['price'] || !in_array($p['state'],['paid','approved','paid_with_wallet'],true))throw new RuntimeException('payment not settled');
         if($o['state']==='pending'){
+            if($o['method']!=='card'||$p['state']==='paid_with_wallet')throw new RuntimeException('card-only rollout');
             daExec($db,"UPDATE delta_app_real_orders SET state='paid',method=?,approved_at=? WHERE id=? AND state='pending'",'sii',$p['state']==='paid_with_wallet'?'wallet':'card',time(),(int)$o['id']);
         }elseif(!in_array($o['state'],['paid','provisioning','delivered'],true))throw new RuntimeException('order state mismatch');
         $db->commit();return daRealOrder($db,(int)$o['buyer'],(int)$o['id']);
@@ -167,7 +151,7 @@ function daRealRegisterReceipt(mysqli $db,string $hash,int $buyer,string $kind,i
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=? FOR UPDATE','si',$hash,$buyer);
         $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$hash,$buyer);
-        if(!$o||!$p||$o['state']!=='pending'||$p['state']!=='pending'||(int)$p['price']!==(int)$o['price'])throw new RuntimeException('receipt state');
+        if(!$o||!$p||$o['method']!=='card'||$o['state']!=='pending'||$p['state']!=='pending'||(int)$p['price']!==(int)$o['price'])throw new RuntimeException('receipt state');
         if(!daRealHasCard($db,$hash))throw new RuntimeException('no card');
         if(!upsertSettingValue('RECEIPT_KIND_'.sha1($hash),$kind)||!deltaMarkReceiptSubmitted($hash,$at))throw new RuntimeException('receipt metadata');
         $s=daQuery($db,"UPDATE pays SET state='have_sent' WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' AND state='pending'",'si',$hash,$buyer);
@@ -192,6 +176,7 @@ function daRealDeliverPaidHash(mysqli $db,string $hash): array {
 }
 
 function daRealPrepareCard(mysqli $db,int $buyer,int $id): array {
+    daRealFinancePreflight($db);
     $db->begin_transaction();
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
@@ -222,7 +207,7 @@ function daRealManualClaim(mysqli $db,string $hash): void {
 
 /** Fail closed before any financial write on a nontransactional or incompatible schema. */
 function daRealFinancePreflight(mysqli $db): void {
-    foreach(['pays','users','setting','delta_app_real_orders','delta_app_accounts','delta_app_pg_users'] as $table){
+    foreach(['pays','setting','delta_app_plans','delta_app_real_orders','delta_app_accounts','delta_app_pg_users'] as $table){
         $r=daRow($db,"SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?",'s',$table);
         if(!$r||strtolower((string)$r['ENGINE'])!=='innodb')throw new RuntimeException('transactional table required: '.$table);
     }
