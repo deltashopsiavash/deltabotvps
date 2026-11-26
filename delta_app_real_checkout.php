@@ -26,22 +26,36 @@ function daRealSchema(mysqli $db): void {
     daEnsureDecimalQuota($db,'delta_app_trial_settings');
     $db->query("INSERT IGNORE INTO delta_app_trial_settings(id) VALUES(1)");
     $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_claims (order_id BIGINT UNSIGNED PRIMARY KEY,buyer BIGINT NOT NULL,claimed BIGINT UNSIGNED NOT NULL,released_at BIGINT UNSIGNED NULL,INDEX(buyer,released_at),INDEX(claimed)) ENGINE=InnoDB");
+    $db->query("CREATE TABLE IF NOT EXISTS delta_app_renewals (
+      order_id BIGINT UNSIGNED PRIMARY KEY, root_order_id BIGINT UNSIGNED NOT NULL, account_id INT UNSIGNED NOT NULL,
+      old_limit BIGINT UNSIGNED NULL,old_expires BIGINT UNSIGNED NULL,baseline BIGINT UNSIGNED NULL,
+      target_limit BIGINT UNSIGNED NULL,target_expires BIGINT UNSIGNED NULL,
+      applied_at BIGINT UNSIGNED NULL,INDEX(root_order_id),INDEX(account_id)
+    ) ENGINE=InnoDB");
+
 }
 function daRealOrder(mysqli $db,int $buyer,int $id): array {
     $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=?','ii',$buyer,$id);
     if(!$o)throw new InvalidArgumentException('فاکتور پیدا نشد.');
     return $o;
 }
-function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
+function daRealInvoice(mysqli $db,int $buyer,int $plan,int $renewRoot=0): int {
     daRealSchema($db);
     daRealFinancePreflight($db);
     $db->begin_transaction();
     try{
+        $target=null;
+        if($renewRoot>0){
+            $target=daRenewTarget($db,$buyer,$renewRoot,true);
+            $open=daRenewOpen($db,$renewRoot);
+            if($open){$db->commit();return (int)$open['id'];}
+        }
         $p=daRow($db,'SELECT * FROM delta_app_plans WHERE id=? AND active=1 AND category_id IS NOT NULL FOR UPDATE','i',$plan);
         if(!$p || (int)$p['price']<=0)throw new InvalidArgumentException('پلن پولی فعال یافت نشد.');
         $setting=daRow($db,"SELECT * FROM delta_app_pg_settings WHERE id=1 AND panel_kind='app'");
-        if(!$setting)throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
-        $old=daRow($db,"SELECT o.id FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.plan_id=? AND o.state='pending' AND p.state='pending' AND o.created>=? ORDER BY o.id DESC LIMIT 1",'iii',$buyer,$plan,time()-3600);
+        if(!$setting&&$renewRoot===0)throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
+        if($target&&(int)$p['device_limit']<(int)$target['device_limit'])throw new InvalidArgumentException('برای تمدید، پلنی با تعداد دستگاه برابر یا بیشتر انتخاب کنید.');
+        $old=$renewRoot>0?null:daRow($db,"SELECT o.id FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' LEFT JOIN delta_app_renewals r ON r.order_id=o.id WHERE r.order_id IS NULL AND o.buyer=? AND o.plan_id=? AND o.state='pending' AND p.state='pending' AND o.created>=? ORDER BY o.id DESC LIMIT 1",'iii',$buyer,$plan,time()-3600);
         if($old){$db->commit();return (int)$old['id'];}
         $hash='';
         for($i=0;$i<12;$i++){
@@ -55,8 +69,106 @@ function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
         $pay=daRow($db,"SELECT type,price,user_id FROM pays WHERE hash_id=?",'s',$hash);
         if(!$pay || $pay['type']!=='DELTA_APP_BUY' || (int)$pay['price']!==$price || (int)$pay['user_id']!==$buyer)throw new RuntimeException('payment snapshot mismatch');
         daExec($db,'INSERT INTO delta_app_real_orders(buyer,plan_id,name,gb,days,price,device_limit,pay_hash,created) VALUES(?,?,?,?,?,?,?,?,?)','iisiiiisi',$buyer,$plan,$p['name'],$gb,$days,$price,$devices,$hash,$now);
-        $id=(int)$db->insert_id;$db->commit();return $id;
+        $id=(int)$db->insert_id;
+        if($target)daExec($db,'INSERT INTO delta_app_renewals(order_id,root_order_id,account_id) VALUES(?,?,?)','iii',$id,$renewRoot,(int)$target['id']);
+        $db->commit();return $id;
     }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daRenewLink(mysqli $db,int $id): ?array {
+    return daRow($db,'SELECT * FROM delta_app_renewals WHERE order_id=?','i',$id);
+}
+function daRenewTarget(mysqli $db,int $buyer,int $root,bool $lock=false): array {
+    $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=?'.($lock?' FOR UPDATE':''),'ii',$root,$buyer);
+    if(!$o||$o['state']!=='delivered'||!(int)$o['account_id'])throw new InvalidArgumentException('سرویس قابل تمدید نیست.');
+    $a=daAccount($db,(int)$o['account_id']);$m=daPgMap($db,(int)$o['account_id']);
+    if(!$a||!(int)$a['active']||!$m||$m['state']!=='ready'||$m['panel_kind']!=='app')throw new InvalidArgumentException('حساب یا سرویس اختصاصی برای تمدید آماده نیست.');
+    return $a;
+}
+function daRenewOpen(mysqli $db,int $root): ?array {
+    return daRow($db,"SELECT o.* FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.root_order_id=? AND o.state IN ('pending','paid','provisioning') ORDER BY o.id DESC LIMIT 1",'i',$root);
+}
+function daRenewLatest(mysqli $db,int $root): ?array {
+    return daRow($db,"SELECT o.* FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.root_order_id=? AND o.state='delivered' ORDER BY r.applied_at DESC,o.id DESC LIMIT 1",'i',$root);
+}
+function daRenewRemoteSnapshot(array $j): array {
+    $used=$j['used_traffic']??null;$limit=$j['data_limit']??null;$raw=$j['expire']??null;
+    $expires=is_int($raw)?$raw:(is_string($raw)?strtotime($raw):false);
+    if(!is_int($used)||$used<0||!is_int($limit)||$limit<1||$expires===false||$expires<=0||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('renewal panel state');
+    return ['used'=>$used,'limit'=>$limit,'expires'=>$expires];
+}
+function daRenewValues(array $o,array $remote,int $now): array {
+    $bytes=daQuotaBytes($o['gb']);
+    if($remote['used']>PHP_INT_MAX-$bytes)throw new RuntimeException('renewal volume overflow');
+    return ['baseline'=>$remote['used'],'limit'=>$remote['used']+$bytes,'expires'=>$now+(int)$o['days']*86400];
+}
+// Durable absolute target before network I/O. Retrying cannot grant the plan twice.
+function daRenewStage(mysqli $db,array $o,array $r,array $remote): array {
+    if($r['target_limit']!==null)return $r;
+    $v=daRenewValues($o,$remote,time());
+    $db->begin_transaction();
+    try{
+        $locked=daRow($db,'SELECT * FROM delta_app_renewals WHERE order_id=? FOR UPDATE','i',(int)$o['id']);
+        if(!$locked)throw new RuntimeException('renewal missing');
+        if($locked['target_limit']===null){
+            daExec($db,'UPDATE delta_app_renewals SET old_limit=?,old_expires=?,baseline=?,target_limit=?,target_expires=? WHERE order_id=?','iiiiii',$remote['limit'],$remote['expires'],$v['baseline'],$v['limit'],$v['expires'],(int)$o['id']);
+            daExec($db,"UPDATE delta_app_real_orders SET state='provisioning' WHERE id=? AND state='paid'",'i',(int)$o['id']);
+        }
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+    return daRenewLink($db,(int)$o['id']);
+}
+function daRenewMatches(array $r,array $remote): bool {
+    return (int)$r['target_limit']===$remote['limit']&&(int)$r['target_expires']===$remote['expires']&&$remote['used']>=(int)$r['baseline'];
+}
+function daRenewFinish(mysqli $db,array $o,array $r,array $remote): bool {
+    if(!daRenewMatches($r,$remote))throw new RuntimeException('renewal not verified');
+    $db->begin_transaction();
+    try{
+        $id=(int)$o['id'];$aid=(int)$r['account_id'];
+        $fresh=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? FOR UPDATE','i',$id);
+        if(!$fresh)throw new RuntimeException('renewal missing');
+        if($fresh['state']==='delivered'){$db->commit();return false;}
+        if($fresh['state']!=='provisioning')throw new RuntimeException('renewal state');
+        $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$aid);
+        if(!$a||!(int)$a['active']||(int)$o['device_limit']<(int)$a['device_limit'])throw new RuntimeException('account requires review');
+        daExec($db,'UPDATE delta_app_accounts SET plan_id=?,gb=?,expires=?,quota_baseline_bytes=?,device_limit=? WHERE id=?','isiiii',(int)$o['plan_id'],(string)$o['gb'],(int)$r['target_expires'],(int)$r['baseline'],(int)$o['device_limit'],$aid);
+        daExec($db,'UPDATE delta_app_renewals SET applied_at=? WHERE order_id=?','ii',time(),$id);
+        daExec($db,"UPDATE delta_app_real_orders SET state='delivered',delivered_at=? WHERE id=?",'ii',time(),$id);
+        $db->commit();return true;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daRenewApply(mysqli $db,array $o,array $r): array {
+    $buyer=(int)$o['buyer'];$id=(int)$o['id'];$aid=(int)$r['account_id'];$root=(int)$r['root_order_id'];
+    return daPgLocked($db,$aid,function()use($db,$buyer,$id,$aid,$root){
+        $o=daRealOrder($db,$buyer,$id);$r=daRenewLink($db,$id);
+        $p=daRealPayByHash($db,$o['pay_hash']);
+        if(!$r||!$p||(int)$p['user_id']!==$buyer||(int)$p['price']!==(int)$o['price']||!daRealPaymentSettled($o,$p))throw new RuntimeException('renewal payment invalid');
+        if($o['state']==='delivered')return ['order'=>$o,'notified'=>true];
+        if(!in_array($o['state'],['paid','provisioning'],true))throw new RuntimeException('renewal state');
+        $a=daRenewTarget($db,$buyer,$root);
+        if((int)$a['id']!==$aid||(int)$o['device_limit']<(int)$a['device_limit'])throw new RuntimeException('renewal account changed');
+        $m=daPgMap($db,$aid);$s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);
+        $token=daPgToken($s);$j=daPgGet($s,$token,$m);
+        if(!$j)throw new RuntimeException('renewal account missing on panel');
+        $remote=daRenewRemoteSnapshot($j);$r=daRenewStage($db,$o,$r,$remote);
+        if(!daRenewMatches($r,$remote)){
+            if($remote['limit']!==(int)$r['old_limit']||$remote['expires']!==(int)$r['old_expires']||$remote['used']<(int)$r['baseline'])throw new RuntimeException('renewal remote state changed; review required');
+            [$code,$raw]=daPgApi($s,daPgPath($m),'PUT',$token,['status'=>'active','expire'=>gmdate('c',(int)$r['target_expires']),'data_limit'=>(int)$r['target_limit'],'data_limit_reset_strategy'=>'no_reset']);
+            if(!in_array($code,[200,204],true))throw new RuntimeException('renewal panel update');
+            $j=daPgGet($s,$token,$m);if(!$j)throw new RuntimeException('renewal verify');
+            $remote=daRenewRemoteSnapshot($j);
+        }
+        if(!daRenewMatches($r,$remote))throw new RuntimeException('renewal target not confirmed');
+        $new=daRenewFinish($db,$o,$r,$remote);
+        $notified=false;
+        if($new){
+            $name=htmlspecialchars($a['username'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+            $msg="✅ اشتراک برنامه دلتا تمدید شد\nنام کاربری: <code>".$name."</code>\nحجم جدید: ".daQuotaLabel($o['gb'])." گیگ\nاعتبار جدید: ".$o['days']." روز\nتعداد دستگاه: ".$o['device_limit']."\nنام کاربری و رمز قبلی بدون تغییر هستند.";
+            try{$sent=sendMessage($msg,null,'HTML',$buyer);$notified=is_object($sent)&&!empty($sent->ok);}catch(Throwable $e){error_log('Delta renewal customer report failed');}
+            try{sendToAdmins("✅ تمدید موفق برنامه دلتا\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری: <code>".$name."</code>\n📦 پلن: ".htmlspecialchars($o['name'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n💳 روش: ".($o['method']==='wallet'?'موجودی':'کارت به کارت')."\n".deltaTrackingLine($o['pay_hash']),null,'HTML');}catch(Throwable $e){error_log('Delta renewal admin report failed');}
+        }
+        return ['order'=>daRealOrder($db,$buyer,$id),'notified'=>$notified||!$new];
+    });
 }
 function daRealWalletAvailable(mysqli $db): bool {
     $r=daRow($db,"SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='users'");
@@ -215,6 +327,7 @@ function daRealDeliver(mysqli $db,int $buyer,int $id): array {
     if((int)($l['acquired']??0)!==1)throw new InvalidArgumentException('فاکتور در حال پردازش است.');
     try{
         $o=daRealOrder($db,$buyer,$id);
+        if(daRenewLink($db,$id))throw new InvalidArgumentException('فاکتور تمدید است.');
         $pay=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY'",'si',$o['pay_hash'],$buyer);
         if($o['method']==='trial'){
             if(!daTrialAuthorized($db,$o))throw new InvalidArgumentException('درخواست تست معتبر نیست.');
@@ -303,6 +416,7 @@ function daRealDeleteService(mysqli $db,int $buyer,int $order,string $token): vo
             if(!$ok)throw new InvalidArgumentException('تأیید نهایی معتبر نیست؛ دوباره از ابتدا اقدام کنید.');
             $a=daAccount($db,$id);
             if(!$a&&$o['state']!=='deleting')throw new InvalidArgumentException('حساب یافت نشد.');
+            if(daRenewOpen($db,$order))throw new InvalidArgumentException('ابتدا فاکتور تمدید باز را تعیین تکلیف کنید.');
             $map=daPgMap($db,$id);
             if(($a&&(!$map||$map['panel_kind']!=='app'))||(!$a&&$map))throw new RuntimeException('account mapping requires admin review');
 
@@ -364,6 +478,7 @@ function daRealRegisterReceipt(mysqli $db,string $hash,int $buyer,string $kind,i
 /** Recoverable delivery: password may be reset in the owner menu if Telegram fails. */
 function daRealDeliverPaidHash(mysqli $db,string $hash): array {
     $o=daRealSyncPaid($db,$hash);
+    $renew=daRenewLink($db,(int)$o['id']);if($renew)return daRenewApply($db,$o,$renew);
     $r=daRealDeliver($db,(int)$o['buyer'],(int)$o['id']);
     $o=$r['order'];$a=daAccount($db,(int)$o['account_id']);
     if(!$a||$o['state']!=='delivered')throw new RuntimeException('delivery not ready');
