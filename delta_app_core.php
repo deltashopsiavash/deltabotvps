@@ -8,6 +8,8 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_pg_settings (id TINYINT PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
@@ -153,4 +155,144 @@ function daIranDate(int $timestamp): string {
     $d=(new DateTimeImmutable('@'.$timestamp))->setTimezone(new DateTimeZone('Asia/Tehran'));
     [$y,$m,$day]=gregorian_to_jalali((int)$d->format('Y'),(int)$d->format('n'),(int)$d->format('j'));
     return sprintf('%04d/%02d/%02d %s',$y,$m,$day,$d->format('H:i:s'));
+}
+
+/* App-only PasarGuard connector. Existing sales code is not changed. TLS is mandatory. */
+function daPgBase(string $url): string {
+    $base=preg_replace('~/dashboard/?$~i','',rtrim(trim($url),'/'));
+    $p=parse_url($base);
+    if(!$p||($p['scheme']??'')!=='https'||empty($p['host'])||isset($p['user'],$p['pass'])||isset($p['user'])||isset($p['pass'])||isset($p['query'])||isset($p['fragment'])||!empty($p['path']))throw new InvalidArgumentException('آدرس پنل باید HTTPS معتبر و بدون مسیر اضافی باشد.');
+    return $base;
+}
+function daPgServer(mysqli $db,int $id,?string $expected=null): array {
+    $s=daRow($db,"SELECT * FROM server_config WHERE id=? AND type='pasarguard'",'i',$id);
+    if(!$s)throw new InvalidArgumentException('پنل پسارگارد ثبت‌شده پیدا نشد.');
+    $s['base']=daPgBase($s['panel_url']);
+    if($expected!==null&&$s['base']!==$expected)throw new RuntimeException('panel changed');
+    return $s;
+}
+function daPgHttp(string $url,string $method='GET',?string $token=null,?array $body=null,bool $form=false): array {
+    $data='';$ch=curl_init($url);
+    $headers=['Accept: application/json'];
+    if($token!==null)$headers[]='Authorization: Bearer '.$token;
+    if($body!==null)$headers[]=$form?'Content-Type: application/x-www-form-urlencoded':'Content-Type: application/json';
+    curl_setopt_array($ch,[CURLOPT_CUSTOMREQUEST=>$method,CURLOPT_HTTPHEADER=>$headers,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_CONNECTTIMEOUT=>4,CURLOPT_TIMEOUT=>8,CURLOPT_PROXY=>'',CURLOPT_USERAGENT=>'v2rayNG/2.3.15',CURLOPT_WRITEFUNCTION=>function($ch,$part)use(&$data){if(strlen($data)+strlen($part)>2000000)return 0;$data.=$part;return strlen($part);}]);
+    if($body!==null)curl_setopt($ch,CURLOPT_POSTFIELDS,$form?http_build_query($body):json_encode($body,JSON_THROW_ON_ERROR));
+    try{$ok=curl_exec($ch);$code=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);}finally{curl_close($ch);}
+    if($ok===false)throw new RuntimeException('panel network or TLS');
+    return [$code,$data];
+}
+function daPgJson(string $raw): array {
+    $j=json_decode($raw,true,128,JSON_THROW_ON_ERROR);
+    if(!is_array($j))throw new RuntimeException('panel response');
+    return $j;
+}
+function daPgToken(array $s): string {
+    [$code,$raw]=daPgHttp($s['base'].'/api/admin/token','POST',null,['username'=>$s['username'],'password'=>$s['password']],true);
+    if($code!==200)throw new RuntimeException('panel auth');
+    $t=daPgJson($raw)['access_token']??null;
+    if(!is_string($t)||!preg_match('/^[A-Za-z0-9._~-]+$/D',$t))throw new RuntimeException('panel token');
+    return $t;
+}
+function daPgPath(array $m): string {return '/api/user/'.rawurlencode($m['pg_name']);}
+function daPgGet(array $s,string $token,array $m): ?array {
+    [$code,$raw]=daPgHttp($s['base'].daPgPath($m),'GET',$token);
+    if($code===404)return null;
+    if($code!==200)throw new RuntimeException('panel read');
+    $j=daPgJson($raw);
+    if(($j['username']??null)!==$m['pg_name']||($j['note']??null)!==$m['marker']||!is_int($j['id']??null)||$j['id']<1||($m['remote_id']!==null&&(int)$m['remote_id']!==$j['id']))throw new RuntimeException('panel identity mismatch');
+    return $j;
+}
+function daPgMetrics(array $a,array $j): array {
+    $limit=(int)$a['gb']*1073741824;
+    $used=$j['used_traffic']??null;$actual=$j['data_limit']??null;$raw=$j['expire']??null;
+    $expires=is_int($raw)?$raw:(is_string($raw)&&preg_match('/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/D',$raw)?strtotime($raw):false);
+    if(!is_int($used)||$used<0||!is_int($actual)||$actual!==$limit||$expires===false||$expires<=0||$expires!==(int)$a['expires']||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
+    $status=$j['status']??'unknown';
+    return ['limit_bytes'=>$limit,'used_bytes'=>$used,'remaining_bytes'=>max(0,$limit-$used),'expires'=>$expires,'panel_status'=>$status,'can_connect'=>$status==='active'&&$used<$limit&&$expires>time()&&(int)$a['active']===1];
+}
+function daPgSub(array $s,array $j): string {
+    $base=trim((string)($s['sub_base_url']??''));if($base===''||$base==='/empty')$base=$s['base'];
+    $base=daPgBase($base);
+    $url=$j['subscription_url']??null;if(!is_string($url))throw new RuntimeException('subscription missing');
+    if(str_starts_with($url,'/sub/'))$url=$base.$url;
+    if(strlen($url)>2048||!str_starts_with($url,$base.'/sub/')||!preg_match('~^/sub/[A-Za-z0-9._\~-]+$~D',substr($url,strlen($base))))throw new RuntimeException('subscription origin mismatch');
+    return $url;
+}
+function daPgMap(mysqli $db,int $id): ?array {return daRow($db,'SELECT * FROM delta_app_pg_users WHERE account_id=?','i',$id);}
+function daPgConfigure(mysqli $db,int $sid,int $gid): void {
+    $s=daPgServer($db,$sid);$token=daPgToken($s);
+    [$code,$raw]=daPgHttp($s['base'].'/api/group/'.$gid,'GET',$token);
+    if($code!==200)throw new InvalidArgumentException('گروه در پنل پیدا نشد یا دسترسی کافی نیست.');
+    $j=daPgJson($raw);
+    if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
+    daExec($db,'INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base) VALUES(1,?,?,?) ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base)','iis',$sid,$gid,$s['base']);
+}
+function daPgProvision(mysqli $db,int $id): void {
+    $a=daAccount($db,$id);$m=daPgMap($db,$id);
+    if(!$a||!$m||$m['state']!=='pending'||(int)$a['expires']<=time())throw new InvalidArgumentException('حساب آماده ساخت یا بازیابی نیست.');
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$token=daPgToken($s);
+    $j=daPgGet($s,$token,$m);
+    if($j===null){
+        [$code,$raw]=daPgHttp($s['base'].'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>(int)$a['gb']*1073741824,'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
+        if(!in_array($code,[200,201,204],true))throw new RuntimeException('panel create');
+        $j=daPgGet($s,$token,$m);
+    }
+    if(!$j)throw new RuntimeException('panel pending');
+    $metrics=daPgMetrics($a,$j);daPgSub($s,$j);
+    if($metrics['panel_status']!=='active'||$metrics['used_bytes']!==0||!in_array((int)$m['group_id'],$j['group_ids']??[],true))throw new RuntimeException('created account mismatch');
+    $db->begin_transaction();
+    try{daExec($db,"UPDATE delta_app_pg_users SET state='ready',remote_id=? WHERE account_id=? AND state='pending'",'ii',$j['id'],$id);daExec($db,'UPDATE delta_app_accounts SET active=1 WHERE id=?','i',$id);$db->commit();}catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daPgNew(mysqli $db,int $plan): array {
+    $setting=daRow($db,'SELECT * FROM delta_app_pg_settings WHERE id=1');
+    if(!$setting)throw new InvalidArgumentException('ابتدا پنل و گروه برنامه را تنظیم کنید.');
+    daPgServer($db,(int)$setting['server_id'],$setting['panel_base']);
+    // Reserve a durable local record and unique random remote identity before the network call.
+    $db->begin_transaction();
+    try{
+        $p=daRow($db,'SELECT * FROM delta_app_plans WHERE id=? AND active=1 FOR UPDATE','i',$plan);
+        if(!$p)throw new InvalidArgumentException('پلن فعال پیدا نشد.');
+        $name=null;for($i=0;$i<40;$i++){$n='delta'.random_int(10000,99999);if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)){$name=$n;break;}}
+        if($name===null)throw new RuntimeException('name');
+        $pass=daPassword();$now=time();$expires=$now+(int)$p['days']*86400;
+        daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created) VALUES(?,?,?,?,?,0,?)','ssiiii',$name,password_hash($pass,PASSWORD_DEFAULT),$plan,(int)$p['gb'],$expires,$now);
+        $id=(int)$db->insert_id;$remote='dapp_'.bin2hex(random_bytes(12));$marker='delta-app:'.bin2hex(random_bytes(16));
+        daExec($db,'INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker) VALUES(?,?,?,?,?,?)','iiisss',$id,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$remote,$marker);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+    try{daPgProvision($db,$id);return ['id'=>$id,'username'=>$name,'password'=>$pass,'ready'=>true];}
+    catch(Throwable $e){return ['id'=>$id,'username'=>$name,'ready'=>false];}
+}
+function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
+    $m=daPgMap($db,(int)$a['id']);
+    if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
+    if(!$j)throw new RuntimeException('panel user missing');
+    $metrics=daPgMetrics($a,$j);$metrics['configs']=[];
+    if($withConfigs&&$metrics['can_connect']){
+        [$code,$raw]=daPgHttp(daPgSub($s,$j));
+        if($code!==200)throw new RuntimeException('sub fetch');
+        $metrics['configs']=daExtract($raw);
+    }
+    return $metrics;
+}
+function daPgChange(mysqli $db,int $id,bool $delete=false): void {
+    $a=daAccount($db,$id);$m=daPgMap($db,$id);if(!$a)throw new InvalidArgumentException('حساب یافت نشد.');
+    if(!$m){if($delete){daDeleteAccount($db,$id);return;}throw new InvalidArgumentException('حساب قدیمی بدون ساب اختصاصی است.');}
+    // First close local login, keep the mapping until panel deletion is confirmed.
+    if($delete||$a['active']){daExec($db,'UPDATE delta_app_accounts SET active=0 WHERE id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);}
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$t=daPgToken($s);$j=daPgGet($s,$t,$m);
+    if($delete){
+        if($j!==null){[$code,$raw]=daPgHttp($s['base'].daPgPath($m),'DELETE',$t);if(!in_array($code,[200,204,404],true)||daPgGet($s,$t,$m)!==null)throw new RuntimeException('delete pending');}
+        $db->begin_transaction();try{daExec($db,'DELETE FROM delta_app_pg_users WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_accounts WHERE id=?','i',$id);$db->commit();}catch(Throwable $e){$db->rollback();throw $e;}
+        return;
+    }
+    if(!$j||$m['state']!=='ready')throw new RuntimeException('panel not ready');
+    $target=$a['active']?'disabled':'active';
+    if($target==='active'){ $v=daPgMetrics($a,$j);if($v['remaining_bytes']===0||$v['expires']<=time())throw new InvalidArgumentException('حجم یا اعتبار تمام شده است.');}
+    [$code,$raw]=daPgHttp($s['base'].daPgPath($m),'PUT',$t,['status'=>$target]);
+    $after=daPgGet($s,$t,$m);
+    if(!in_array($code,[200,204],true)||($after['status']??null)!==$target)throw new RuntimeException('state not confirmed');
+    if($target==='active')daExec($db,'UPDATE delta_app_accounts SET active=1 WHERE id=?','i',$id);
 }

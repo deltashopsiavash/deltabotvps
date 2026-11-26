@@ -39,5 +39,11 @@ try{
         if($action==='logout'){daExec($db,'DELETE FROM delta_app_sessions WHERE token_hash=?','s',$h);daRespond(200,['ok'=>true]);}
         $a=daAccount($db,(int)$s['account_id']);if(!daAllowed($a))daRespond(401,['error'=>'session']);
     }else daRespond(400,['error'=>'action']);
-    daRespond(200,['token'=>$token,'username'=>$a['username'],'configs'=>daCatalog($db),'quota_enforced'=>false,'gb'=>(int)$a['gb'],'expires'=>(int)$a['expires'],'server_now'=>time(),'created'=>(int)$a['created'],'used_bytes'=>null,'remaining_bytes'=>null]);
+    $mapping=daPgMap($db,(int)$a['id']);
+    if(!$mapping||$mapping['state']!=='ready')daRespond(409,['error'=>'dedicated_required']);
+    $v=daPgLive($db,$a,true);
+    // Recheck after network I/O; revoked sessions never receive configs.
+    $fresh=daAccount($db,(int)$a['id']);
+    if(!daAllowed($fresh)||!daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND account_id=? AND expires>?','sii',hash('sha256',$token),(int)$a['id'],time()))daRespond(401,['error'=>'session']);
+    daRespond(200,['token'=>$token,'username'=>$a['username'],'configs'=>$v['configs'],'quota_enforced'=>true,'gb'=>(int)$a['gb'],'expires'=>$v['expires'],'server_now'=>time(),'created'=>(int)$a['created'],'used_bytes'=>$v['used_bytes'],'remaining_bytes'=>$v['remaining_bytes'],'limit_bytes'=>$v['limit_bytes'],'can_connect'=>$v['can_connect'],'panel_status'=>$v['panel_status']]);
 }catch(Throwable $e){daRespond(503,['error'=>'unavailable']);}

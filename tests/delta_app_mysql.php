@@ -40,3 +40,11 @@ daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES
 ok(daDeleteAccount($db,$aid));ok(daAccount($db,$aid)===null);ok(!daRow($db,'SELECT account_id FROM delta_app_sessions WHERE account_id=?','i',$aid));ok(!daDeleteAccount($db,$aid));
 ok(daIranDate(1710909000)==='1403/01/01 11:40:00' || str_starts_with(daIranDate(1710909000),'1403/01/01'));
 echo "Delta shared catalog, extraction, account independence and hashes OK\n";
+
+$fake=['gb'=>10,'expires'=>time()+3600,'active'=>1];
+$j=['data_limit'=>10*1073741824,'used_traffic'=>12345,'expire'=>gmdate('c',$fake['expires']),'status'=>'active','data_limit_reset_strategy'=>'no_reset'];
+$v=daPgMetrics($fake,$j);ok($v['can_connect']&&$v['remaining_bytes']===10*1073741824-12345);
+$j['used_traffic']=$j['data_limit'];ok(!daPgMetrics($fake,$j)['can_connect']);
+$j['data_limit']=0;$bad=false;try{daPgMetrics($fake,$j);}catch(RuntimeException $e){$bad=true;}ok($bad);
+ok(daPgBase('https://panel.example:8000/dashboard/')==='https://panel.example:8000');
+ok(daPgSub(['base'=>'https://panel.example:8000'],['subscription_url'=>'/sub/abc.def'])==='https://panel.example:8000/sub/abc.def');

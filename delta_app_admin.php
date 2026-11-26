@@ -7,9 +7,9 @@ function daSend(string $txt,array $rows=[]): void {sendMessage($txt,$rows?daKeys
 function daHome(): void {
     global $botUrl;
     $endpoint=rtrim((string)$botUrl,'/').'/delta_app_api.php';
-    daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nساب‌های مشترک برای تمام حساب‌ها؛ حجم پلن فعلاً سقف اجرایی نیست.",[
+    daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر حساب جدید دارای ساب اختصاصی پسارگارد است.",[
         daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
-        daBtn('🔗 ساب‌های مشترک','da_stock_0'),daBtn('➕ افزودن اشتراک','da_addstock'),
+        daBtn('🖥 پنل پسارگارد برنامه','da_pg'),daBtn('⚙️ انتخاب پنل و گروه','da_pgset'),
         daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser')]);
 }
 function daList(mysqli $db,string $kind,int $page): void {
@@ -56,13 +56,16 @@ function daSearchResults(mysqli $db,string $prefix,int $page=0): void {
 }
 function daUser(mysqli $db,int $id): void {
     $a=daAccount($db,$id);if(!$a){daSend('کاربر یافت نشد.');return;}
-    $left=daRemainingSeconds((int)$a['expires']);
+    $m=daPgMap($db,$id);$left=daRemainingSeconds((int)$a['expires']);
     $remaining=intdiv($left,86400).' روز و '.intdiv($left%86400,3600).' ساعت و '.intdiv($left%3600,60).' دقیقه و '.($left%60).' ثانیه';
-    $status=!$a['active']?'غیرفعال':($left>0?'فعال':'منقضی');
-    daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$a['id']."\nتاریخ ایجاد حساب: ".daIranDate((int)$a['created'])."\nتاریخ پایان: ".daIranDate((int)$a['expires'])."\nزمان باقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".$a['gb']." GB\nمصرف: قابل اندازه‌گیری مستقل نیست\nحجم باقی‌مانده: نامشخص\nوضعیت: ".$status."\nسرورها: فهرست مشترک\nرمز قبلی قابل مشاهده نیست.",[
-        daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id),
-        daBtn($a['active']?'⛔ غیرفعال کردن ورود':'✅ فعال کردن ورود','da_ut_'.$id),
-        daBtn('🗑 حذف کامل کاربر','da_delask_'.$id),daBtn('بازگشت','da_users_0')]);
+    $fmt=fn($b)=>number_format($b/1073741824,4).' GB';
+    $traffic='مصرف: نامشخص (پنل تأیید نشده)';$status=$m?($m['state']==='pending'?'در انتظار ساخت':'نامشخص'):'قدیمی؛ نیازمند حساب اختصاصی';
+    if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
+    $rows=[daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id)];
+    if($m&&$m['state']==='pending')$rows[]=daBtn('🔄 بازیابی ساخت','da_pgretry_'.$id);
+    if($m&&$m['state']==='ready')$rows[]=daBtn($a['active']?'⛔ غیرفعال کردن':'✅ فعال کردن','da_ut_'.$id);
+    $rows[]=daBtn('🗑 حذف کامل کاربر','da_delask_'.$id);$rows[]=daBtn('بازگشت','da_users_0');
+    daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$id."\nتاریخ ایجاد: ".daIranDate((int)$a['created'])."\nپایان: ".daIranDate((int)$a['expires'])."\nباقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".$a['gb']." GB\n".$traffic."\nوضعیت: ".$status."\nرمز قبلی قابل مشاهده نیست.",$rows);
 }
 function deltaAppAdminHandle(): bool {
     global $connection,$from_id,$admin,$chat_id,$isChildBot,$update,$data,$text,$userInfo,$botToken,$message_id;
@@ -80,6 +83,16 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if($cb==='da_pg'||$cb==='da_pgset'){
+            $setting=daRow($connection,'SELECT * FROM delta_app_pg_settings WHERE id=1');
+            $txt="پنل اختصاصی برنامه:\n".($setting?'پنل #'.$setting['server_id'].' | گروه #'.$setting['group_id']:'تنظیم نشده');
+            $rows=daRows($connection,"SELECT id FROM server_config WHERE type='pasarguard' ORDER BY id LIMIT 50");
+            foreach($rows as $r)$txt.="\nپنل موجود #".$r['id'];
+            if($cb==='da_pgset'){setUser('da_pgset');$txt.="\nشماره پنل | شماره گروه را بفرستید. مثال: 1 | 2";}
+            else setUser();
+            daSend($txt,[daBtn('انتخاب پنل و گروه','da_pgset'),daBtn('بازگشت','da_home')]);return true;
+        }
+        if($cb==='da_addstock'||str_starts_with($cb,'da_stock_')||preg_match('/^da_(st|sf|sdask|sd)_/',$cb)||$step==='da_addstock'){setUser();daHome();return true;}
         if($cb==='da_search'){setUser('da_search');daSend('نام کاربری یا ابتدای آن را بفرستید.',[daBtn('بازگشت','da_users_0')]);return true;}
         if(preg_match('/^da_searchpage_(\d{1,5})$/D',$cb,$m)&&str_starts_with($step,'da_searchq_')){
             daSearchResults($connection,substr($step,11),(int)$m[1]);return true;
@@ -92,12 +105,13 @@ function deltaAppAdminHandle(): bool {
             $p=daRow($connection,'SELECT * FROM delta_app_plans WHERE id=? AND active=1','i',(int)$m[1]);
             if(!$p)throw new InvalidArgumentException('پلن فعال پیدا نشد.');
             setUser();
-            $a=daAutoCreate($connection,(int)$m[1]);
+            $a=daPgNew($connection,(int)$m[1]);
+            if(!$a['ready']){daSend('ساخت در پنل هنوز تأیید نشده. حساب محلی حفظ شد؛ از جزئیات کاربر بازیابی ساخت را بزنید.',[daBtn('جزئیات حساب','da_u_'.$a['id'])]);return true;}
             daSend("✅ حساب ساخته شد\nنام: <code>".daEsc($a['username'])."</code>\nرمز: <code>".daEsc($a['password'])."</code>\nحجم: ".$p['gb']." GB\nاعتبار: ".$p['days']." روز",[daBtn('➕ ساخت کاربر دیگر','da_adduser'),daBtn('کاربران','da_users_0')]);
             return true;
         }
         if(preg_match('/^da_(plans|stock|users)_(\d{1,5})$/D',$cb,$m)){setUser();daList($connection,$m[1],(int)$m[2]);return true;}
-        if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset|delask|del)_(\d{1,10})$/D',$cb,$m)){
+        if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset|delask|del|pgretry)_(\d{1,10})$/D',$cb,$m)){
             $id=(int)$m[2];setUser();
             switch($m[1]){
                 case 'pt': daExec($connection,'UPDATE delta_app_plans SET active=1-active WHERE id=?','i',$id);daList($connection,'plans',0);break;
@@ -107,11 +121,12 @@ function deltaAppAdminHandle(): bool {
                 case 'sd': daExec($connection,'DELETE FROM delta_app_sources WHERE id=?','i',$id);daList($connection,'stock',0);break;
                 case 'delask':
                     $a=daAccount($connection,$id);if(!$a)throw new InvalidArgumentException('کاربر یافت نشد.');
-                    daSend('حساب '.daEsc($a['username']).' و نشست‌های آن برای همیشه حذف شوند؟ ساب مشترک و اطلاعات فروش ربات تغییر نمی‌کنند.',[daBtn('تأیید حذف کامل','da_del_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
+                    daSend('حساب '.daEsc($a['username']).' و ساب اختصاصی آن برای همیشه حذف شوند؟',[daBtn('تأیید حذف کامل','da_del_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
                 case 'del':
-                    daSend(daDeleteAccount($connection,$id)?'✅ حساب و نشست‌های آن حذف شد.':'حساب قبلاً حذف شده است.');
+                    daPgChange($connection,$id,true);daSend('✅ حذف حساب تأیید شد.');
                     daList($connection,'users',0);break;
-                case 'ut': daExec($connection,'UPDATE delta_app_accounts SET active=1-active WHERE id=?','i',$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daUser($connection,$id);break;
+                case 'ut': daPgChange($connection,$id);daUser($connection,$id);break;
+                case 'pgretry': daPgProvision($connection,$id);daSend('ساخت تأیید شد؛ برای دریافت رمز جدید، بازنشانی رمز را بزنید.',[daBtn('جزئیات','da_u_'.$id)]);break;
                 case 'rename':setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
                 case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
                 case 'reset':
@@ -124,7 +139,10 @@ function deltaAppAdminHandle(): bool {
         $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
-        if($step==='da_search'||str_starts_with($step,'da_searchq_')){
+        if($step==='da_pgset'){
+            if(!preg_match('/^(\d{1,9})\s*\|\s*(\d{1,9})$/D',$input,$m)||(int)$m[1]<1||(int)$m[2]<1)throw new InvalidArgumentException('فرمت: شماره پنل | شماره گروه');
+            daPgConfigure($connection,(int)$m[1],(int)$m[2]);setUser();daSend('✅ پنل و گروه تأیید و ذخیره شدند.',[daBtn('بازگشت','da_home')]);
+        }elseif($step==='da_search'||str_starts_with($step,'da_searchq_')){
             $prefix=strtolower($input);if(!preg_match('/^[a-z0-9_]{1,48}$/D',$prefix))throw new InvalidArgumentException('نام کاربری انگلیسی را وارد کنید.');
             setUser('da_searchq_'.$prefix);daSearchResults($connection,$prefix);
         }elseif($step==='da_addplan'){
