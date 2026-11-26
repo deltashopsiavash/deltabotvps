@@ -63,7 +63,7 @@ if($rewaredTime>0 && $rewaredChannel != null){
 
         $todayStart = strtotime('today');
         $topText = "";
-        $stmt = $connection->prepare("SELECT p.user_id, SUM(p.price) AS total, COUNT(*) AS cnt, u.name, u.username FROM pays p LEFT JOIN users u ON u.userid=p.user_id WHERE p.request_date>=? AND p.type<>'INCREASE_WALLET' AND p.state IN ('paid','approved','paid_with_wallet') GROUP BY p.user_id ORDER BY total DESC LIMIT 5");
+        $stmt = $connection->prepare("SELECT p.user_id, SUM(p.price) AS total, COUNT(*) AS cnt, u.name, u.username FROM pays p LEFT JOIN users u ON u.userid=p.user_id WHERE p.request_date>=? AND p.type<>'INCREASE_WALLET' AND o.method='card' AND p.state IN ('paid','approved') GROUP BY p.user_id ORDER BY total DESC LIMIT 5");
         if($stmt){
             $stmt->bind_param("i",$todayStart); $stmt->execute(); $top=$stmt->get_result(); $stmt->close();
             $rank=1;
