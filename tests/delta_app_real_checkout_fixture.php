@@ -193,4 +193,67 @@ check(daTrialReserve($db,1001,true)===$t2,'delivered trial remains one-time');
 rejected(fn()=>daTrialRelease($db,1001),'active delivered trial cannot be released');
 
 rejected(fn()=>daTrialReserve($db,1002,true),'disabled trial blocks new users');
+
+// Full renewals use the same existing account, a separate real invoice,
+// and a fixed absolute remote target rather than resetting traffic twice.
+$original=daAccount($db,$trialAid);$originalHash=$original['password_hash'];
+$normal=daRealInvoice($db,1001,1);
+$renew=daRealInvoice($db,1001,1,$t2);
+check($normal!==$renew&&daRenewLink($db,$renew)['root_order_id']==$t2,'renewal and new purchase invoices are isolated');
+check(daRealInvoice($db,1001,1,$t2)===$renew,'same account reuses open renewal invoice');
+rejected(fn()=>daRealInvoice($db,1002,1,$t2),'cross-owner renewal invoice rejected');
+daRealCancel($db,1001,$normal);
+$ro=daRealOrder($db,1001,$renew);$rr=daRenewLink($db,$renew);
+$remote=['used'=>1234567,'limit'=>daQuotaBytes('0.2'),'expires'=>(int)$original['expires']];
+rejected(fn()=>daRenewStage($db,$ro,$rr,$remote),'unpaid renewal cannot stage a panel target');
+$del=daRealDeleteChallenge($db,1001,$t2);daRealDeleteAdvance($db,1001,$t2,$del);
+rejected(fn()=>daRealDeleteService($db,1001,$t2,$del),'open renewal blocks service deletion');
+check(daAccount($db,$trialAid)!==null,'blocked deletion leaves trial account intact');
+daRealWallet($db,1001,$renew);daRealWallet($db,1001,$renew);
+check(daRealWalletPreview($db,1001,0)['balance']===40000,'renewal debits wallet exactly once');
+$ro=daRealSyncPaid($db,$ro['pay_hash']);
+rejected(fn()=>daRealDeliver($db,1001,$renew),'renewal cannot provision a new user');
+$rr=daRenewStage($db,$ro,$rr,$remote);
+check((int)$rr['baseline']===1234567&&(int)$rr['target_limit']===1234567+daQuotaBytes('10'),'renewal target replaces allowance while preserving raw panel counter');
+$retry=daRenewStage($db,$ro,$rr,array_replace($remote,['used'=>1239999]));
+check($retry===$rr,'retry keeps original absolute target');
+rejected(fn()=>daRenewFinish($db,$ro,$rr,$remote),'cannot complete until remote target verified');
+$confirmed=['used'=>1234567+777,'limit'=>(int)$rr['target_limit'],'expires'=>(int)$rr['target_expires']];
+check(daRenewFinish($db,$ro,$rr,$confirmed),'verified renewal completed');
+check(!daRenewFinish($db,$ro,$rr,$confirmed),'repeat completion does not extend twice');
+$now=daAccount($db,$trialAid);
+check($now['username']===$original['username']&&$now['password_hash']===$originalHash&&daQuotaLabel($now['gb'])==='10'&&(int)$now['expires']===(int)$rr['target_expires'],'renewal preserves username and password, updates existing allowance');
+check(daTrialReserve($db,1001,true)===$t2,'renewal does not release free trial eligibility');
+check(daRenewLatest($db,$t2)['id']==$renew,'renewed plan visible via original service');
+$v=daPgMetrics($now,['data_limit'=>$confirmed['limit'],'used_traffic'=>$confirmed['used'],'expire'=>gmdate('c',$confirmed['expires']),'status'=>'active','data_limit_reset_strategy'=>'no_reset']);
+check($v['limit_bytes']===daQuotaBytes('10')&&$v['used_bytes']===777&&$v['remaining_bytes']===daQuotaBytes('10')-777,'renewal exposes new-plan usage rather than lifetime usage');
+// News publishing and per-account state. No Telegram or browser network calls.
+$author=999;
+function fixtureNews(mysqli $db,int $author,string $kind,string $body,string $url=''): int {
+    $t=daNewsDraft($db,$author,$kind,$body);
+    if($url!=='')daNewsDraftLink($db,$author,$t,$url,'Download');
+    $id=daNewsPublish($db,$author,$t);
+    rejected(fn()=>daNewsPublish($db,$author,$t),'publish confirmation cannot be replayed');
+    return $id;
+}
+$n1=fixtureNews($db,$author,'inbox','News one');
+$n2=fixtureNews($db,$author,'inbox','News two','https://example.invalid/update.apk');
+$n3=fixtureNews($db,$author,'inbox','News three');
+check(daNewsFeed($db,$trialAid)['unread']===3,'three announcements produce unread count three');
+daNewsSeen($db,$trialAid,$n2,'inbox');daNewsSeen($db,$trialAid,$n2,'inbox');
+check(daNewsFeed($db,$trialAid)['unread']===2&&daNewsFeed($db,99999)['unread']===3,'read status is idempotent and isolated per account');
+$f1=fixtureNews($db,$author,'float','First floating');
+check(daNewsFeed($db,$trialAid)['floating']['id']===$f1,'floating announcement delivered');
+daNewsSeen($db,$trialAid,$f1,'float');
+check(daNewsFeed($db,$trialAid)['floating']===null&&daNewsFeed($db,99999)['floating']['id']===$f1,'per-account permanent dismissal');
+$f2=fixtureNews($db,$author,'float','Second floating','https://example.invalid/update.apk');
+check(daNewsFeed($db,$trialAid)['floating']['id']===$f2,'new floating announcement overrides old dismissal');
+check(daNewsFeed($db,$trialAid)['unread']===2,'floating items do not inflate bell count');
+daNewsSeen($db,$trialAid,$f2,'inbox');
+check(daNewsFeed($db,$trialAid)['floating']['id']===$f2,'wrong-kind acknowledgement ignored');
+daNewsArchive($db,$n1,'inbox');
+check(daNewsFeed($db,$trialAid)['unread']===1,'archiving unread item updates count');
+rejected(fn()=>daNewsUrl('javascript:alert(1)'),'unsafe link schemes rejected');
+rejected(fn()=>daNewsUrl('http://example.invalid/test'),'non-HTTPS link rejected');
+rejected(fn()=>daNewsUrl('https://user:pass@example.invalid/test'),'URL credentials rejected');
 echo "All isolated checkout fixture checks passed.\n";
