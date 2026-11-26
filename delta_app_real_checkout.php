@@ -15,6 +15,12 @@ function daRealSchema(mysqli $db): void {
       approved_at BIGINT UNSIGNED NULL, delivered_at BIGINT UNSIGNED NULL,
       INDEX(buyer,id), INDEX(buyer,plan_id,state)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"))throw new RuntimeException('real order schema');
+    if(!$db->query("CREATE TABLE IF NOT EXISTS delta_app_delete_requests (
+      order_id BIGINT UNSIGNED PRIMARY KEY,buyer BIGINT NOT NULL,account_id INT UNSIGNED NOT NULL,
+      token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      stage TINYINT UNSIGNED NOT NULL,expires BIGINT UNSIGNED NOT NULL
+    ) ENGINE=InnoDB"))throw new RuntimeException('delete request schema');
+
 }
 function daRealOrder(mysqli $db,int $buyer,int $id): array {
     $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=?','ii',$buyer,$id);
@@ -136,14 +142,83 @@ function daRealDeliver(mysqli $db,int $buyer,int $id): array {
 function daRealResetPassword(mysqli $db,int $buyer,int $order): string {
     $o=daRealOrder($db,$buyer,$order);
     if($o['state']!=='delivered'||!daAccount($db,(int)$o['account_id']))throw new InvalidArgumentException('حساب آماده نیست.');
-    $id=(int)$o['account_id'];$p=daPassword();$db->begin_transaction();
-    try{
-        daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
-        daExec($db,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);
-        daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);
-        daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
-        $db->commit();return $p;
-    }catch(Throwable $e){$db->rollback();throw $e;}
+    $id=(int)$o['account_id'];
+    return daPgLocked($db,$id,function()use($db,$buyer,$order,$id){
+        $p=daPassword();$db->begin_transaction();
+        try{
+            $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$order,$buyer);
+            if(!$o||$o['state']!=='delivered'||(int)$o['account_id']!==$id)throw new InvalidArgumentException('حساب آماده نیست.');
+            $a=daRow($db,'SELECT id,username FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
+            if(!$a)throw new InvalidArgumentException('حساب یافت نشد.');
+            daExec($db,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);
+            daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);
+            daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
+            $db->commit();
+        }catch(Throwable $e){$db->rollback();throw $e;}
+        try{
+            $name=htmlspecialchars($a['username'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+            sendToAdmins("🔐 گزارش تغییر رمز برنامه دلتا\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری برنامه: <code>".$name."</code>\n📅 تاریخ و ساعت: ".daIranDate(time())." (ایران)\n".deltaTrackingLine($o['pay_hash']),null,'HTML');
+        }catch(Throwable $e){error_log('Delta password change report failed');}
+        return $p;
+    });
+}
+function daRealWalletPreview(mysqli $db,int $buyer,int $price): array {
+    $r=daRow($db,'SELECT wallet FROM users WHERE userid=? LIMIT 1','i',$buyer);
+    if(!$r)throw new InvalidArgumentException('کاربر پیدا نشد.');
+    $balance=(int)$r['wallet'];
+    return ['balance'=>$balance,'after'=>$balance-$price];
+}
+function daRealDeleteChallenge(mysqli $db,int $buyer,int $order): string {
+    $o=daRealOrder($db,$buyer,$order);
+    if(!in_array($o['state'],['delivered','deleting'],true)||!(int)$o['account_id'])throw new InvalidArgumentException('سرویس قابل حذف نیست.');
+    if($o['state']==='delivered'&&!daAccount($db,(int)$o['account_id']))throw new InvalidArgumentException('حساب یافت نشد.');
+    $token=bin2hex(random_bytes(12));
+    daExec($db,'INSERT INTO delta_app_delete_requests(order_id,buyer,account_id,token_hash,stage,expires) VALUES(?,?,?,?,1,?) ON DUPLICATE KEY UPDATE buyer=VALUES(buyer),account_id=VALUES(account_id),token_hash=VALUES(token_hash),stage=1,expires=VALUES(expires)','iiisi',$order,$buyer,(int)$o['account_id'],hash('sha256',$token),time()+300);
+    return $token;
+}
+function daRealDeleteAdvance(mysqli $db,int $buyer,int $order,string $token): void {
+    $o=daRealOrder($db,$buyer,$order);
+    if(!in_array($o['state'],['delivered','deleting'],true))throw new InvalidArgumentException('سرویس قابل حذف نیست.');
+    $s=daQuery($db,'UPDATE delta_app_delete_requests SET stage=2 WHERE order_id=? AND buyer=? AND account_id=? AND token_hash=? AND stage=1 AND expires>=?','iiisi',$order,$buyer,(int)$o['account_id'],hash('sha256',$token),time());
+    $ok=$s->affected_rows===1;$s->close();
+    if(!$ok)throw new InvalidArgumentException('تأیید منقضی یا نامعتبر است؛ از ابتدا اقدام کنید.');
+}
+function daRealDeleteCancel(mysqli $db,int $buyer,int $order,string $token): void {
+    daRealOrder($db,$buyer,$order);
+    daExec($db,'DELETE FROM delta_app_delete_requests WHERE order_id=? AND buyer=? AND token_hash=?','iis',$order,$buyer,hash('sha256',$token));
+}
+function daRealDeleteService(mysqli $db,int $buyer,int $order,string $token): void {
+    $o=daRealOrder($db,$buyer,$order);$id=(int)$o['account_id'];
+    if(!$id)throw new InvalidArgumentException('حساب یافت نشد.');
+    daPgLocked($db,$id,function()use($db,$buyer,$order,$token,$id){
+        $db->begin_transaction();
+        try{
+            $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$order,$buyer);
+            if(!$o||!in_array($o['state'],['delivered','deleting'],true)||(int)$o['account_id']!==$id)throw new InvalidArgumentException('سرویس قابل حذف نیست.');
+            $s=daQuery($db,'DELETE FROM delta_app_delete_requests WHERE order_id=? AND buyer=? AND account_id=? AND token_hash=? AND stage=2 AND expires>=?','iiisi',$order,$buyer,$id,hash('sha256',$token),time());
+            $ok=$s->affected_rows===1;$s->close();
+            if(!$ok)throw new InvalidArgumentException('تأیید نهایی معتبر نیست؛ دوباره از ابتدا اقدام کنید.');
+            $a=daAccount($db,$id);
+            if(!$a&&$o['state']!=='deleting')throw new InvalidArgumentException('حساب یافت نشد.');
+            $map=daPgMap($db,$id);
+            if(($a&&(!$map||$map['panel_kind']!=='app'))||(!$a&&$map))throw new RuntimeException('account mapping requires admin review');
+
+            daExec($db,"UPDATE delta_app_real_orders SET state='deleting' WHERE id=?",'i',$order);
+            $db->commit();
+        }catch(Throwable $e){$db->rollback();throw $e;}
+        // On a network failure leave the order in deleting, never recreate or refund.
+        if($a)daPgChangeLocked($db,$id,'delete');
+        $db->begin_transaction();
+        try{
+            daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
+            daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);
+            daExec($db,"UPDATE delta_app_real_orders SET state='deleted' WHERE id=? AND buyer=? AND state='deleting'",'ii',$order,$buyer);
+            $db->commit();
+        }catch(Throwable $e){$db->rollback();throw $e;}
+        try{
+            sendToAdmins("🗑 حذف حساب برنامه دلتا توسط مشتری\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری برنامه: ".htmlspecialchars($a['username']??'حساب حذف‌شده',ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8')."\n📅 تاریخ و ساعت: ".daIranDate(time())." (ایران)\n".deltaTrackingLine($o['pay_hash']),null,'HTML');
+        }catch(Throwable $e){error_log('Delta delete report failed');}
+    });
 }
 
 function daRealHasCard(mysqli $db,string $hash): bool {
@@ -194,10 +269,9 @@ function daRealDeliverPaidHash(mysqli $db,string $hash): array {
     if($r['password']!==null)$msg.="\nرمز: <code>".$esc($r['password'])."</code>";
     else $msg.="\nدر صورت نیاز، رمز را از سرویس‌های من تغییر دهید.";
     $msg.="\nمبلغ: ".number_format((int)$o['price'])." تومان";
-    $keys=json_encode(['inline_keyboard'=>[[['text'=>'👤 سرویس من','callback_data'=>'dar_service_'.$o['id']]]]],JSON_UNESCAPED_UNICODE);
-    $sent=sendMessage($msg,$keys,'HTML',(int)$o['buyer']);
+    $sent=sendMessage($msg,null,'HTML',(int)$o['buyer']);
     if($r['password']!==null){
-        sendToAdmins('✅ خرید موفق برنامه دلتا'."\n".deltaUserShortInfo((int)$o['buyer'])."\n📦 پلن: ".$esc($o['name'])."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n💳 روش پرداخت: ".($o['method']==='wallet'?'موجودی':'کارت به کارت')."\n".deltaTrackingLine($hash),null,'HTML');
+        sendToAdmins('✅ خرید موفق برنامه دلتا'."\n".deltaUserShortInfo((int)$o['buyer'])."\n👤 نام کاربری برنامه: <code>".$esc($a['username'])."</code>\n📦 پلن: ".$esc($o['name'])."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n💳 روش پرداخت: ".($o['method']==='wallet'?'موجودی':'کارت به کارت')."\n".deltaTrackingLine($hash),null,'HTML');
     }
     return ['order'=>$o,'notified'=>is_object($sent)&&!empty($sent->ok)];
 }

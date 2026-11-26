@@ -176,8 +176,8 @@ function deltaAppAdminHandle(): bool {
             }
             if($cb==='dar_orders'){daSend('اشتراک اختصاصی برنامه دلتا',[daBtn('خرید سرویس','dar_categories'),daBtn('سرویس‌های من','dar_mine')]);return true;}
             if($cb==='dar_mine'){
-                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning','paid') ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
-                foreach($orders as $o)$rows[]=daBtn(($o['state']==='delivered'?'👤 ':'⏳ ').($o['username']??'DELTA-'.$o['id']),($o['state']==='delivered'?'dar_service_':'dar_invoice_').$o['id']);
+                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning','paid','deleting') AND (o.state<>'delivered' OR a.id IS NOT NULL) ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
+                foreach($orders as $o)$rows[]=daBtn(($o['state']==='deleting'?'🗑 در انتظار حذف: ':($o['state']==='delivered'?'👤 ':'⏳ ')).($o['username']??'DELTA-'.$o['id']),(in_array($o['state'],['delivered','deleting'],true)?'dar_service_':'dar_invoice_').$o['id']);
                 $rows[]=daBtn('بازگشت','dar_home');daSend($orders?'سرویس‌های من':'هنوز سرویس خریداری‌شده ندارید.',$rows);return true;
             }
             if(preg_match('/^dar_service_(\d+)$/D',$cb,$m)){daRealServiceView($connection,(int)$from_id,(int)$m[1]);return true;}
@@ -188,6 +188,26 @@ function deltaAppAdminHandle(): bool {
             if(preg_match('/^dar_kick_(\d+)_(\d+)$/D',$cb,$m)){
                 $o=daRealOrder($connection,(int)$from_id,(int)$m[1]);if($o['state']!=='delivered')throw new InvalidArgumentException('سرویس آماده نیست.');
                 daDeviceRevoke($connection,(int)$o['account_id'],(int)$m[2]);daRealDevicesView($connection,(int)$from_id,(int)$m[1]);return true;
+            }
+            if(preg_match('/^dar_delask_(\d+)$/D',$cb,$m)){
+                $id=(int)$m[1];$o=daRealOrder($connection,(int)$from_id,$id);
+                $token=daRealDeleteChallenge($connection,(int)$from_id,$id);
+                $a=daAccount($connection,(int)$o['account_id']);
+                daSend("⚠️ حذف حساب برنامه دلتا\nنام کاربری: <code>".daEsc($a['username']??'در انتظار حذف')."</code>\nبا حذف، اشتراک و حجم باقی‌مانده از دست می‌رود و مبلغ خرید به کیف پول برنمی‌گردد.\nآیا مطمئن هستید؟ (۱ از ۲)",[daBtn('ادامه حذف','dar_delnext_'.$id.'_'.$token),daBtn('انصراف','dar_delno_'.$id.'_'.$token)]);return true;
+            }
+            if(preg_match('/^dar_delnext_(\d+)_([a-f0-9]{24})$/D',$cb,$m)){
+                $id=(int)$m[1];daRealDeleteAdvance($connection,(int)$from_id,$id,$m[2]);
+                daSend("⚠️ تأیید نهایی حذف (۲ از ۲)\nاین عمل غیرقابل بازگشت است. حساب برنامه، سرویس پنل و نشست‌های دستگاه‌ها حذف می‌شوند. ادامه می‌دهید؟",[daBtn('🗑 حذف قطعی حساب','dar_delyes_'.$id.'_'.$m[2]),daBtn('انصراف','dar_delno_'.$id.'_'.$m[2])]);return true;
+            }
+            if(preg_match('/^dar_delno_(\d+)_([a-f0-9]{24})$/D',$cb,$m)){
+                daRealDeleteCancel($connection,(int)$from_id,(int)$m[1],$m[2]);daRealServiceView($connection,(int)$from_id,(int)$m[1]);return true;
+            }
+            if(preg_match('/^dar_delyes_(\d+)_([a-f0-9]{24})$/D',$cb,$m)){
+                $id=(int)$m[1];
+                try{daRealDeleteService($connection,(int)$from_id,$id,$m[2]);}
+                catch(InvalidArgumentException $e){throw $e;}
+                catch(Throwable $e){error_log('Delta customer deletion pending');daSend('حذف کامل نشده است؛ از سرویس‌های من وضعیت را بررسی کنید و در صورت نیاز دوباره اقدام کنید.',[daBtn('سرویس‌های من','dar_mine')]);return true;}
+                daSend('✅ حساب برنامه دلتا و اشتراک مربوط به آن حذف شد. سابقه خرید حفظ شده است.',[daBtn('بازگشت','dar_mine')]);return true;
             }
             if(preg_match('/^dar_resetask_(\d+)$/D',$cb,$m)){daRealOrder($connection,(int)$from_id,(int)$m[1]);daSend('رمز جدید ساخته و همه نشست‌ها لغو شوند؟',[daBtn('✅ تأیید','dar_reset_'.$m[1]),daBtn('بازگشت','dar_service_'.$m[1])]);return true;}
             if(preg_match('/^dar_reset_(\d+)$/D',$cb,$m)){
@@ -401,10 +421,17 @@ function deltaAppAdminHandle(): bool {
 
 function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$rows=[];
-    $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده'];
+    $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده','deleting'=>'در انتظار حذف','deleted'=>'حذف شده'];
     $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".$o['gb']." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
     if(!$p)throw new RuntimeException('payment missing');
+    $wallet=daRealWalletPreview($db,$buyer,(int)$o['price']);
+    $txt.="\n💵موجودی شما: ".number_format($wallet['balance'])." تومان\n💸موجودی بعد از خرید: ";
+    if($o['state']==='pending'&&$p['state']==='pending'){
+        if($o['method']==='card')$txt.=number_format($wallet['balance'])." تومان (کارت‌به‌کارت)";
+        elseif($wallet['after']<0)$txt.="موجودی ناکافی (کسری ".number_format(-$wallet['after'])." تومان)";
+        else $txt.=number_format($wallet['after'])." تومان (پرداخت با موجودی)";
+    }else $txt.="— (موجودی فعلی در بالا)";
     if(in_array($p['state'],['declined','rejected','cancelled_by_user'],true)){
         $txt.="\nوضعیت پرداخت: ".daEsc(deltaOrderStateLabel($p['state']));
     }elseif($p['state']==='have_sent'){
@@ -429,11 +456,12 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
 }
 function daRealServiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
+    if($o['state']==='deleting'){daSend('حذف سرویس هنوز کامل نشده است.',[daBtn('🗑 ادامه حذف','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);return;}
     if($o['state']!=='delivered'||!$a){daSend('حساب آماده یا موجود نیست.',[daBtn('بازگشت','dar_mine')]);return;}
     $status='نامشخص';$usage='نامشخص';$limit=(int)$a['gb']*1073741824;$expiry=(int)$a['expires'];
     try{$v=daPgLive($db,$a);$status=$v['can_connect']?'فعال':'غیرفعال';$usage=number_format($v['used_bytes']/1073741824,3).' GB';$limit=$v['limit_bytes'];$expiry=$v['expires'];}catch(Throwable $e){}
     $txt="👤 <code>".daEsc($a['username'])."</code>\nاشتراک: ".daEsc($o['name'])."\nشماره سفارش: ".daEsc($o['pay_hash'])."\nوضعیت: ".$status."\nحجم: ".number_format($limit/1073741824,3)." GB\nمصرف: ".$usage."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nانقضا: ".daIranDate($expiry)."\nدستگاه: ".count(daDeviceList($db,(int)$a['id']))." / ".$a['device_limit'];
-    daSend($txt,[daBtn('📱 دستگاه‌های متصل','dar_devices_'.$id),daBtn('🔑 تغییر رمز','dar_resetask_'.$id),daBtn('بازگشت','dar_mine')]);
+    daSend($txt,[daBtn('📱 دستگاه‌های متصل','dar_devices_'.$id),daBtn('🔑 تغییر رمز','dar_resetask_'.$id),daBtn('🗑 حذف یوزر','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);
 }
 function daRealDevicesView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
