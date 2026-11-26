@@ -4,6 +4,8 @@ declare(strict_types=1);
 function daSchema(mysqli $db): void {
     foreach ([
         "CREATE TABLE IF NOT EXISTS delta_app_plans (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL, gb INT UNSIGNED NOT NULL, days INT UNSIGNED NOT NULL, price BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_categories (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,name VARCHAR(80) NOT NULL UNIQUE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_admin_draft (id TINYINT PRIMARY KEY,gb INT UNSIGNED NOT NULL DEFAULT 0,days INT UNSIGNED NOT NULL DEFAULT 0,price BIGINT UNSIGNED NOT NULL DEFAULT 0,devices INT UNSIGNED NOT NULL DEFAULT 1,plan_id INT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_stock (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, plan_id INT UNSIGNED NOT NULL, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, active TINYINT NOT NULL DEFAULT 1, INDEX(plan_id,active)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
@@ -19,6 +21,7 @@ function daSchema(mysqli $db): void {
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
+    if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_plans' AND COLUMN_NAME='category_id'"))$db->query("ALTER TABLE delta_app_plans ADD COLUMN category_id INT UNSIGNED NULL");
     foreach(['delta_app_plans','delta_app_accounts'] as $table){
         if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='device_limit'",'s',$table))$db->query("ALTER TABLE `$table` ADD COLUMN device_limit INT UNSIGNED NOT NULL DEFAULT 1");
     }
@@ -504,6 +507,18 @@ function daDeviceRevoke(mysqli $db,int $id,int $device): void {
         daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
         $r=daRow($db,'SELECT token_hash FROM delta_app_devices WHERE account_id=? AND id=?','ii',$id,$device);
         if($r){daExec($db,'DELETE FROM delta_app_sessions WHERE token_hash=?','s',$r['token_hash']);daExec($db,'DELETE FROM delta_app_devices WHERE account_id=? AND id=?','ii',$id,$device);}
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+
+function daSetDeviceLimit(mysqli $db,int $id,int $limit): void {
+    if($limit<1||$limit>20)throw new InvalidArgumentException('تعداد دستگاه باید ۱ تا ۲۰ باشد.');
+    $db->begin_transaction();
+    try{
+        if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id))throw new InvalidArgumentException('حساب یافت نشد.');
+        $n=daRow($db,'SELECT COUNT(*) n FROM delta_app_devices WHERE account_id=?','i',$id);
+        if((int)$n['n']>$limit)throw new InvalidArgumentException('ابتدا دستگاه‌های اضافی را خارج کنید.');
+        daExec($db,'UPDATE delta_app_accounts SET device_limit=? WHERE id=?','ii',$limit,$id);
         $db->commit();
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
