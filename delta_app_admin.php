@@ -154,6 +154,21 @@ function deltaAppAdminHandle(): bool {
                 catch(Throwable $e){error_log('Delta trial delivery pending: '.get_class($e));daSend('درخواست شما ثبت شده است؛ تحویل هنوز تکمیل نشده. دوباره همین درخواست را ادامه دهید.',[daBtn('ادامه دریافت','dar_trialgo'),daBtn('بازگشت','dar_home')]);}
                 return true;
             }
+            if(preg_match('/^dar_renew_(\d+)$/D',$cb,$m)){
+                daRenewCategories($connection,(int)$from_id,(int)$m[1]);return true;
+            }
+            if(preg_match('/^dar_rcat_(\d+)_(\d+)$/D',$cb,$m)){
+                $root=(int)$m[1];$a=daRenewTarget($connection,(int)$from_id,$root);
+                $open=daRenewOpen($connection,$root);
+                if($open){daRealInvoiceView($connection,(int)$from_id,(int)$open['id']);return true;}
+                $rows=[];
+                foreach(daRows($connection,'SELECT id,name,price FROM delta_app_plans WHERE active=1 AND category_id=? AND device_limit>=? AND price>0 ORDER BY id','ii',(int)$m[2],(int)$a['device_limit']) as $r)$rows[]=daBtn($r['name'].' - '.number_format((int)$r['price']).' تومان','dar_rplan_'.$root.'_'.$r['id']);
+                $rows[]=daBtn('بازگشت','dar_renew_'.$root);daSend('پلن تمدید را انتخاب کنید.',$rows);return true;
+            }
+            if(preg_match('/^dar_rplan_(\d+)_(\d+)$/D',$cb,$m)){
+                $id=daRealInvoice($connection,(int)$from_id,(int)$m[2],(int)$m[1]);
+                daRealInvoiceView($connection,(int)$from_id,$id);return true;
+            }
             if($cb==='dar_categories'){$rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dar_cat_'.$r['id']);$rows[]=daBtn('بازگشت','dar_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_cat_(\d+)$/D',$cb,$m)){$rows=[];foreach(daRows($connection,'SELECT id,name,price FROM delta_app_plans WHERE active=1 AND category_id=? ORDER BY id','i',(int)$m[1]) as $r)$rows[]=daBtn($r['name'].' - '.number_format((int)$r['price']).' تومان','dar_plan_'.$r['id']);$rows[]=daBtn('بازگشت','dar_categories');daSend('پلن را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_plan_(\d+)$/D',$cb,$m)){
@@ -173,7 +188,9 @@ function deltaAppAdminHandle(): bool {
                 answerQuery('رسید توسط مدیریت بررسی می‌شود.',true);return true;
             }
             if(preg_match('/^dar_change_(\d+)$/D',$cb,$m)){
+                $renew=daRenewLink($connection,(int)$m[1]);
                 daRealCancel($connection,(int)$from_id,(int)$m[1]);
+                if($renew){daRenewCategories($connection,(int)$from_id,(int)$renew['root_order_id']);return true;}
                 $rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dar_cat_'.$r['id']);
                 $rows[]=daBtn('بازگشت','dar_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;
             }
@@ -190,13 +207,13 @@ function deltaAppAdminHandle(): bool {
             }
             if(preg_match('/^dar_deliver_(\d+)$/D',$cb,$m)){
                 $id=(int)$m[1];
-                try{$order=daRealOrder($connection,(int)$from_id,$id);daRealDeliverPaidHash($connection,(string)$order['pay_hash']);daRealServiceView($connection,(int)$from_id,$id);}
+                try{$order=daRealOrder($connection,(int)$from_id,$id);daRealDeliverPaidHash($connection,(string)$order['pay_hash']);$renew=daRenewLink($connection,$id);daRealServiceView($connection,(int)$from_id,$renew?(int)$renew['root_order_id']:$id);}
                 catch(Throwable $e){daSend('تحویل هنوز کامل نشده است؛ وضعیت فاکتور را بررسی کنید و دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
                 return true;
             }
             if($cb==='dar_orders'){daTrialCustomerHome($connection);return true;}
             if($cb==='dar_mine'){
-                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,o.method,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning','paid','deleting') AND (o.state<>'delivered' OR a.id IS NOT NULL) ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
+                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,o.method,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id LEFT JOIN delta_app_renewals r ON r.order_id=o.id WHERE r.order_id IS NULL AND o.buyer=? AND o.state IN ('delivered','provisioning','paid','deleting') AND (o.state<>'delivered' OR a.id IS NOT NULL) ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
                 foreach($orders as $o)$rows[]=daBtn(($o['state']==='deleting'?'🗑 در انتظار حذف: ':($o['state']==='delivered'?'👤 ':'⏳ ')).($o['method']==='trial'?'🎁 تست - ':'').($o['username']??'DELTA-'.$o['id']),($o['method']==='trial'&&in_array($o['state'],['paid','provisioning'],true)?'dar_trial':(in_array($o['state'],['delivered','deleting'],true)?'dar_service_':'dar_invoice_').$o['id']));
                 $rows[]=daBtn('بازگشت','dar_home');daSend($orders?'سرویس‌های من':'هنوز سرویس خریداری‌شده ندارید.',$rows);return true;
             }
@@ -249,6 +266,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_dkick_(\d+)_(\d+)$/D',$cb,$m)){daDeviceRevoke($connection,(int)$m[1],(int)$m[2]);daSend('نشست دستگاه لغو شد.',[daBtn('دستگاه‌ها','da_devices_'.$m[1])]);return true;}
         if($cb==='da_menuplans'){setUser();daSend('📦 پلن‌ها',[daBtn('ساخت دسته‌بندی','da_catadd'),daBtn('دسته‌بندی‌ها','da_cats'),daBtn('ساخت پلن','da_addplan'),daBtn('پلن‌ها','da_plans_0'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_menupanels'){setUser();daSend('🖥 پنل‌ها',[daBtn('پنل‌های اختصاصی برنامه','da_pg'),daBtn('افزودن پنل برنامه','da_pgadd'),daBtn('انتخاب پنل و گروه','da_pgset'),daBtn('بازگشت','da_home')]);return true;}
+        if(daNewsAdminHandle($connection,(int)$from_id,$cb,$step,$input))return true;
         if($cb==='da_trial'){
             setUser();daRealSchema($connection);daTrialAdminView($connection);return true;
         }
@@ -281,7 +299,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_trialreleaseok_([1-9]\d{0,15})$/D',$cb,$m)){
             daRealSchema($connection);daTrialRelease($connection,(int)$m[1]);daSend('✅ اجازه دریافت مجدد ثبت شد.',[daBtn('بازگشت','da_trial')]);return true;
         }
-        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
+        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('🔔 اطلاع‌رسانی','da_news_inbox'),daBtn('📢 خبر شناور','da_news_float'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_cats'){setUser();$rows=[];foreach(daRows($connection,'SELECT * FROM delta_app_categories ORDER BY id') as $r)$rows[]=daBtn($r['name'],'da_cat_'.$r['id']);$rows[]=daBtn('ساخت دسته‌بندی','da_catadd');$rows[]=daBtn('بازگشت','da_menuplans');daSend('دسته‌بندی‌ها',$rows);return true;}
         if($cb==='da_catadd'||preg_match('/^da_catedit_(\d+)$/D',$cb)){setUser($cb);daSend('نام دسته‌بندی را وارد کنید.',[daBtn('انصراف','da_cats')]);return true;}
         if(preg_match('/^da_cat_(\d+)$/D',$cb,$m)){setUser();$r=daRow($connection,'SELECT * FROM delta_app_categories WHERE id=?','i',(int)$m[1]);if(!$r)throw new InvalidArgumentException('دسته یافت نشد.');daSend(daEsc($r['name']),[daBtn('تغییر نام','da_catedit_'.$m[1]),daBtn('حذف دسته','da_catask_'.$m[1]),daBtn('بازگشت','da_cats')]);return true;}
@@ -477,8 +495,14 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
         if(in_array($o['state'],['delivered','deleting'],true)){daRealServiceView($db,$buyer,$id);return;}
         daSend('این درخواست مربوط به اشتراک تست است.',[daBtn('🎁 اشتراک تست','dar_trial'),daBtn('بازگشت','dar_home')]);return;
     }
+    $renew=daRenewLink($db,$id);
     $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده','deleting'=>'در انتظار حذف','deleted'=>'حذف شده'];
     $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".daQuotaLabel($o['gb'])." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
+    if($renew){
+        $a=daAccount($db,(int)$renew['account_id']);
+        $txt=str_replace('🧾 فاکتور خرید دلتا','🧾 فاکتور تمدید دلتا',$txt);
+        $txt.="\n👤 تمدید حساب: <code>".daEsc($a['username']??'—')."</code>\nحجم و اعتبار قبلی جایگزین می‌شوند. رمز و نام کاربری ثابت می‌مانند.\n➖➖➖➖➖➖➖";
+    }
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
     if(!$p)throw new RuntimeException('payment missing');
     $wallet=daRealWalletPreview($db,$buyer,(int)$o['price']);
@@ -507,8 +531,12 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
         $rows[]=daBtn('🔄 ادامه تحویل','dar_deliver_'.$id);
     }
     if(in_array($o['state'],['paid','provisioning'],true))$rows[]=daBtn('🔄 ادامه تحویل','dar_deliver_'.$id);
-    if($o['state']==='delivered')$rows[]=daBtn('👤 مشاهده سرویس','dar_service_'.$id);
-    $rows[]=daBtn('بازگشت','dar_home');daSend($txt,$rows);
+    if($renew&&$o['state']==='pending'&&$p['state']==='pending'&&$o['method']===null&&(int)$o['created']<time()-3600){
+        $rows[]=daBtn('🔄 تغییر پلن','dar_change_'.$id);
+        $rows[]=daBtn('❌ لغو فاکتور','dar_cancel_'.$id);
+    }
+    if($o['state']==='delivered')$rows[]=daBtn('👤 مشاهده سرویس','dar_service_'.($renew?$renew['root_order_id']:$id));
+    $rows[]=daBtn('بازگشت',$renew?'dar_service_'.$renew['root_order_id']:'dar_home');daSend($txt,$rows);
 }
 function daRealServiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
@@ -516,8 +544,9 @@ function daRealServiceView(mysqli $db,int $buyer,int $id): void {
     if($o['state']!=='delivered'||!$a){daSend('حساب آماده یا موجود نیست.',[daBtn('بازگشت','dar_mine')]);return;}
     $status='نامشخص';$usage='نامشخص';$limit=daQuotaBytes($a['gb']);$expiry=(int)$a['expires'];
     try{$v=daPgLive($db,$a);$status=$v['can_connect']?'فعال':'غیرفعال';$usage=number_format($v['used_bytes']/1073741824,3).' GB';$limit=$v['limit_bytes'];$expiry=$v['expires'];}catch(Throwable $e){}
-    $txt="👤 <code>".daEsc($a['username'])."</code>\nاشتراک: ".daEsc($o['name'])."\nشماره سفارش: ".daEsc($o['pay_hash'])."\nوضعیت: ".$status."\nحجم: ".number_format($limit/1073741824,3)." GB\nمصرف: ".$usage."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nانقضا: ".daIranDate($expiry)."\nدستگاه: ".count(daDeviceList($db,(int)$a['id']))." / ".$a['device_limit'];
-    daSend($txt,[daBtn('📱 دستگاه‌های متصل','dar_devices_'.$id),daBtn('🔑 تغییر رمز','dar_resetask_'.$id),daBtn('🗑 حذف یوزر','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);
+    $last=daRenewLatest($db,$id)??$o;
+    $txt="👤 <code>".daEsc($a['username'])."</code>\nاشتراک: ".daEsc($last['name'])."\nشماره سفارش: ".daEsc($o['pay_hash'])."\nوضعیت: ".$status."\nحجم: ".number_format($limit/1073741824,3)." GB\nمصرف: ".$usage."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nانقضا: ".daIranDate($expiry)."\nدستگاه: ".count(daDeviceList($db,(int)$a['id']))." / ".$a['device_limit'];
+    daSend($txt,[daBtn('📱 دستگاه‌های متصل','dar_devices_'.$id),daBtn('🔑 تغییر رمز','dar_resetask_'.$id),daBtn('🔄 تمدید اشتراک','dar_renew_'.$id),daBtn('🗑 حذف یوزر','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);
 }
 function daRealDevicesView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
@@ -604,6 +633,8 @@ function daRealReceiptHandle(): bool {
         setUser();
         $template=$mainValues['buy_new_account_request']??"🧾 درخواست خرید اشتراک\n👤 آیدی: USER-ID\nنام: NAME\nنام کاربری: USERNAME\nپلن: REMARK\nحجم: VOLUME\nمدت: DAYS\nمبلغ: PRICE تومان\nروش: TYPE\nسرور: SERVERNAME";
         $msg=str_replace(['SERVERNAME','TYPE','USER-ID','USERNAME','NAME','PRICE','REMARK','VOLUME','DAYS'],['برنامه دلتا','کارت به کارت',(string)$from_id,daEsc($userInfo['username']??''),daEsc($userInfo['name']??''),number_format((int)$o['price']),daEsc($o['name']),daQuotaLabel($o['gb']),(string)$o['days']],$template);
+        $renew=daRenewLink($connection,(int)$o['id']);
+        if($renew){$a=daAccount($connection,(int)$renew['account_id']);$msg="🔄 تمدید اشتراک برنامه دلتا\n👤 نام کاربری برنامه: <code>".daEsc($a['username']??'—')."</code>\n".$msg;}
         $msg=deltaAppendTracking($msg,$hash);
         if($kind==='text')$msg.="\n📝 ".daEsc(mb_substr((string)$text,0,1500));
         $keys=getReceiptAdminKeyboard('accept'.$hash,'declineOffer'.$hash.'_'.(int)$from_id,(int)$from_id);
@@ -644,4 +675,83 @@ function daTrialAdminView(mysqli $db): void {
     $ready=daRow($db,"SELECT COUNT(*) AS n FROM delta_app_real_orders WHERE method='trial' AND state='delivered'");
     $txt="🎁 مدیریت اشتراک تست\nوضعیت: ".($s['enabled']?'فعال':'غیرفعال')."\nحجم: ".daQuotaLabel($s['gb'])." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nظرفیت امروز: ".$today['n']." / ".$s['daily_cap']."\nکل درخواست‌ها: ".$n['n']."\nتحویل‌شده (حذف‌نشده): ".$ready['n']."\nالزام شماره ثبت‌شده: ".($s['require_phone']?'فعال':'غیرفعال')."\nهر آیدی تلگرام یک بار؛ آزادسازی فقط توسط مدیر.";
     daSend($txt,[daBtn($s['enabled']?'🔴 غیرفعال کردن':'🟢 فعال کردن','da_trialtoggle_enabled'),daBtn('🔋 تنظیم حجم','da_trialset_gb'),daBtn('⏰ تنظیم اعتبار','da_trialset_days'),daBtn('📱 تعداد دستگاه','da_trialset_devices'),daBtn('👥 ظرفیت روزانه','da_trialset_daily_cap'),daBtn('📞 الزام شماره ثبت‌شده','da_trialtoggle_require_phone'),daBtn('📋 لیست دریافت‌کنندگان','da_triallist_0'),daBtn('🔄 آزادسازی دریافت مجدد','da_trialrelease'),daBtn('بازگشت','da_menumanage')]);
+}
+
+function daRenewCategories(mysqli $db,int $buyer,int $root): void {
+    $a=daRenewTarget($db,$buyer,$root);
+    $open=daRenewOpen($db,$root);
+    if($open){daRealInvoiceView($db,$buyer,(int)$open['id']);return;}
+    $rows=[];
+    foreach(daRows($db,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 AND p.price>0 AND p.device_limit>=? ORDER BY c.id','i',(int)$a['device_limit']) as $r)$rows[]=daBtn($r['name'],'dar_rcat_'.$root.'_'.$r['id']);
+    $rows[]=daBtn('بازگشت','dar_service_'.$root);
+    daSend("🔄 تمدید کلی اشتراک\nحساب: <code>".daEsc($a['username'])."</code>\nحجم و اعتبار قبلی با پلن جدید جایگزین می‌شوند. نام کاربری و رمز حفظ می‌شوند.\nدسته‌بندی را انتخاب کنید (تعداد دستگاه برابر یا بیشتر).",$rows);
+}
+function daNewsAdminMenu(mysqli $db,int $admin,string $kind): void {
+    setUser();
+    daExec($db,'DELETE FROM delta_app_news_drafts WHERE admin_id=?','i',$admin);
+    $n=daRow($db,'SELECT COUNT(*) n FROM delta_app_news WHERE kind=? AND active=1','s',$kind);
+    $title=$kind==='inbox'?'🔔 اطلاع‌رسانی برنامه':'📢 خبر شناور برنامه';
+    daSend($title."\nتعداد خبر فعال: ".$n['n'].($kind==='float'?"\nانتشار خبر شناور جدید، خبر قبلی را غیرفعال می‌کند.":"\nخبرها در زنگوله برنامه نمایش داده می‌شوند."),[daBtn('➕ ثبت خبر جدید','da_newsnew_'.$kind),daBtn('📋 خبرهای فعال','da_newslist_'.$kind.'_0'),daBtn('بازگشت','da_menumanage')]);
+}
+function daNewsAdminPreview(mysqli $db,int $admin,string $ticket): void {
+    $d=daRow($db,'SELECT * FROM delta_app_news_drafts WHERE admin_id=? AND ticket=? AND created>=?','isi',$admin,$ticket,time()-3600);
+    if(!$d)throw new InvalidArgumentException('پیش‌نویس معتبر نیست.');
+    setUser();
+    $txt="پیش‌نمایش خبر:\n\n".daEsc($d['body'])."\n\n".($d['url']!==''?'🔗 دکمه: '.daEsc($d['button_label']).' ('.daEsc(parse_url($d['url'],PHP_URL_HOST)).')':'بدون لینک');
+    daSend($txt,[daBtn('✅ انتشار برای همه کاربران برنامه','da_newspub_'.$ticket),daBtn('انصراف','da_news_'.$d['kind'])]);
+}
+function daNewsAdminHandle(mysqli $db,int $admin,string $cb,string $step,string $input): bool {
+    if(preg_match('/^da_news_(inbox|float)$/D',$cb,$m)){daNewsAdminMenu($db,$admin,$m[1]);return true;}
+    if(preg_match('/^da_newsnew_(inbox|float)$/D',$cb,$m)){
+        daExec($db,'DELETE FROM delta_app_news_drafts WHERE admin_id=?','i',$admin);
+        setUser('da_newsbody_'.$m[1]);daSend('متن خبر را بفرستید (حداکثر ۲۵۰۰ حرف).',[daBtn('انصراف','da_news_'.$m[1])]);return true;
+    }
+    if($cb===''&&preg_match('/^da_newsbody_(inbox|float)$/D',$step,$m)){
+        $ticket=daNewsDraft($db,$admin,$m[1],$input);setUser();
+        daSend('می‌خواهید لینک هم قرار دهید؟',[daBtn('✅ بله','da_newsurl_'.$ticket),daBtn('خیر، فقط متن','da_newsplain_'.$ticket),daBtn('انصراف','da_news_'.$m[1])]);return true;
+    }
+    if(preg_match('/^da_newsplain_([a-f0-9]{24})$/D',$cb,$m)){
+        daNewsDraftLink($db,$admin,$m[1],'','');daNewsAdminPreview($db,$admin,$m[1]);return true;
+    }
+    if(preg_match('/^da_newsurl_([a-f0-9]{24})$/D',$cb,$m)){
+        $d=daRow($db,'SELECT * FROM delta_app_news_drafts WHERE admin_id=? AND ticket=? AND created>=?','isi',$admin,$m[1],time()-3600);
+        if(!$d)throw new InvalidArgumentException('پیش‌نویس معتبر نیست.');
+        setUser('da_newsurl');daSend('لینک کامل HTTPS را ارسال کنید؛ در برنامه به‌صورت دکمه نمایش داده می‌شود.',[daBtn('انصراف','da_news_'.$d['kind'])]);return true;
+    }
+    if($cb===''&&$step==='da_newsurl'){
+        $d=daRow($db,'SELECT * FROM delta_app_news_drafts WHERE admin_id=? AND created>=?','ii',$admin,time()-3600);
+        if(!$d)throw new InvalidArgumentException('پیش‌نویس معتبر نیست.');
+        $url=daNewsUrl($input);if($url==='')throw new InvalidArgumentException('لینک را وارد کنید.');
+        daNewsDraftLink($db,$admin,$d['ticket'],$url,'باز کردن لینک');
+        setUser('da_newslabel');daSend('متن دکمه را بنویسید؛ مثلاً دانلود نسخه جدید.',[daBtn('همان «باز کردن لینک»','da_newsdefault_'.$d['ticket']),daBtn('انصراف','da_news_'.$d['kind'])]);return true;
+    }
+    if($cb===''&&$step==='da_newslabel'){
+        $d=daRow($db,'SELECT * FROM delta_app_news_drafts WHERE admin_id=? AND created>=?','ii',$admin,time()-3600);
+        if(!$d||$d['url']==='')throw new InvalidArgumentException('پیش‌نویس معتبر نیست.');
+        daNewsDraftLink($db,$admin,$d['ticket'],$d['url'],$input);daNewsAdminPreview($db,$admin,$d['ticket']);return true;
+    }
+    if(preg_match('/^da_newsdefault_([a-f0-9]{24})$/D',$cb,$m)){daNewsAdminPreview($db,$admin,$m[1]);return true;}
+    if(preg_match('/^da_newspub_([a-f0-9]{24})$/D',$cb,$m)){
+        $id=daNewsPublish($db,$admin,$m[1]);setUser();
+        $r=daRow($db,'SELECT kind FROM delta_app_news WHERE id=?','i',$id);
+        daSend('✅ خبر منتشر شد. برنامه در اولین دریافت بعدی خبر را نمایش می‌دهد.',[daBtn('بازگشت','da_news_'.$r['kind'])]);return true;
+    }
+    if(preg_match('/^da_newslist_(inbox|float)_(\d{1,6})$/D',$cb,$m)){
+        $kind=$m[1];$page=(int)$m[2];$rows=[];
+        $items=daRows($db,'SELECT id,body FROM delta_app_news WHERE kind=? AND active=1 ORDER BY id DESC LIMIT 9 OFFSET ?','si',$kind,$page*8);
+        foreach(array_slice($items,0,8) as $r)$rows[]=daBtn('#'.$r['id'].' '.mb_substr(preg_replace('/\s+/u',' ',$r['body']),0,34),'da_newsitem_'.$kind.'_'.$r['id']);
+        if($page>0)$rows[]=daBtn('قبلی','da_newslist_'.$kind.'_'.($page-1));
+        if(count($items)>8)$rows[]=daBtn('بعدی','da_newslist_'.$kind.'_'.($page+1));
+        $rows[]=daBtn('بازگشت','da_news_'.$kind);daSend($items?'خبرهای فعال':'خبری فعال نیست.',$rows);return true;
+    }
+    if(preg_match('/^da_newsitem_(inbox|float)_(\d+)$/D',$cb,$m)){
+        $r=daRow($db,'SELECT * FROM delta_app_news WHERE id=? AND kind=? AND active=1','is',(int)$m[2],$m[1]);
+        if(!$r)throw new InvalidArgumentException('خبر فعال یافت نشد.');
+        $n=daRow($db,'SELECT COUNT(*) n FROM delta_app_news_seen WHERE news_id=?','i',(int)$r['id']);
+        daSend(daEsc($r['body'])."\n\nتعداد ".($m[1]==='float'?'عدم نمایش مجدد':'خوانده‌شده').": ".$n['n'],[daBtn('🗑 غیرفعال کردن خبر','da_newsarchive_'.$m[1].'_'.$m[2]),daBtn('بازگشت','da_newslist_'.$m[1].'_0')]);return true;
+    }
+    if(preg_match('/^da_newsarchive_(inbox|float)_(\d+)$/D',$cb,$m)){
+        daNewsArchive($db,(int)$m[2],$m[1]);daNewsAdminMenu($db,$admin,$m[1]);return true;
+    }
+    return false;
 }
