@@ -45,3 +45,13 @@ function deltaUnifiedBackupIsMarked(string $path): bool {
     $tail=file_get_contents($path,false,null,max(0,$size-512));
     return is_string($tail)&&str_contains($tail,'-- DELTA_UNIFIED_V1 ');
 }
+
+function deltaUnifiedBackupHasTable(string $path,string $table): bool {
+    $fh=@fopen($path,'rb');if(!$fh)return false;
+    $prefix='CREATE TABLE `'.$table.'`';
+    try{while(($line=fgets($fh))!==false){if(str_starts_with($line,$prefix))return true;}}finally{fclose($fh);}
+    return false;
+}
+function deltaUnifiedBackupHasRecoveryTable(string $path): bool {
+    return deltaUnifiedBackupHasTable($path,'delta_app_backup_key');
+}
