@@ -547,8 +547,8 @@ function deltaCardSmsPrompt() {
 }
 
 function deltaCardAppPurchaseText(array $pay,array $card): string {
-    $esc=static fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
-    return "🧾 <b>پرداخت خرید برنامه دلتا</b>\n📦 ".$esc($pay['description']??'')."\n💰 مبلغ: <code>".number_format((int)$pay['price'])."</code> تومان\n\n💳 شماره کارت: <code>".$esc($card['number'])."</code>\n👤 صاحب کارت: ".$esc($card['holder'])."\n🔖 کد پیگیری: <code>".$esc(deltaTrackingCode($pay['hash_id']))."</code>\n\nفقط مبلغ دقیق را به همین کارت واریز کنید. سپس عکس یا پیامک واریزی را بفرستید. اعتبار پرداخت یک ساعت از صدور فاکتور است. پس از پرداخت دوباره واریز نکنید؛ پس از تأیید بانکی حساب برنامه تحویل می‌شود.";
+    // Identical card-transfer instructions and editable template used by BUY_SUB.
+    return deltaCardRenderText($card['number'],$card['holder'],$pay['hash_id'])."\n\n💵 مبلغ فاکتور: <code>".number_format((int)$pay['price'])."</code> تومان";
 }
 function deltaCardAppReturnKeys(string $keys,string $hash): string {
     global $connection;
