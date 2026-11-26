@@ -22,6 +22,8 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
     daEnsureDecimalQuota($db,'delta_app_accounts');
+    if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='quota_baseline_bytes'"))$db->query("ALTER TABLE delta_app_accounts ADD COLUMN quota_baseline_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0");
+    daNewsSchema($db);
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
     if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_plans' AND COLUMN_NAME='category_id'"))$db->query("ALTER TABLE delta_app_plans ADD COLUMN category_id INT UNSIGNED NULL");
@@ -428,11 +430,14 @@ function daPgGet(array $s,string $token,array $m): ?array {
     return $j;
 }
 function daPgMetrics(array $a,array $j,bool $strict=true): array {
+    $base=(int)($a['quota_baseline_bytes']??0);
     $limit=daQuotaBytes($a['gb']);
     $used=$j['used_traffic']??null;$actual=$j['data_limit']??null;$raw=$j['expire']??null;
     $expires=is_int($raw)?$raw:(is_string($raw)&&preg_match('/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/D',$raw)?strtotime($raw):false);
-    if(!is_int($used)||$used<0||!is_int($actual)||$actual<1||($strict&&$actual!==$limit)||$expires===false||$expires<=0||($strict&&$expires!==(int)$a['expires'])||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
-    $limit=$actual;
+    if(!is_int($used)||$used<0||!is_int($actual)||$actual<1||$base<0||$used<$base||$actual<=$base||(($strict||$base>0)&&$actual!==$base+$limit)||$expires===false||$expires<=0||($strict&&$expires!==(int)$a['expires'])||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
+    // A full renewal uses an absolute remote quota with a durable usage
+    // baseline, rather than a non-idempotent remote traffic reset.
+    $limit=$actual-$base;$used-=$base;
     $status=$j['status']??'unknown';
     return ['limit_bytes'=>$limit,'used_bytes'=>$used,'remaining_bytes'=>max(0,$limit-$used),'expires'=>$expires,'panel_status'=>$status,'can_connect'=>$status==='active'&&$used<$limit&&$expires>time()&&(int)$a['active']===1];
 }
@@ -503,6 +508,13 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
     if(!$j)throw new RuntimeException('panel user missing');
+    // A confirmed renewal may have committed while the panel request was running.
+    $fresh=daAccount($db,(int)$a['id']);if(!$fresh)throw new RuntimeException('account missing');
+    $a=$fresh;
+    if(daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_renewals'")){
+        $pending=daRow($db,"SELECT r.target_limit,r.target_expires FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.account_id=? AND o.state='provisioning' AND r.target_limit IS NOT NULL LIMIT 1",'i',(int)$a['id']);
+        if($pending&&(int)$pending['target_limit']===($j['data_limit']??null))throw new RuntimeException('renewal completion pending');
+    }
     $metrics=daPgMetrics($a,$j,false);$metrics['configs']=[];
     if($withConfigs&&$metrics['can_connect']){
         [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
@@ -517,6 +529,7 @@ function daPgChange(mysqli $db,int $id,string $action): void {
 }
 function daPgChangeLocked(mysqli $db,int $id,string $action): void {
     $delete=$action==='delete';
+    if($delete&&daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_renewals'")&&daRow($db,"SELECT r.order_id FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.account_id=? AND o.state IN ('pending','paid','provisioning') LIMIT 1",'i',$id))throw new InvalidArgumentException('ابتدا فاکتور تمدید باز را تعیین تکلیف کنید.');
     $a=daAccount($db,$id);$m=daPgMap($db,$id);if(!$a)throw new InvalidArgumentException('حساب یافت نشد.');
     if(!$m){if($delete){daDeleteAccount($db,$id);return;}throw new InvalidArgumentException('حساب قدیمی بدون ساب اختصاصی است.');}
     // First close local login, keep the mapping until panel deletion is confirmed.
@@ -707,4 +720,67 @@ function daTestResetPassword(mysqli $db,int $buyer,int $order): string {
         daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
         $db->commit();return $p;
     }catch(Throwable $e){$db->rollback();throw $e;}
+}
+
+function daNewsSchema(mysqli $db): void {
+    foreach([
+        "CREATE TABLE IF NOT EXISTS delta_app_news(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,kind VARCHAR(8) CHARACTER SET ascii NOT NULL,body TEXT NOT NULL,url VARCHAR(2048) NOT NULL DEFAULT '',button_label VARCHAR(80) NOT NULL DEFAULT '',active TINYINT NOT NULL DEFAULT 1,created BIGINT UNSIGNED NOT NULL,INDEX(kind,active,id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_news_seen(account_id INT UNSIGNED NOT NULL,news_id BIGINT UNSIGNED NOT NULL,seen_at BIGINT UNSIGNED NOT NULL,PRIMARY KEY(account_id,news_id)) ENGINE=InnoDB",
+        "CREATE TABLE IF NOT EXISTS delta_app_news_drafts(admin_id BIGINT PRIMARY KEY,kind VARCHAR(8) NOT NULL,body TEXT NOT NULL,url VARCHAR(2048) NOT NULL DEFAULT '',button_label VARCHAR(80) NOT NULL DEFAULT '',ticket CHAR(24) CHARACTER SET ascii NOT NULL,created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    ] as $sql)if(!$db->query($sql))throw new RuntimeException('news schema');
+}
+function daNewsText(string $body): string {
+    $body=trim($body);
+    if($body===''||mb_strlen($body)>2500)throw new InvalidArgumentException('متن خبر باید بین ۱ تا ۲۵۰۰ حرف باشد.');
+    return $body;
+}
+function daNewsUrl(string $url): string {
+    $url=trim($url);
+    if($url==='')return '';
+    $p=parse_url($url);
+    if(strlen($url)>2048||!filter_var($url,FILTER_VALIDATE_URL)||!is_array($p)||strtolower($p['scheme']??'')!=='https'||empty($p['host'])||isset($p['user'])||isset($p['pass'])||preg_match('/[\x00-\x20\x7f\\\\]/',$url))throw new InvalidArgumentException('لینک معتبر HTTPS وارد کنید.');
+    return $url;
+}
+function daNewsDraft(mysqli $db,int $admin,string $kind,string $body): string {
+    if(!in_array($kind,['inbox','float'],true))throw new InvalidArgumentException('نوع خبر');
+    $body=daNewsText($body);$ticket=bin2hex(random_bytes(12));
+    daExec($db,"INSERT INTO delta_app_news_drafts(admin_id,kind,body,ticket,created) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE kind=VALUES(kind),body=VALUES(body),url='',button_label='',ticket=VALUES(ticket),created=VALUES(created)",'isssi',$admin,$kind,$body,$ticket,time());
+    return $ticket;
+}
+function daNewsDraftLink(mysqli $db,int $admin,string $ticket,string $url,string $label): void {
+    $url=daNewsUrl($url);$label=trim($label);
+    if($url!==''&&($label===''||mb_strlen($label)>60))throw new InvalidArgumentException('عنوان دکمه باید ۱ تا ۶۰ حرف باشد.');
+    $s=daQuery($db,'UPDATE delta_app_news_drafts SET url=?,button_label=? WHERE admin_id=? AND ticket=? AND created>=?','ssisi',$url,$url===''?'':$label,$admin,$ticket,time()-3600);
+    $s->close();
+}
+function daNewsPublish(mysqli $db,int $admin,string $ticket): int {
+    $db->begin_transaction();
+    try{
+        $d=daRow($db,'SELECT * FROM delta_app_news_drafts WHERE admin_id=? AND ticket=? AND created>=? FOR UPDATE','isi',$admin,$ticket,time()-3600);
+        if(!$d)throw new InvalidArgumentException('پیش‌نویس منقضی شده یا قبلاً منتشر شده است.');
+        $body=daNewsText($d['body']);$url=daNewsUrl($d['url']);
+        if(!in_array($d['kind'],['inbox','float'],true))throw new RuntimeException('news kind');
+        if($d['kind']==='float')daExec($db,"UPDATE delta_app_news SET active=0 WHERE kind='float' AND active=1");
+        daExec($db,'INSERT INTO delta_app_news(kind,body,url,button_label,created) VALUES(?,?,?,?,?)','ssssi',$d['kind'],$body,$url,$d['button_label'],time());
+        $id=(int)$db->insert_id;
+        daExec($db,'DELETE FROM delta_app_news_drafts WHERE admin_id=? AND ticket=?','is',$admin,$ticket);
+        $db->commit();return $id;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daNewsArchive(mysqli $db,int $id,string $kind): void {
+    daExec($db,'UPDATE delta_app_news SET active=0 WHERE id=? AND kind=?','is',$id,$kind);
+}
+function daNewsItem(array $r): array {
+    return ['id'=>(int)$r['id'],'body'=>$r['body'],'url'=>$r['url'],'button_label'=>$r['button_label'],'created'=>(int)$r['created'],'read'=>!empty($r['seen_at'])];
+}
+function daNewsFeed(mysqli $db,int $account,int $before=0): array {
+    $count=daRow($db,"SELECT COUNT(*) n FROM delta_app_news n LEFT JOIN delta_app_news_seen s ON s.news_id=n.id AND s.account_id=? WHERE n.kind='inbox' AND n.active=1 AND s.news_id IS NULL",'i',$account);
+    $rows=daRows($db,"SELECT n.*,s.seen_at FROM delta_app_news n LEFT JOIN delta_app_news_seen s ON s.news_id=n.id AND s.account_id=? WHERE n.kind='inbox' AND n.active=1 AND (?=0 OR n.id<?) ORDER BY n.id DESC LIMIT 31",'iii',$account,$before,$before);
+    $more=count($rows)>30;$rows=array_slice($rows,0,30);
+    $floating=daRow($db,"SELECT n.*,s.seen_at FROM delta_app_news n LEFT JOIN delta_app_news_seen s ON s.news_id=n.id AND s.account_id=? WHERE n.kind='float' AND n.active=1 ORDER BY n.id DESC LIMIT 1",'i',$account);
+    return ['unread'=>(int)$count['n'],'news'=>array_map('daNewsItem',$rows),'next_before'=>$more?(int)end($rows)['id']:0,'floating'=>$floating&&empty($floating['seen_at'])?daNewsItem($floating):null];
+}
+function daNewsSeen(mysqli $db,int $account,int $id,string $kind): void {
+    if(!in_array($kind,['inbox','float'],true)||$id<1)throw new InvalidArgumentException('news id');
+    daExec($db,'INSERT IGNORE INTO delta_app_news_seen(account_id,news_id,seen_at) SELECT ?,id,? FROM delta_app_news WHERE id=? AND kind=? AND active=1','iiis',$account,time(),$id,$kind);
 }

@@ -62,6 +62,10 @@ try{
     $trial=daTrialCurrent($restored,1001);
     backupOk($trial!==null&&$trial['method']==='trial'&&(int)$trial['price']===0,'trial claim and one-time eligibility survive restore');
     backupOk(daTrialReserve($restored,1001,true)===(int)$trial['id'],'restored claim cannot create another trial');
+    $renew=daRenewLatest($restored,(int)$trial['id']);
+    backupOk($renew!==null&&daQuotaLabel(daAccount($restored,(int)$trial['account_id'])['gb'])==='10','renewed service and quota baseline survive restore');
+    $feed=daNewsFeed($restored,(int)$trial['account_id']);
+    backupOk($feed['unread']===1&&$feed['floating']!==null&&$feed['floating']['body']==='Second floating','announcement read and floating state survive restore');
     $restored->close();
 }finally{
     @unlink($file);putenv('MYSQL_PWD');
