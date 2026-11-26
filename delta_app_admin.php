@@ -10,7 +10,7 @@ function daHome(): void {
     daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر حساب جدید دارای ساب اختصاصی پسارگارد است.",[
         daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
         daBtn('🖥 پنل‌های اختصاصی برنامه','da_pg'),daBtn('➕ افزودن پنل برنامه','da_pgadd'),daBtn('⚙️ انتخاب پنل و گروه','da_pgset'),
-        daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser')]);
+        daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser'),daBtn('⚙️ آیدی خرید و پشتیبانی','da_contacts')]);
 }
 function daList(mysqli $db,string $kind,int $page): void {
     $off=$page*8;$rows=[];$txt='';
@@ -93,6 +93,13 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if($cb==='da_contacts'){
+            setUser();$c=daContacts($connection);
+            daSend("آیدی‌های برنامه:\nخرید: ".($c['purchase']===''?'تنظیم نشده':'@'.daEsc($c['purchase']))."\nپشتیبانی: ".($c['support']===''?'تنظیم نشده':'@'.daEsc($c['support'])),[daBtn('تنظیم آیدی خرید','da_contact_purchase'),daBtn('تنظیم آیدی پشتیبانی','da_contact_support'),daBtn('بازگشت','da_home')]);return true;
+        }
+        if(in_array($cb,['da_contact_purchase','da_contact_support'],true)){
+            setUser($cb);daSend('آیدی تلگرام را با @ یا بدون آن بفرستید. برای پاک کردن - بفرستید.',[daBtn('انصراف','da_contacts')]);return true;
+        }
         if($cb==='da_pgadd'){
             setUser('da_pgadd');
             daSend("اطلاعات ورود پنل مستقل برنامه را در چهار خط ارسال کنید:\nآدرس HTTPS پنل\nنام کاربری مدیر برنامه\nرمز مدیر برنامه\nدامنه HTTPS ساب (برای IP ضروری؛ در غیر این صورت اختیاری)\n\nپس از ورود، نام گروه‌ها به صورت دکمه نمایش داده می‌شود. پیام اطلاعات ورود برای حذف ارسال می‌شود.",[daBtn('انصراف','da_pg')]);return true;
@@ -168,7 +175,9 @@ function deltaAppAdminHandle(): bool {
         $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
-        if($step==='da_pgadd'){
+        if(in_array($step,['da_contact_purchase','da_contact_support'],true)){
+            daContactSet($connection,substr($step,11),$input);setUser();daSend('✅ آیدی ذخیره شد.',[daBtn('آیدی‌های برنامه','da_contacts'),daBtn('بازگشت','da_home')]);
+        }elseif($step==='da_pgadd'){
             bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
             $lines=preg_split('/\r\n|\r|\n/',(string)$text);
             if(count($lines)<3||count($lines)>4)throw new InvalidArgumentException('فرمت: آدرس پنل، نام مدیر، رمز، دامنه ساب؛ شماره گروه لازم نیست.');

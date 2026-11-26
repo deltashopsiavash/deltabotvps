@@ -18,6 +18,7 @@ try{
     $ip=(string)($_SERVER['REMOTE_ADDR']??'unknown');
     if(!daLimit($db,'ip:'.$ip,120))daRespond(429,['error'=>'rate']);
     $action=$j['action']??'';
+    if($action==='public_config'){daRespond(200,daContacts($db));}
     if($action==='login'){
         $name=$j['username']??'';$password=$j['password']??'';
         if(!is_string($name)||!is_string($password)||!daName($name)||strlen($password)>128)daRespond(401,['error'=>'login']);

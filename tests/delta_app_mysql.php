@@ -81,3 +81,8 @@ daExec($db,'INSERT INTO delta_app_panel_drafts(ticket,panel_id,panel_url,usernam
 ok(daPanelDraftGet($db,$ticket)['panel_id']===null);
 $bad=false;try{daPanelDraftFinish($db,$ticket,99);}catch(InvalidArgumentException $e){$bad=true;}ok($bad);
 daExec($db,'DELETE FROM delta_app_panel_drafts WHERE ticket=?','s',$ticket);
+
+ok(daContactName('@DeltaSupport')==='DeltaSupport');ok(daContactName('-')==='');
+$bad=false;try{daContactName('https://evil.example');}catch(InvalidArgumentException $e){$bad=true;}ok($bad);
+daContactSet($db,'purchase','@DeltaBuy');daContactSet($db,'support','@DeltaSupport');ok(daContacts($db)===['purchase'=>'DeltaBuy','support'=>'DeltaSupport']);
+daContactSet($db,'purchase','-');ok(daContacts($db)['purchase']===''&&daContacts($db)['support']==='DeltaSupport');

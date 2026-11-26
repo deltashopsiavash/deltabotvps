@@ -10,6 +10,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panels (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, panel_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, username VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, group_id INT UNSIGNED NOT NULL, created BIGINT UNSIGNED NOT NULL, UNIQUE KEY panel_identity(panel_url,username)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panel_drafts (ticket CHAR(24) CHARACTER SET ascii PRIMARY KEY, panel_id INT UNSIGNED NULL, panel_url VARCHAR(255) NOT NULL, username VARCHAR(128) NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) NOT NULL, groups_json MEDIUMTEXT NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(expires)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_contacts (id TINYINT PRIMARY KEY, purchase VARCHAR(32) NOT NULL DEFAULT '', support VARCHAR(32) NOT NULL DEFAULT '') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_settings (id TINYINT PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
@@ -448,4 +449,22 @@ function daPgChangeLocked(mysqli $db,int $id,string $action): void {
     $after=daPgGet($s,$t,$m);
     if(!in_array($code,[200,204],true)||($after['status']??null)!==$target)throw new RuntimeException('state not confirmed');
     if($target==='active')daExec($db,'UPDATE delta_app_accounts SET active=1 WHERE id=?','i',$id);
+}
+
+function daContactName(string $value): string {
+    $value=trim($value);
+    if($value==='-'||$value==='')return '';
+    $value=ltrim($value,'@');
+    if(!preg_match('/^[A-Za-z][A-Za-z0-9_]{4,31}$/D',$value))throw new InvalidArgumentException('فقط آیدی تلگرام انگلیسی معتبر یا - برای حذف.');
+    return $value;
+}
+function daContacts(mysqli $db): array {
+    // Compatible with older deployments until /delta creates the new table.
+    $row=daRow($db,'SELECT purchase,support FROM delta_app_contacts WHERE id=1');
+    return ['purchase'=>$row['purchase']??'','support'=>$row['support']??''];
+}
+function daContactSet(mysqli $db,string $kind,string $value): void {
+    if(!in_array($kind,['purchase','support'],true))throw new InvalidArgumentException('نوع آیدی نامعتبر است.');
+    $value=daContactName($value);
+    daExec($db,"INSERT INTO delta_app_contacts(id,$kind) VALUES(1,?) ON DUPLICATE KEY UPDATE $kind=VALUES($kind)",'s',$value);
 }
