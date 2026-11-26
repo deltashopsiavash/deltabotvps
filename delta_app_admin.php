@@ -170,13 +170,8 @@ function deltaAppAdminHandle(): bool {
             }
             if(preg_match('/^dar_deliver_(\d+)$/D',$cb,$m)){
                 $id=(int)$m[1];
-                try{$order=daRealOrder($connection,(int)$from_id,$id);daRealSyncPaid($connection,(string)$order['pay_hash']);$result=daRealDeliver($connection,(int)$from_id,$id);}
+                try{$order=daRealOrder($connection,(int)$from_id,$id);daRealDeliverPaidHash($connection,(string)$order['pay_hash']);daRealServiceView($connection,(int)$from_id,$id);}
                 catch(Throwable $e){daSend('تحویل هنوز کامل نشده است؛ وضعیت فاکتور را بررسی کنید و دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
-                $o=$result['order'];$a=daAccount($connection,(int)$o['account_id']);
-                if($result['password']!==null&&$a){
-                    $msg="✅ <b>تحویل اشتراک دلتا</b>\nشماره سفارش: ".daEsc($o['pay_hash'])."\nپلن: ".daEsc($o['name'])."\nنام کاربری: <code>".daEsc($a['username'])."</code>\nرمز: <code>".daEsc($result['password'])."</code>\nحجم: ".$a['gb']." گیگ\nدستگاه: ".$a['device_limit']."\nپایان: ".daIranDate((int)$a['expires'])."\nمبلغ پرداخت: ".number_format((int)$o['price'])." تومان";
-                    daSend($msg,[daBtn('👤 سرویس من','dar_service_'.$id),daBtn('بازگشت','dar_home')]);
-                }else daRealServiceView($connection,(int)$from_id,$id);
                 return true;
             }
             if($cb==='dar_orders'){daSend('اشتراک اختصاصی برنامه دلتا',[daBtn('خرید سرویس','dar_categories'),daBtn('سرویس‌های من','dar_mine')]);return true;}
@@ -472,12 +467,12 @@ function daRealReceiptHandle(): bool {
     $p=daRealPayByHash($connection,$hash);
     if(!$p)return false;
     $adminAction=$action==='legacy'||$action==='reject';
-    if(!$adminAction&&!daRealCustomerAllowed()){answerQuery('ابتدا شرایط ورود به ربات را تکمیل کنید.',true);return true;}
     $isAdmin=(int)$from_id===(int)$admin||(($userInfo['isAdmin']??false)==true);
     if((int)$chat_id!==(int)$from_id||($adminAction?!$isAdmin:(int)$p['user_id']!==(int)$from_id)||
         !is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
         return true;
     }
+    if(!$adminAction&&!daRealCustomerAllowed()){if($cb!=='')answerQuery('ابتدا شرایط ورود به ربات را تکمیل کنید.',true);else sendMessage('ابتدا شرایط ورود به ربات را تکمیل کنید.');return true;}
     try{
         daRealSchema($connection);
         $o=daRow($connection,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=?','si',$hash,(int)$p['user_id']);
