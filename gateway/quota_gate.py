@@ -4,6 +4,10 @@ Requires an authenticated WireGuard peer /32 per account, no direct client acces
 to upstream credentials, and separately configured forwarding. No auto-reapply.
 """
 import argparse
+import fcntl
+import hashlib
+import os
+import tempfile
 import ipaddress
 import json
 import re
@@ -88,10 +92,63 @@ def snapshot(config, output, now=None):
 def nft(*args, data=None):
     return subprocess.run(["nft",*args], input=data, text=True, capture_output=True, check=True)
 
+def config_digest(cfg):
+    return hashlib.sha256(json.dumps(cfg,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
+def boot_id():
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+def durable_write(path, value):
+    # Atomic checkpoint, root-only directory, and fsync before returning.
+    fd,tmp=tempfile.mkstemp(prefix=".checkpoint-",dir=path.parent)
+    try:
+        with os.fdopen(fd,"w") as f:
+            json.dump(value,f,sort_keys=True); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp,path)
+        dfd=os.open(path.parent,os.O_DIRECTORY)
+        try: os.fsync(dfd)
+        finally: os.close(dfd)
+    finally:
+        if os.path.exists(tmp): os.unlink(tmp)
+
+def stateful(action,cfg,rules,state_dir):
+    state_dir.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if state_dir.is_symlink() or state_dir.stat().st_mode & 0o077 or state_dir.stat().st_uid != os.geteuid():
+        raise RuntimeError("state directory must be private and owned by operator")
+    with (state_dir/"lock").open("a") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        state_path=state_dir/"checkpoint.json"
+        digest=config_digest(cfg)
+        if action=="install-once":
+            if state_path.exists():
+                raise RuntimeError("existing durable epoch; refuse reset/reinstall, reconcile first")
+            # Persist intent BEFORE installing. Failure leaves a blocked epoch requiring review.
+            state={"boot":boot_id(),"config":digest,"phase":"installing","rows":[]}
+            durable_write(state_path,state)
+            nft("-f","-",data=rules.replace(f"table inet {TABLE} {{",f"create table inet {TABLE}\ntable inet {TABLE} {{",1))
+            state["phase"]="installed"
+            durable_write(state_path,state)
+            print("gate installed; no forwarding or WireGuard settings were changed")
+        else:
+            state=json.loads(state_path.read_text())
+            if state["phase"]!="installed" or state["config"]!=digest or state["boot"]!=boot_id():
+                raise RuntimeError("epoch/config/boot mismatch; counters unknown; reconcile before enabling traffic")
+            rows=snapshot(cfg,json.loads(nft("-j","list","table","inet",TABLE).stdout))
+            previous={r["id"]:r for r in state["rows"]}
+            for r in rows:
+                old=previous.get(r["id"])
+                if old and old["used_bytes"] is not None and (r["used_bytes"] is None or r["used_bytes"]<old["used_bytes"]):
+                    raise RuntimeError("counter disappeared or reset; reconcile")
+            state["rows"]=rows
+            state["observed_at"]=int(time.time())
+            durable_write(state_path,state)
+            print(json.dumps(rows,indent=2))
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("action", choices=("render","check","install-once","snapshot"))
     p.add_argument("config",type=Path)
+    p.add_argument("--state-dir",type=Path,default=Path("/var/lib/delta-quota-lab"))
     args=p.parse_args()
     cfg=json.loads(args.config.read_text())
     rules=render(cfg)
@@ -100,13 +157,8 @@ def main():
     elif args.action=="check":
         nft("-c","-f","-",data=rules)
         print("syntax OK")
-    elif args.action=="install-once":
-        # NEVER reset counters or replace a live gate silently.
-        # Exclusive add fails if table already exists; nft transaction is atomic.
-        nft("-f","-",data=rules.replace(f"table inet {TABLE} {{",f"create table inet {TABLE}\ntable inet {TABLE} {{",1))
-        print("gate installed; no forwarding or WireGuard settings were changed")
     else:
-        print(json.dumps(snapshot(cfg,json.loads(nft("-j","list","table","inet",TABLE).stdout)),indent=2))
+        stateful(args.action,cfg,rules,args.state_dir)
 
 if __name__=="__main__":
     main()

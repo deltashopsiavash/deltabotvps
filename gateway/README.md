@@ -7,7 +7,7 @@ The kernel gate uses one named quota per account across ingress and egress, and 
 
 ## Safety and persistence gaps
 - Never install on the production bot host or a shared VPN interface. This component does not configure WireGuard, firewall baseline, forwarding, NAT, Xray routes, or key distribution.
-- The dedicated interface must remain down or blocked by a separate persistent default-deny firewall until the gate is installed, and after reboot until counters have been reconciled. Kernel state is volatile; do not recreate a gate after reboot using stale counts. No automatic reconciliation/persistent central ledger is implemented. This prevents a claim of production-ready billing.
+- The dedicated interface must remain down or blocked by a separate persistent default-deny firewall until the gate is installed, and after reboot until counters have been reconciled. Kernel state is volatile; do not recreate a gate after reboot using stale counts. A private fsynced local checkpoint prevents silent reinstall and retains the last observed counters. No automatic reconciliation or persistent central ledger is implemented; unobserved traffic after a kernel crash cannot be reconstructed. This prevents a claim of production-ready billing.
 - Only one metered gateway per account is supported by this prototype. No multipath or cross-gateway quotas.
 - A snapshot uses the original baseline config that was used to install the rules. Never reset live counters. A missing counter is unknown, not zero. Admitted packet counts may include packets subsequently dropped by other network layers; the accounting boundary is explicitly the gateway gate.
 - Test with namespaces and real WireGuard, test reboot/expiry/revocation and implement durable accounting before app integration. Existing shared credentials already delivered to test clients must be rotated before enforced sales.
@@ -16,8 +16,8 @@ The kernel gate uses one named quota per account across ingress and egress, and 
 ```
 python3 quota_gate.py render lab.json
 sudo python3 quota_gate.py check lab.json
-sudo python3 quota_gate.py install-once lab.json
-sudo python3 quota_gate.py snapshot lab.json
+sudo python3 quota_gate.py install-once lab.json --state-dir /var/lib/delta-quota-lab
+sudo python3 quota_gate.py snapshot lab.json --state-dir /var/lib/delta-quota-lab
 python3 -m unittest discover -s . -p 'test_*.py'
 ```
 Config example (expiry must be a future UTC Unix timestamp; replace with lab values):
