@@ -91,7 +91,7 @@ function daUser(mysqli $db,int $id): void {
     if($m&&$m['state']==='pending')$rows[]=daBtn('🔄 بازیابی ساخت','da_pgretry_'.$id);
     if($m&&$m['state']==='ready'){$rows[]=daBtn('⛔ غیرفعال کردن / تلاش مجدد','da_pgdisable_'.$id);if(!$a['active'])$rows[]=daBtn('✅ فعال کردن','da_pgenable_'.$id);}
     $rows[]=daBtn('✏️ تعداد دستگاه مجاز: '.$a['device_limit'],'da_limit_'.$id);$rows[]=daBtn('📱 دستگاه‌ها','da_devices_'.$id);$rows[]=daBtn('🗑 حذف کامل کاربر','da_delask_'.$id);$rows[]=daBtn('بازگشت','da_users_0');
-    daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$id."\nتاریخ ایجاد: ".daIranDate((int)$a['created'])."\nپایان: ".daIranDate((int)$a['expires'])."\nباقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".$a['gb']." GB\n".$traffic."\nوضعیت: ".$status."\nرمز قبلی قابل مشاهده نیست.",$rows);
+    daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$id."\nتاریخ ایجاد: ".daIranDate((int)$a['created'])."\nپایان: ".daIranDate((int)$a['expires'])."\nباقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".daQuotaLabel($a['gb'])." GB\n".$traffic."\nوضعیت: ".$status."\nرمز قبلی قابل مشاهده نیست.",$rows);
 }
 function daPgGroupButtons(string $ticket,array $groups,int $page=0): void {
     $rows=[];$off=$page*8;
@@ -143,7 +143,7 @@ function deltaAppAdminHandle(): bool {
                     daSend('شما قبلاً اشتراک تست دریافت کرده‌اید. هر کاربر فقط یک بار مجاز است.',[daBtn('سرویس‌های من','dar_mine'),daBtn('بازگشت','dar_home')]);return true;
                 }
                 if(!(int)$s['enabled'])throw new InvalidArgumentException('اشتراک تست فعلاً غیرفعال است.');
-                daSend("🎁 اشتراک تست رایگان دلتا\nحجم: ".$s['gb']." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nقیمت: رایگان\nهر کاربر فقط یک بار.",[daBtn('✅ دریافت اشتراک تست','dar_trialgo'),daBtn('بازگشت','dar_home')]);return true;
+                daSend("🎁 اشتراک تست رایگان دلتا\nحجم: ".daQuotaLabel($s['gb'])." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nقیمت: رایگان\nهر کاربر فقط یک بار.",[daBtn('✅ دریافت اشتراک تست','dar_trialgo'),daBtn('بازگشت','dar_home')]);return true;
             }
             if($cb==='dar_trialgo'){
                 $buyer=(int)$from_id;
@@ -256,11 +256,11 @@ function deltaAppAdminHandle(): bool {
             daRealSchema($connection);$s=daTrialSettings($connection);daTrialSet($connection,$m[1],1-(int)$s[$m[1]]);daTrialAdminView($connection);return true;
         }
         if(preg_match('/^da_trialset_(gb|days|devices|daily_cap)$/D',$cb,$m)){
-            setUser('da_trialvalue_'.$m[1]);daSend('مقدار جدید را به عدد انگلیسی وارد کنید (اعتبار به روز).',[daBtn('انصراف','da_trial')]);return true;
+            setUser('da_trialvalue_'.$m[1]);daSend($m[1]==='gb'?'حجم را به گیگابایت وارد کنید؛ مثلا 0.1، 0.2، 0.5 یا 1. حداکثر سه رقم اعشار.':'مقدار جدید را به عدد انگلیسی وارد کنید (اعتبار به روز).',[daBtn('انصراف','da_trial')]);return true;
         }
         if($cb===''&&preg_match('/^da_trialvalue_(gb|days|devices|daily_cap)$/D',$step,$m)){
-            if(!preg_match('/^\d{1,4}$/D',$input))throw new InvalidArgumentException('عدد معتبر وارد کنید.');
-            daRealSchema($connection);daTrialSet($connection,$m[1],(int)$input);setUser();daTrialAdminView($connection);return true;
+            $value=strtr($input,['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9','٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9','٫'=>'.']);
+            daRealSchema($connection);daTrialSet($connection,$m[1],$value);setUser();daTrialAdminView($connection);return true;
         }
         if(preg_match('/^da_triallist_(\d{1,6})$/D',$cb,$m)){
             daRealSchema($connection);$page=(int)$m[1];$rows=[];
@@ -474,7 +474,7 @@ function deltaAppAdminHandle(): bool {
 function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$rows=[];
     $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده','deleting'=>'در انتظار حذف','deleted'=>'حذف شده'];
-    $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".$o['gb']." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
+    $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".daQuotaLabel($o['gb'])." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
     if(!$p)throw new RuntimeException('payment missing');
     $wallet=daRealWalletPreview($db,$buyer,(int)$o['price']);
@@ -510,7 +510,7 @@ function daRealServiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
     if($o['state']==='deleting'){daSend('حذف سرویس هنوز کامل نشده است.',[daBtn('🗑 ادامه حذف','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);return;}
     if($o['state']!=='delivered'||!$a){daSend('حساب آماده یا موجود نیست.',[daBtn('بازگشت','dar_mine')]);return;}
-    $status='نامشخص';$usage='نامشخص';$limit=(int)$a['gb']*1073741824;$expiry=(int)$a['expires'];
+    $status='نامشخص';$usage='نامشخص';$limit=daQuotaBytes($a['gb']);$expiry=(int)$a['expires'];
     try{$v=daPgLive($db,$a);$status=$v['can_connect']?'فعال':'غیرفعال';$usage=number_format($v['used_bytes']/1073741824,3).' GB';$limit=$v['limit_bytes'];$expiry=$v['expires'];}catch(Throwable $e){}
     $txt="👤 <code>".daEsc($a['username'])."</code>\nاشتراک: ".daEsc($o['name'])."\nشماره سفارش: ".daEsc($o['pay_hash'])."\nوضعیت: ".$status."\nحجم: ".number_format($limit/1073741824,3)." GB\nمصرف: ".$usage."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nانقضا: ".daIranDate($expiry)."\nدستگاه: ".count(daDeviceList($db,(int)$a['id']))." / ".$a['device_limit'];
     daSend($txt,[daBtn('📱 دستگاه‌های متصل','dar_devices_'.$id),daBtn('🔑 تغییر رمز','dar_resetask_'.$id),daBtn('🗑 حذف یوزر','dar_delask_'.$id),daBtn('بازگشت','dar_mine')]);
@@ -599,7 +599,7 @@ function daRealReceiptHandle(): bool {
         if(!daRealRegisterReceipt($connection,$hash,(int)$from_id,$kind,$at))throw new RuntimeException('receipt already submitted');
         setUser();
         $template=$mainValues['buy_new_account_request']??"🧾 درخواست خرید اشتراک\n👤 آیدی: USER-ID\nنام: NAME\nنام کاربری: USERNAME\nپلن: REMARK\nحجم: VOLUME\nمدت: DAYS\nمبلغ: PRICE تومان\nروش: TYPE\nسرور: SERVERNAME";
-        $msg=str_replace(['SERVERNAME','TYPE','USER-ID','USERNAME','NAME','PRICE','REMARK','VOLUME','DAYS'],['برنامه دلتا','کارت به کارت',(string)$from_id,daEsc($userInfo['username']??''),daEsc($userInfo['name']??''),number_format((int)$o['price']),daEsc($o['name']),(string)$o['gb'],(string)$o['days']],$template);
+        $msg=str_replace(['SERVERNAME','TYPE','USER-ID','USERNAME','NAME','PRICE','REMARK','VOLUME','DAYS'],['برنامه دلتا','کارت به کارت',(string)$from_id,daEsc($userInfo['username']??''),daEsc($userInfo['name']??''),number_format((int)$o['price']),daEsc($o['name']),daQuotaLabel($o['gb']),(string)$o['days']],$template);
         $msg=deltaAppendTracking($msg,$hash);
         if($kind==='text')$msg.="\n📝 ".daEsc(mb_substr((string)$text,0,1500));
         $keys=getReceiptAdminKeyboard('accept'.$hash,'declineOffer'.$hash.'_'.(int)$from_id,(int)$from_id);
@@ -638,6 +638,6 @@ function daTrialAdminView(mysqli $db): void {
     $n=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims');
     $today=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims WHERE claimed>=?','i',daTrialDayStart());
     $ready=daRow($db,"SELECT COUNT(*) AS n FROM delta_app_real_orders WHERE method='trial' AND state='delivered'");
-    $txt="🎁 مدیریت اشتراک تست\nوضعیت: ".($s['enabled']?'فعال':'غیرفعال')."\nحجم: ".$s['gb']." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nظرفیت امروز: ".$today['n']." / ".$s['daily_cap']."\nکل درخواست‌ها: ".$n['n']."\nتحویل‌شده (حذف‌نشده): ".$ready['n']."\nالزام شماره ثبت‌شده: ".($s['require_phone']?'فعال':'غیرفعال')."\nهر آیدی تلگرام یک بار؛ آزادسازی فقط توسط مدیر.";
+    $txt="🎁 مدیریت اشتراک تست\nوضعیت: ".($s['enabled']?'فعال':'غیرفعال')."\nحجم: ".daQuotaLabel($s['gb'])." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nظرفیت امروز: ".$today['n']." / ".$s['daily_cap']."\nکل درخواست‌ها: ".$n['n']."\nتحویل‌شده (حذف‌نشده): ".$ready['n']."\nالزام شماره ثبت‌شده: ".($s['require_phone']?'فعال':'غیرفعال')."\nهر آیدی تلگرام یک بار؛ آزادسازی فقط توسط مدیر.";
     daSend($txt,[daBtn($s['enabled']?'🔴 غیرفعال کردن':'🟢 فعال کردن','da_trialtoggle_enabled'),daBtn('🔋 تنظیم حجم','da_trialset_gb'),daBtn('⏰ تنظیم اعتبار','da_trialset_days'),daBtn('📱 تعداد دستگاه','da_trialset_devices'),daBtn('👥 ظرفیت روزانه','da_trialset_daily_cap'),daBtn('📞 الزام شماره ثبت‌شده','da_trialtoggle_require_phone'),daBtn('📋 لیست دریافت‌کنندگان','da_triallist_0'),daBtn('🔄 آزادسازی دریافت مجدد','da_trialrelease'),daBtn('بازگشت','da_menumanage')]);
 }
