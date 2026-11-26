@@ -86,7 +86,7 @@ function daUser(mysqli $db,int $id): void {
     $remaining=intdiv($left,86400).' روز و '.intdiv($left%86400,3600).' ساعت و '.intdiv($left%3600,60).' دقیقه و '.($left%60).' ثانیه';
     $fmt=fn($b)=>number_format($b/1073741824,4).' GB';
     $traffic='مصرف: نامشخص (پنل تأیید نشده)';$status=$m?($m['state']==='pending'?'در انتظار ساخت':'نامشخص'):'قدیمی؛ نیازمند حساب اختصاصی';
-    if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$a['expires']=$v['expires'];$a['gb']=$v['limit_bytes']/1073741824;$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
+    if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$a['expires']=$v['expires'];$a['gb']=number_format($v['limit_bytes']/1073741824,3,'.','');$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
     $rows=[daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id)];
     if($m&&$m['state']==='pending')$rows[]=daBtn('🔄 بازیابی ساخت','da_pgretry_'.$id);
     if($m&&$m['state']==='ready'){$rows[]=daBtn('⛔ غیرفعال کردن / تلاش مجدد','da_pgdisable_'.$id);if(!$a['active'])$rows[]=daBtn('✅ فعال کردن','da_pgenable_'.$id);}
@@ -473,6 +473,10 @@ function deltaAppAdminHandle(): bool {
 
 function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$rows=[];
+    if($o['method']==='trial'){
+        if(in_array($o['state'],['delivered','deleting'],true)){daRealServiceView($db,$buyer,$id);return;}
+        daSend('این درخواست مربوط به اشتراک تست است.',[daBtn('🎁 اشتراک تست','dar_trial'),daBtn('بازگشت','dar_home')]);return;
+    }
     $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده','deleting'=>'در انتظار حذف','deleted'=>'حذف شده'];
     $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".daQuotaLabel($o['gb'])." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
