@@ -109,7 +109,7 @@ function deltaAppAdminHandle(): bool {
     if(!$command&&!$buyPreview&&!str_starts_with($cb,'da_')&&!str_starts_with($step,'da_'))return false;
     if(!empty($isChildBot)||(string)$chat_id!==(string)$from_id)return false;
     if(!$buyPreview&&(string)$from_id!==(string)$admin)return false;
-    if($buyPreview&&empty($userInfo['userid'])&&!daRow($connection,'SELECT userid FROM users WHERE userid=?','i',(int)$from_id))return false;
+    if($buyPreview&&!daRealCustomerAllowed())return false;
     // A hidden command alone is not authentication. Require the actual Telegram webhook secret.
     if(!is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
         return true;
@@ -472,7 +472,8 @@ function daRealReceiptHandle(): bool {
     $p=daRealPayByHash($connection,$hash);
     if(!$p)return false;
     $adminAction=$action==='legacy'||$action==='reject';
-    $isAdmin=(int)$from_id===(int)$admin||!empty($userInfo['isAdmin']);
+    if(!$adminAction&&!daRealCustomerAllowed()){answerQuery('ابتدا شرایط ورود به ربات را تکمیل کنید.',true);return true;}
+    $isAdmin=(int)$from_id===(int)$admin||(($userInfo['isAdmin']??false)==true);
     if((int)$chat_id!==(int)$from_id||($adminAction?!$isAdmin:(int)$p['user_id']!==(int)$from_id)||
         !is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
         return true;
@@ -539,4 +540,15 @@ function daRealReceiptHandle(): bool {
         $msg=$e instanceof InvalidArgumentException?$e->getMessage():'عملیات کامل نشد؛ وضعیت فاکتور را بررسی کنید و دوباره واریز نکنید.';
         if($cb!=='')answerQuery($msg,true);else sendMessage($msg);return true;
     }
+}
+
+function daRealCustomerAllowed(): bool {
+    global $from_id,$admin,$userInfo,$botState,$channelLock,$joniedState;
+    if((int)$from_id===(int)$admin)return true;
+    if(!is_array($userInfo)||(int)($userInfo['userid']??0)!==(int)$from_id||($userInfo['step']??'')==='banned')return false;
+    if(($botState['botState']??'on')==='off'||($botState['sellState']??'on')==='off')return false;
+    if(($botState['adminApprovalState']??'off')==='on'&&empty($userInfo['isAdmin'])&&($userInfo['approval_status']??'none')!=='approved')return false;
+    if(($botState['requirePhone']??'off')==='on'&&empty($userInfo['isAdmin'])&&empty($userInfo['phone']))return false;
+    if(($botState['forceJoinState']??'on')==='on'&&!empty($channelLock)&&in_array($joniedState??'', ['kicked','left'],true))return false;
+    return true;
 }
