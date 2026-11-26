@@ -151,5 +151,23 @@ $t2=daTrialReserve($db,1001,true);
 check($t2!==$t&&(int)daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims')['n']===2,'admin exception keeps full trial history');
 daTrialSet($db,'enabled',0);
 check(daTrialReserve($db,1001,true)===$t2,'disabled new claims still allow recovery of existing reservation');
+// Simulate a confirmed remote account in the disposable DB only. Exercise
+// shared completion and notification without calling an actual VPN panel.
+$trialAid=91;$trialUser='fixture_trial_user';$trialExp=time()+86400;
+daExec($db,'INSERT INTO delta_app_accounts(id,username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,0,1,?,1,?,1)','issii',$trialAid,$trialUser,password_hash('fixture',PASSWORD_DEFAULT),$trialExp,time());
+daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,state,panel_kind) VALUES(?,1,1,'https://fixture.invalid',?,'fixture-trial-marker','ready','app')",'is',$trialAid,$trialUser);
+daExec($db,"UPDATE delta_app_real_orders SET state='provisioning',account_id=? WHERE id=?",'ii',$trialAid,$t2);
+$messages=[];
+function sendMessage($txt,$key=null,$parse=null,$buyer=null){$GLOBALS['messages'][]=[$txt,$buyer];return (object)['ok'=>true];}
+$nReports=count($reports);
+$res=daTrialDeliver($db,1001,$t2);
+check($res['order']['state']==='delivered'&&password_verify($res['password'],daAccount($db,$trialAid)['password_hash']),'trial completes existing reserved account with usable local password');
+check(count($messages)===1&&$messages[0][1]===1001&&str_contains($messages[0][0],$trialUser),'trial credentials sent only to owner');
+check(count($reports)===$nReports+1&&str_contains(end($reports),$trialUser),'trial delivery admin report includes username');
+daTrialDeliver($db,1001,$t2);
+check(count($messages)===1&&count($reports)===$nReports+1,'repeat completion does not resend credentials or reports');
+check(daTrialReserve($db,1001,true)===$t2,'delivered trial remains one-time');
+rejected(fn()=>daTrialRelease($db,1001),'active delivered trial cannot be released');
+
 rejected(fn()=>daTrialReserve($db,1002,true),'disabled trial blocks new users');
 echo "All isolated checkout fixture checks passed.\n";
