@@ -23,6 +23,7 @@ function daRealOrder(mysqli $db,int $buyer,int $id): array {
 }
 function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
     daRealSchema($db);
+    daRealFinancePreflight($db);
     $db->begin_transaction();
     try{
         $p=daRow($db,'SELECT * FROM delta_app_plans WHERE id=? AND active=1 AND category_id IS NOT NULL FOR UPDATE','i',$plan);
@@ -31,7 +32,14 @@ function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
         if(!$setting)throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
         $old=daRow($db,"SELECT o.id FROM delta_app_real_orders o JOIN pays p ON p.hash_id=o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.plan_id=? AND o.state='pending' AND p.state='pending' AND o.created>=? ORDER BY o.id DESC LIMIT 1",'iii',$buyer,$plan,time()-3600);
         if($old){$db->commit();return (int)$old['id'];}
-        $hash=bin2hex(random_bytes(9));$now=time();$price=(int)$p['price'];$gb=(int)$p['gb'];$days=(int)$p['days'];$devices=(int)$p['device_limit'];
+        $hash='';
+        for($i=0;$i<12;$i++){
+            $candidate='DA';$alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456789';
+            for($j=0;$j<7;$j++)$candidate.=$alphabet[random_int(0,strlen($alphabet)-1)];
+            if(!daRow($db,'SELECT id FROM pays WHERE hash_id=? LIMIT 1','s',$candidate)){$hash=$candidate;break;}
+        }
+        if($hash==='')throw new RuntimeException('invoice hash unavailable');
+        $now=time();$price=(int)$p['price'];$gb=(int)$p['gb'];$days=(int)$p['days'];$devices=(int)$p['device_limit'];
         daExec($db,"INSERT INTO pays(hash_id,description,user_id,type,plan_id,volume,day,price,request_date,state) VALUES(?,?,?,'DELTA_APP_BUY',?,?,?,?,?,'pending')",'ssiiiiii',$hash,$p['name'],$buyer,$plan,$gb,$days,$price,$now);
         $pay=daRow($db,"SELECT type,price,user_id FROM pays WHERE hash_id=?",'s',$hash);
         if(!$pay || $pay['type']!=='DELTA_APP_BUY' || (int)$pay['price']!==$price || (int)$pay['user_id']!==$buyer)throw new RuntimeException('payment snapshot mismatch');
@@ -40,6 +48,7 @@ function daRealInvoice(mysqli $db,int $buyer,int $plan): int {
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
 function daRealWallet(mysqli $db,int $buyer,int $id): void {
+    daRealFinancePreflight($db);
     $db->begin_transaction();
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
@@ -152,6 +161,7 @@ function daRealSyncPaid(mysqli $db,string $hash): array {
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
 function daRealRegisterReceipt(mysqli $db,string $hash,int $buyer,string $kind,int $at): bool {
+    daRealFinancePreflight($db);
     if(!in_array($kind,['photo','text'],true)||$at<=0||$at>time())return false;
     $db->begin_transaction();
     try{
@@ -208,4 +218,17 @@ function daRealManualClaim(mysqli $db,string $hash): void {
     // Legacy mode: explicit owner confirmation after checking bank statement.
     $s=daQuery($db,"UPDATE pays SET state='approved' WHERE hash_id=? AND type='DELTA_APP_BUY' AND state='have_sent'",'s',$hash);
     $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new RuntimeException('payment already processed');
+}
+
+/** Fail closed before any financial write on a nontransactional or incompatible schema. */
+function daRealFinancePreflight(mysqli $db): void {
+    foreach(['pays','users','setting','delta_app_real_orders','delta_app_accounts','delta_app_pg_users'] as $table){
+        $r=daRow($db,"SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?",'s',$table);
+        if(!$r||strtolower((string)$r['ENGINE'])!=='innodb')throw new RuntimeException('transactional table required: '.$table);
+    }
+    $r=daRow($db,"SELECT DATA_TYPE,COLUMN_TYPE,CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pays' AND COLUMN_NAME='type'");
+    if(!$r||(!in_array($r['DATA_TYPE'],['enum','set'],true)&&(int)$r['CHARACTER_MAXIMUM_LENGTH']<strlen('DELTA_APP_BUY'))||
+        (in_array($r['DATA_TYPE'],['enum','set'],true)&&!str_contains($r['COLUMN_TYPE'],"'DELTA_APP_BUY'")))throw new RuntimeException('pays.type cannot store DELTA_APP_BUY');
+    $r=daRow($db,"SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pays' AND COLUMN_NAME='hash_id'");
+    if(!$r||(int)$r['CHARACTER_MAXIMUM_LENGTH']<9)throw new RuntimeException('pays.hash_id incompatible');
 }
