@@ -203,7 +203,7 @@ function daPgServer(mysqli $db,int $id,?string $expected=null,string $kind='app'
 }
 function daPgCheckGroup(array $s,int $gid): array {
     $token=daPgToken($s);
-    [$code,$raw]=daPgHttp($s['base'].'/api/group/'.$gid,'GET',$token);
+    [$code,$raw]=daPgApi($s,'/api/group/'.$gid,'GET',$token);
     if($code!==200)throw new InvalidArgumentException('گروه در پنل پیدا نشد یا دسترسی کافی نیست.');
     $j=daPgJson($raw);
     if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
@@ -213,7 +213,7 @@ function daPanelRegister(mysqli $db,string $url,string $name,string $password,in
     $base=daPgBase($url);$sub=$sub===''?$base:daPgBase($sub);
     if(strlen($base)>255||strlen($sub)>255||strlen($name)<1||strlen($name)>128||strlen($password)<1||strlen($password)>512||$gid<1||$gid>4294967295||preg_match('/[\x00-\x1f\x7f]/',$name))throw new InvalidArgumentException('مقادیر پنل نامعتبر است.');
     if(daRow($db,'SELECT id FROM delta_app_panels WHERE panel_url=? AND username=?','ss',$base,$name))throw new InvalidArgumentException('این آدرس با همین نام مدیریتی قبلاً در برنامه ثبت شده است.');
-    $s=['base'=>$base,'username'=>$name,'password'=>$password];
+    $s=['base'=>$base,'sub_base_url'=>$sub,'username'=>$name,'password'=>$password];
     daPgCheckGroup($s,$gid);
     $secret=daPanelEncrypt($password,$base,$name);
     $db->begin_transaction();
@@ -224,12 +224,37 @@ function daPanelRegister(mysqli $db,string $url,string $name,string $password,in
         $db->commit();return $id;
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
-function daPgHttp(string $url,string $method='GET',?string $token=null,?array $body=null,bool $form=false): array {
+// When panel_url is an IP and the owner provides a DNS subscription hostname,
+ // dial the IP directly but retain the certificate hostname and SNI.
+function daPgRoute(array $s): array {
+    $base=daPgBase($s['base']);
+    $p=parse_url($base);$ip=$p['host'];
+    $sub=trim((string)($s['sub_base_url']??''));
+    if($sub===''||$sub==='/empty')$sub=$base;
+    $sub=daPgBase($sub);
+    $q=parse_url($sub);$host=$q['host'];
+    $apiPort=(int)($p['port']??443);$subPort=(int)($q['port']??443);
+    $route=['api_base'=>$base,'api_resolve'=>[],'sub_resolve'=>[]];
+    if(!filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4)||filter_var($host,FILTER_VALIDATE_IP))return $route;
+    if(!filter_var($host,FILTER_VALIDATE_DOMAIN,FILTER_FLAG_HOSTNAME)||!str_contains($host,'.')||$apiPort<1||$apiPort>65535||$subPort<1||$subPort>65535)throw new InvalidArgumentException('دامنه یا پورت گواهی نامعتبر است.');
+    $route['api_base']='https://'.$host.(isset($p['port'])?':'.$apiPort:'');
+    $route['api_resolve']=[$host.':'.$apiPort.':'.$ip];
+    // Only pin the same origin when the subscription port matches the panel port.
+    if($subPort===$apiPort)$route['sub_resolve']=$route['api_resolve'];
+    return $route;
+}
+function daPgApi(array $s,string $path,string $method='GET',?string $token=null,?array $body=null,bool $form=false): array {
+    if(!str_starts_with($path,'/api/'))throw new RuntimeException('invalid API path');
+    $r=daPgRoute($s);
+    return daPgHttp($r['api_base'].$path,$method,$token,$body,$form,$r['api_resolve']);
+}
+function daPgHttp(string $url,string $method='GET',?string $token=null,?array $body=null,bool $form=false,array $resolve=[]): array {
     $data='';$ch=curl_init($url);
     $headers=['Accept: application/json'];
     if($token!==null)$headers[]='Authorization: Bearer '.$token;
     if($body!==null)$headers[]=$form?'Content-Type: application/x-www-form-urlencoded':'Content-Type: application/json';
     curl_setopt_array($ch,[CURLOPT_CUSTOMREQUEST=>$method,CURLOPT_HTTPHEADER=>$headers,CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_CONNECTTIMEOUT=>4,CURLOPT_TIMEOUT=>8,CURLOPT_PROXY=>'',CURLOPT_USERAGENT=>'v2rayNG/2.3.15',CURLOPT_WRITEFUNCTION=>function($ch,$part)use(&$data){if(strlen($data)+strlen($part)>2000000)return 0;$data.=$part;return strlen($part);}]);
+    if($resolve)curl_setopt($ch,CURLOPT_RESOLVE,$resolve);
     if($body!==null)curl_setopt($ch,CURLOPT_POSTFIELDS,$form?http_build_query($body):json_encode($body,JSON_THROW_ON_ERROR));
     try{$ok=curl_exec($ch);$code=(int)curl_getinfo($ch,CURLINFO_HTTP_CODE);}finally{curl_close($ch);}
     if($ok===false)throw new RuntimeException('panel network or TLS');
@@ -241,7 +266,7 @@ function daPgJson(string $raw): array {
     return $j;
 }
 function daPgToken(array $s): string {
-    [$code,$raw]=daPgHttp($s['base'].'/api/admin/token','POST',null,['username'=>$s['username'],'password'=>$s['password']],true);
+    [$code,$raw]=daPgApi($s,'/api/admin/token','POST',null,['username'=>$s['username'],'password'=>$s['password']],true);
     if($code!==200)throw new RuntimeException('panel auth');
     $t=daPgJson($raw)['access_token']??null;
     if(!is_string($t)||!preg_match('/^[A-Za-z0-9._~-]+$/D',$t))throw new RuntimeException('panel token');
@@ -249,7 +274,7 @@ function daPgToken(array $s): string {
 }
 function daPgPath(array $m): string {return '/api/user/'.rawurlencode($m['pg_name']);}
 function daPgGet(array $s,string $token,array $m): ?array {
-    [$code,$raw]=daPgHttp($s['base'].daPgPath($m),'GET',$token);
+    [$code,$raw]=daPgApi($s,daPgPath($m),'GET',$token);
     if($code===404)return null;
     if($code!==200)throw new RuntimeException('panel read');
     $j=daPgJson($raw);
@@ -296,7 +321,7 @@ function daPgProvisionLocked(mysqli $db,int $id): void {
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);
     $j=daPgGet($s,$token,$m);
     if($j===null){
-        [$code,$raw]=daPgHttp($s['base'].'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>(int)$a['gb']*1073741824,'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
+        [$code,$raw]=daPgApi($s,'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>(int)$a['gb']*1073741824,'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
         if(!in_array($code,[200,201,204],true))throw new RuntimeException('panel create');
         $j=daPgGet($s,$token,$m);
     }
@@ -333,7 +358,7 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     if(!$j)throw new RuntimeException('panel user missing');
     $metrics=daPgMetrics($a,$j);$metrics['configs']=[];
     if($withConfigs&&$metrics['can_connect']){
-        [$code,$raw]=daPgHttp(daPgSub($s,$j));
+        [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
         if($code!==200)throw new RuntimeException('sub fetch');
         $metrics['configs']=daExtract($raw);
     }
@@ -351,14 +376,14 @@ function daPgChangeLocked(mysqli $db,int $id,string $action): void {
     if($delete||$action==='disable'){daExec($db,'UPDATE delta_app_accounts SET active=0 WHERE id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);}
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$t=daPgToken($s);$j=daPgGet($s,$t,$m);
     if($delete){
-        if($j!==null){[$code,$raw]=daPgHttp($s['base'].daPgPath($m),'DELETE',$t);if(!in_array($code,[200,204,404],true)||daPgGet($s,$t,$m)!==null)throw new RuntimeException('delete pending');}
+        if($j!==null){[$code,$raw]=daPgApi($s,daPgPath($m),'DELETE',$t);if(!in_array($code,[200,204,404],true)||daPgGet($s,$t,$m)!==null)throw new RuntimeException('delete pending');}
         $db->begin_transaction();try{daExec($db,'DELETE FROM delta_app_pg_users WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_accounts WHERE id=?','i',$id);$db->commit();}catch(Throwable $e){$db->rollback();throw $e;}
         return;
     }
     if(!$j||$m['state']!=='ready')throw new RuntimeException('panel not ready');
     $target=$action==='disable'?'disabled':'active';
     if($target==='active'){ $v=daPgMetrics($a,$j);if($v['remaining_bytes']===0||$v['expires']<=time())throw new InvalidArgumentException('حجم یا اعتبار تمام شده است.');}
-    [$code,$raw]=daPgHttp($s['base'].daPgPath($m),'PUT',$t,['status'=>$target]);
+    [$code,$raw]=daPgApi($s,daPgPath($m),'PUT',$t,['status'=>$target]);
     $after=daPgGet($s,$t,$m);
     if(!in_array($code,[200,204],true)||($after['status']??null)!==$target)throw new RuntimeException('state not confirmed');
     if($target==='active')daExec($db,'UPDATE delta_app_accounts SET active=1 WHERE id=?','i',$id);

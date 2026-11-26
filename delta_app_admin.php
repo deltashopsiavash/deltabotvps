@@ -85,7 +85,7 @@ function deltaAppAdminHandle(): bool {
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
         if($cb==='da_pgadd'){
             setUser('da_pgadd');
-            daSend("پنل مستقل برنامه را در پنج خط ارسال کنید:\nآدرس HTTPS پنل\nنام کاربری مدیر برنامه در پسارگارد\nرمز مدیر برنامه\nشماره گروه اختصاصی\nآدرس HTTPS ساب (اختیاری؛ در صورت حذف، آدرس پنل)\n\nاز مدیر جداگانه با دسترسی محدود استفاده کنید. پیام اطلاعات ورود بلافاصله برای حذف ارسال می‌شود.",[daBtn('انصراف','da_pg')]);return true;
+            daSend("پنل مستقل برنامه را در پنج خط ارسال کنید:\nآدرس HTTPS پنل\nنام کاربری مدیر برنامه در پسارگارد\nرمز مدیر برنامه\nشماره گروه اختصاصی\nآدرس HTTPS ساب (اگر آدرس پنل IP است، دامنه معتبر SSL پنل را اینجا با پورت وارد کنید؛ در غیر این صورت اختیاری)\n\nاز مدیر جداگانه با دسترسی محدود استفاده کنید. پیام اطلاعات ورود بلافاصله برای حذف ارسال می‌شود.",[daBtn('انصراف','da_pg')]);return true;
         }
         if($cb==='da_pg'||$cb==='da_pgset'){
             $setting=daRow($connection,'SELECT * FROM delta_app_pg_settings WHERE id=1');
@@ -181,6 +181,6 @@ function deltaAppAdminHandle(): bool {
             $id=(int)$m[1];$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
         }
     }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
-    catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ HTTPS معتبر، اطلاعات مدیر و دسترسی گروه را بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
+    catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ اگر آدرس پنل IP است، دامنه معتبر SSL را در خط پنجم بفرستید. اطلاعات مدیر و دسترسی گروه را هم بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
     return true;
 }

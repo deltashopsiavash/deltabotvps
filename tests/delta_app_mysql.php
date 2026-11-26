@@ -59,3 +59,14 @@ $panel1=$db->insert_id;
 daExec($db,'INSERT INTO delta_app_panels(panel_url,username,secret,sub_base_url,group_id,created) VALUES(?,?,?,?,?,?)','ssssii',$base,'other-'.$tag,$secret,$base,8,time());
 ok($panel1!==$db->insert_id);
 ok(daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_pg_users' AND COLUMN_NAME='panel_kind'")!==null);
+
+$route=daPgRoute(['base'=>'https://192.0.2.1:8000','sub_base_url'=>'https://panel.example:8000']);
+ok($route['api_base']==='https://panel.example:8000');
+ok($route['api_resolve']===['panel.example:8000:192.0.2.1']);
+ok($route['sub_resolve']===$route['api_resolve']);
+$route=daPgRoute(['base'=>'https://192.0.2.1:8000','sub_base_url'=>'https://panel.example']);
+ok($route['api_base']==='https://panel.example:8000'&&$route['sub_resolve']===[]);
+$route=daPgRoute(['base'=>'https://panel.example:8000','sub_base_url'=>'https://sub.example:8000']);
+ok($route['api_base']==='https://panel.example:8000'&&$route['api_resolve']===[]);
+$route=daPgRoute(['base'=>'https://192.0.2.1:8000']);
+ok($route['api_base']==='https://192.0.2.1:8000'&&$route['api_resolve']===[]);
