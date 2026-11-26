@@ -58,6 +58,10 @@ try{
     backupOk(password_verify('fixture-user-password',daRow($restored,'SELECT password_hash FROM delta_app_accounts WHERE id=100')['password_hash']),'existing app login hash preserved');
     backupOk(daRow($restored,'SELECT model FROM delta_app_devices WHERE account_id=100')['model']==='Fixture phone','registered device preserved');
     backupOk(daRow($restored,'SELECT token_hash FROM delta_app_sessions WHERE account_id=100')['token_hash']===$tokenHash,'existing session hash preserved');
+    require_once __DIR__.'/../delta_app_real_checkout.php';
+    $trial=daTrialCurrent($restored,1001);
+    backupOk($trial!==null&&$trial['method']==='trial'&&(int)$trial['price']===0,'trial claim and one-time eligibility survive restore');
+    backupOk(daTrialReserve($restored,1001,true)===(int)$trial['id'],'restored claim cannot create another trial');
     $restored->close();
 }finally{
     @unlink($file);putenv('MYSQL_PWD');
