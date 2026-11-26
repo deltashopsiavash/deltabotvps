@@ -102,7 +102,7 @@ if($deltaForcedQ && $deltaForcedQ->num_rows>0) $deltaForcedExists = true;
 if(empty($isChildBot)){
     try{
         if(daRow($connection,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_real_orders'")){
-            $recover=daRows($connection,"SELECT o.pay_hash FROM delta_app_real_orders o JOIN pays p ON p.hash_id=o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.state IN ('pending','paid','provisioning') AND p.state IN ('paid','approved','paid_with_wallet') ORDER BY o.id LIMIT 10",'i',(int)$admin);
+            $recover=daRows($connection,"SELECT o.pay_hash FROM delta_app_real_orders o JOIN pays p ON BINARY p.hash_id=BINARY o.pay_hash AND p.user_id=o.buyer AND p.type='DELTA_APP_BUY' WHERE o.buyer=? AND o.state IN ('pending','paid','provisioning') AND p.state IN ('paid','approved','paid_with_wallet') ORDER BY o.id LIMIT 10",'i',(int)$admin);
             foreach($recover as $item){
                 try{daRealDeliverPaidHash($connection,(string)$item['pay_hash']);}
                 catch(Throwable $e){error_log('Delta app paid recovery: '.get_class($e));}
