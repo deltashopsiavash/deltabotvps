@@ -2,8 +2,37 @@
 require_once __DIR__.'/delta_app_core.php';
 function daEsc($s): string {return htmlspecialchars((string)$s,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
 function daKeys(array $rows): string {return json_encode(['inline_keyboard'=>$rows],JSON_UNESCAPED_UNICODE);}
-function daBtn(string $name,string $cb): array {return [['text'=>$name,'callback_data'=>$cb]];}
-function daSend(string $txt,array $rows=[]): void {sendMessage($txt,$rows?daKeys($rows):null,'HTML');}
+function daBtn(string $name,string $cb): array {
+    if(!preg_match('/^(?:da_(?:plan|make|cat|wcat)_|dab_(?:plan|cat)_)\d+$/D',$cb)&&!preg_match('/[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{2190}-\x{21FF}]/u',$name)){
+        $icons=['بازگشت'=>'🔙','انصراف'=>'❌','قبلی'=>'◀️','بعدی'=>'▶️','خرید سرویس'=>'🛒','سرویس‌های من'=>'👤','ساخت دسته‌بندی'=>'➕','دسته‌بندی‌ها'=>'🗂','ساخت پلن'=>'➕','پلن‌ها'=>'📦','پنل‌های اختصاصی برنامه'=>'🖥','افزودن پنل برنامه'=>'➕','انتخاب پنل و گروه'=>'⚙️','کاربران'=>'👥','ساخت کاربر'=>'➕','آیدی خرید و پشتیبانی'=>'📞','به‌روزرسانی ساب کاربران'=>'🔄','جستجوی جدید'=>'🔎','همه کاربران'=>'👥','دستگاه‌ها'=>'📱','تغییر نام'=>'✏️','حذف دسته'=>'🗑','تأیید'=>'✅','ویرایش پلن'=>'✏️','حذف پلن'=>'🗑','تأیید حذف'=>'🗑','تأیید حذف کامل'=>'🗑','تنظیم فاصله خودکار'=>'⏱','به‌روزرسانی همین الان'=>'🔄','قطع و اتصال مجدد کاربران متصل'=>'🔌','به‌روزرسانی بدون قطعی'=>'🔄','تنظیم آیدی خرید'=>'🛒','تنظیم آیدی پشتیبانی'=>'💬','پنل‌های برنامه'=>'🖥','ویرایش اطلاعات پنل'=>'✏️','انتخاب گروه'=>'🗂','حذف پنل'=>'🗑','جزئیات حساب'=>'👤','جزئیات'=>'📋','آیدی‌های برنامه'=>'📞','فهرست ساب‌ها'=>'🔗','افزودن دوباره'=>'➕','فعال'=>'✅','غیرفعال'=>'⛔'];
+        $name=($icons[$name]??(str_starts_with($name,'خروج ')?'🚪':(str_starts_with($cb,'da_pg')?'🖥':'📌'))).' '.$name;
+    }
+    return [['text'=>$name,'callback_data'=>$cb]];
+}
+function daBotValue($r,string $key){return is_array($r)?($r[$key]??null):(is_object($r)?($r->$key??null):null);}
+function daSend(string $txt,array $rows=[]): void {
+    global $connection,$chat_id;
+    $keys=$rows?daKeys($rows):json_encode(['inline_keyboard'=>[]]);
+    $payload=['chat_id'=>$chat_id,'text'=>$txt,'parse_mode'=>'HTML','reply_markup'=>$keys];
+    if(str_contains($txt,'رمز: <code>')||str_contains($txt,'رمز تازه (فقط این بار):')){
+        $r=bot('sendMessage',array_replace($payload,['reply_markup'=>json_encode(['inline_keyboard'=>[]])]));
+        if(!daBotValue($r,'ok'))return;
+        $payload['text']='✅ اطلاعات حساب در پیام جداگانه ارسال شد.';
+    }
+    $target=(int)($GLOBALS['da_ui_target']??0);
+    if($target>0){
+        $r=bot('editMessageText',$payload+['message_id'=>$target]);
+        $desc=strtolower((string)daBotValue($r,'description'));
+        if(daBotValue($r,'ok')||str_contains($desc,'message is not modified'))return;
+        if(!str_contains($desc,'message to edit not found')&&!str_contains($desc,"message can't be edited")&&!str_contains($desc,'message_id_invalid'))return;
+    }
+    $r=bot('sendMessage',$payload);
+    $msg=daBotValue(daBotValue($r,'result'),'message_id');
+    if(is_numeric($msg)&&(int)$msg>0){
+        $GLOBALS['da_ui_target']=(int)$msg;
+        daExec($connection,'INSERT INTO delta_app_ui(id,message_id) VALUES(1,?) ON DUPLICATE KEY UPDATE message_id=VALUES(message_id)','i',(int)$msg);
+    }
+}
 function daHome(): void {
     global $botUrl;
     $endpoint=rtrim((string)$botUrl,'/').'/delta_app_api.php';
@@ -31,7 +60,7 @@ function daList(mysqli $db,string $kind,int $page): void {
     if(!$items)$txt.="\nخالی است.";
     if($page>0)$rows[]=daBtn('قبلی',"da_".$kind.'_'.($page-1));
     if(count($items)>8)$rows[]=daBtn('بعدی',"da_".$kind.'_'.($page+1));
-    $rows[]=daBtn('بازگشت','da_home');daSend($txt,$rows);
+    $rows[]=daBtn('بازگشت',$kind==='plans'?'da_menuplans':($kind==='users'?'da_menumanage':'da_home'));daSend($txt,$rows);
 }
 function daChoosePlan(mysqli $db,int $page=0): void {
     $off=$page*8;$items=daRows($db,'SELECT id,name,gb,days FROM delta_app_plans WHERE active=1 ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
@@ -39,7 +68,7 @@ function daChoosePlan(mysqli $db,int $page=0): void {
     foreach(array_slice($items,0,8) as $p)$rows[]=daBtn($p['name'],'da_make_'.$p['id']);
     if($page>0)$rows[]=daBtn('قبلی','da_choose_'.($page-1));
     if(count($items)>8)$rows[]=daBtn('بعدی','da_choose_'.($page+1));
-    $rows[]=daBtn('بازگشت','da_home');
+    $rows[]=daBtn('بازگشت','da_menumanage');
     daSend($items?'پلن کاربر جدید را انتخاب کنید؛ نام و رمز خودکار ساخته می‌شوند.':'پلن فعال وجود ندارد؛ ابتدا پلن بسازید.',$rows);
 }
 function daSearchResults(mysqli $db,string $prefix,int $page=0): void {
@@ -86,6 +115,17 @@ function deltaAppAdminHandle(): bool {
     if($cb!==''&&isset($update->callback_query->id))answerQuery();
     try{
         daSchema($connection);
+        $GLOBALS['da_ui_target']=0;
+        if(!$command&&$input!=='/buy'){
+            $cbmsg=$update->callback_query->message->message_id??null;
+            if($cb!==''&&is_numeric($cbmsg)){
+                $GLOBALS['da_ui_target']=(int)$cbmsg;
+                daExec($connection,'INSERT INTO delta_app_ui(id,message_id) VALUES(1,?) ON DUPLICATE KEY UPDATE message_id=VALUES(message_id)','i',(int)$cbmsg);
+            }elseif(str_starts_with($step,'da_')){
+                $ui=daRow($connection,'SELECT message_id FROM delta_app_ui WHERE id=1');
+                $GLOBALS['da_ui_target']=(int)($ui['message_id']??0);
+            }
+        }
         if($buyPreview){
             setUser();
             if($input==='/buy'||$cb==='dab_home'){daSend('اشتراک اختصاصی برنامه دلتا — پیش‌نمایش مدیریت',[daBtn('خرید سرویس','dab_categories'),daBtn('سرویس‌های من','dab_mine')]);return true;}
@@ -136,7 +176,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_limit_(\d+)$/D',$cb,$m)){setUser($cb);daSend('تعداد دستگاه مجاز جدید (۱ تا ۲۰) را وارد کنید.',[daBtn('انصراف','da_u_'.$m[1])]);return true;}
         if($cb==='da_refresh'){
             setUser();$r=daRefreshSettings($connection);
-            daSend("🔄 به‌روزرسانی اشتراک برنامه\nفاصله خودکار: ".$r['refresh_minutes']." دقیقه\nآخرین فرمان: #".$r['refresh_revision']."\nفرمان روی گوشی آنلاین هنگام بررسی بعدی دریافت می‌شود.",[daBtn('تنظیم فاصله خودکار','da_refinterval'),daBtn('به‌روزرسانی همین الان','da_refnow'),daBtn('بازگشت','da_home')]);return true;
+            daSend("🔄 به‌روزرسانی اشتراک برنامه\nفاصله خودکار: ".$r['refresh_minutes']." دقیقه\nآخرین فرمان: #".$r['refresh_revision']."\nفرمان روی گوشی آنلاین هنگام بررسی بعدی دریافت می‌شود.",[daBtn('تنظیم فاصله خودکار','da_refinterval'),daBtn('به‌روزرسانی همین الان','da_refnow'),daBtn('بازگشت','da_menumanage')]);return true;
         }
         if($cb==='da_refinterval'){setUser('da_refinterval');daSend('فاصله به دقیقه (۱ تا ۱۴۴۰) را بفرستید.',[daBtn('انصراف','da_refresh')]);return true;}
         if($cb==='da_refnow'){
@@ -149,7 +189,7 @@ function deltaAppAdminHandle(): bool {
         }
         if($cb==='da_contacts'){
             setUser();$c=daContacts($connection);
-            daSend("آیدی‌های برنامه:\nخرید: ".($c['purchase']===''?'تنظیم نشده':'@'.daEsc($c['purchase']))."\nپشتیبانی: ".($c['support']===''?'تنظیم نشده':'@'.daEsc($c['support'])),[daBtn('تنظیم آیدی خرید','da_contact_purchase'),daBtn('تنظیم آیدی پشتیبانی','da_contact_support'),daBtn('بازگشت','da_home')]);return true;
+            daSend("آیدی‌های برنامه:\nخرید: ".($c['purchase']===''?'تنظیم نشده':'@'.daEsc($c['purchase']))."\nپشتیبانی: ".($c['support']===''?'تنظیم نشده':'@'.daEsc($c['support'])),[daBtn('تنظیم آیدی خرید','da_contact_purchase'),daBtn('تنظیم آیدی پشتیبانی','da_contact_support'),daBtn('بازگشت','da_menumanage')]);return true;
         }
         if(in_array($cb,['da_contact_purchase','da_contact_support'],true)){
             setUser($cb);daSend('آیدی تلگرام را با @ یا بدون آن بفرستید. برای پاک کردن - بفرستید.',[daBtn('انصراف','da_contacts')]);return true;
@@ -185,7 +225,7 @@ function deltaAppAdminHandle(): bool {
             foreach($items as $r){$txt.="\n#".$r['id']." | ".daEsc($r['username']);$rows[]=daBtn('#'.$r['id'].' | '.$r['username'],($cb==='da_pgset'?'da_pgpanel_':'da_panelview_').$r['id']);}
             if(!$items)$txt.="\nهنوز پنلی ثبت نشده است.";
             else $txt.="\nروی نام پنل بزنید.";
-            setUser();$rows[]=daBtn('➕ افزودن پنل برنامه','da_pgadd');$rows[]=daBtn('بازگشت','da_home');daSend($txt,$rows);return true;
+            setUser();$rows[]=daBtn('➕ افزودن پنل برنامه','da_pgadd');$rows[]=daBtn('بازگشت','da_menupanels');daSend($txt,$rows);return true;
         }
         if($cb==='da_addstock'||str_starts_with($cb,'da_stock_')||preg_match('/^da_(st|sf|sdask|sd)_/',$cb)||$step==='da_addstock'){setUser();daHome();return true;}
         if($cb==='da_search'){setUser('da_search');daSend('نام کاربری یا ابتدای آن را بفرستید.',[daBtn('بازگشت','da_users_0')]);return true;}
