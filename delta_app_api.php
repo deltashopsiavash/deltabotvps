@@ -31,7 +31,7 @@ try{
             daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',hash('sha256',$token),$id,$exp);
             $db->commit();
         }catch(Throwable $e){$db->rollback();throw $e;}
-    }elseif($action==='session'||$action==='logout'){
+    }elseif($action==='session'||$action==='status'||$action==='logout'){
         $token=$j['token']??'';
         if(!is_string($token)||!preg_match('/^[a-f0-9]{64}$/D',$token))daRespond(401,['error'=>'session']);
         $h=hash('sha256',$token);$s=daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND expires>?','si',$h,time());
@@ -41,7 +41,7 @@ try{
     }else daRespond(400,['error'=>'action']);
     $mapping=daPgMap($db,(int)$a['id']);
     if(!$mapping||$mapping['state']!=='ready')daRespond(409,['error'=>'dedicated_required']);
-    $v=daPgLive($db,$a,true);
+    $v=daPgLive($db,$a,$action!=='status');
     // Recheck after network I/O; revoked sessions never receive configs.
     $fresh=daAccount($db,(int)$a['id']);
     if(!daAllowed($fresh)||!daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND account_id=? AND expires>?','sii',hash('sha256',$token),(int)$a['id'],time()))daRespond(401,['error'=>'session']);

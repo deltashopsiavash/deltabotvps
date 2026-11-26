@@ -228,7 +228,14 @@ function daPgConfigure(mysqli $db,int $sid,int $gid): void {
     if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
     daExec($db,'INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base) VALUES(1,?,?,?) ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base)','iis',$sid,$gid,$s['base']);
 }
-function daPgProvision(mysqli $db,int $id): void {
+function daPgLocked(mysqli $db,int $id,callable $fn): mixed {
+    $key='delta_pg_'.substr(hash('sha256',(string)daRow($db,'SELECT DATABASE() AS d')['d'].':'.$id),0,48);
+    $r=daRow($db,'SELECT GET_LOCK(?,3) AS acquired','s',$key);
+    if((int)($r['acquired']??0)!==1)throw new RuntimeException('account busy');
+    try{return $fn();}finally{daRow($db,'SELECT RELEASE_LOCK(?) AS released','s',$key);}
+}
+function daPgProvision(mysqli $db,int $id): void {daPgLocked($db,$id,fn()=>daPgProvisionLocked($db,$id));}
+function daPgProvisionLocked(mysqli $db,int $id): void {
     $a=daAccount($db,$id);$m=daPgMap($db,$id);
     if(!$a||!$m||$m['state']!=='pending'||(int)$a['expires']<=time())throw new InvalidArgumentException('حساب آماده ساخت یا بازیابی نیست.');
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$token=daPgToken($s);
@@ -277,11 +284,16 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     }
     return $metrics;
 }
-function daPgChange(mysqli $db,int $id,bool $delete=false): void {
+function daPgChange(mysqli $db,int $id,string $action): void {
+    if(!in_array($action,['delete','enable','disable'],true))throw new InvalidArgumentException('action');
+    daPgLocked($db,$id,fn()=>daPgChangeLocked($db,$id,$action));
+}
+function daPgChangeLocked(mysqli $db,int $id,string $action): void {
+    $delete=$action==='delete';
     $a=daAccount($db,$id);$m=daPgMap($db,$id);if(!$a)throw new InvalidArgumentException('حساب یافت نشد.');
     if(!$m){if($delete){daDeleteAccount($db,$id);return;}throw new InvalidArgumentException('حساب قدیمی بدون ساب اختصاصی است.');}
     // First close local login, keep the mapping until panel deletion is confirmed.
-    if($delete||$a['active']){daExec($db,'UPDATE delta_app_accounts SET active=0 WHERE id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);}
+    if($delete||$action==='disable'){daExec($db,'UPDATE delta_app_accounts SET active=0 WHERE id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);}
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$t=daPgToken($s);$j=daPgGet($s,$t,$m);
     if($delete){
         if($j!==null){[$code,$raw]=daPgHttp($s['base'].daPgPath($m),'DELETE',$t);if(!in_array($code,[200,204,404],true)||daPgGet($s,$t,$m)!==null)throw new RuntimeException('delete pending');}
@@ -289,7 +301,7 @@ function daPgChange(mysqli $db,int $id,bool $delete=false): void {
         return;
     }
     if(!$j||$m['state']!=='ready')throw new RuntimeException('panel not ready');
-    $target=$a['active']?'disabled':'active';
+    $target=$action==='disable'?'disabled':'active';
     if($target==='active'){ $v=daPgMetrics($a,$j);if($v['remaining_bytes']===0||$v['expires']<=time())throw new InvalidArgumentException('حجم یا اعتبار تمام شده است.');}
     [$code,$raw]=daPgHttp($s['base'].daPgPath($m),'PUT',$t,['status'=>$target]);
     $after=daPgGet($s,$t,$m);

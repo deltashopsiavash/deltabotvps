@@ -63,7 +63,7 @@ function daUser(mysqli $db,int $id): void {
     if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
     $rows=[daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id)];
     if($m&&$m['state']==='pending')$rows[]=daBtn('🔄 بازیابی ساخت','da_pgretry_'.$id);
-    if($m&&$m['state']==='ready')$rows[]=daBtn($a['active']?'⛔ غیرفعال کردن':'✅ فعال کردن','da_ut_'.$id);
+    if($m&&$m['state']==='ready'){$rows[]=daBtn('⛔ غیرفعال کردن / تلاش مجدد','da_pgdisable_'.$id);if(!$a['active'])$rows[]=daBtn('✅ فعال کردن','da_pgenable_'.$id);}
     $rows[]=daBtn('🗑 حذف کامل کاربر','da_delask_'.$id);$rows[]=daBtn('بازگشت','da_users_0');
     daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$id."\nتاریخ ایجاد: ".daIranDate((int)$a['created'])."\nپایان: ".daIranDate((int)$a['expires'])."\nباقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".$a['gb']." GB\n".$traffic."\nوضعیت: ".$status."\nرمز قبلی قابل مشاهده نیست.",$rows);
 }
@@ -111,7 +111,7 @@ function deltaAppAdminHandle(): bool {
             return true;
         }
         if(preg_match('/^da_(plans|stock|users)_(\d{1,5})$/D',$cb,$m)){setUser();daList($connection,$m[1],(int)$m[2]);return true;}
-        if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset|delask|del|pgretry)_(\d{1,10})$/D',$cb,$m)){
+        if(preg_match('/^da_(pt|st|sf|sdask|sd|ut|u|rename|resetask|reset|delask|del|pgretry|pgdisable|pgenable)_(\d{1,10})$/D',$cb,$m)){
             $id=(int)$m[2];setUser();
             switch($m[1]){
                 case 'pt': daExec($connection,'UPDATE delta_app_plans SET active=1-active WHERE id=?','i',$id);daList($connection,'plans',0);break;
@@ -123,9 +123,11 @@ function deltaAppAdminHandle(): bool {
                     $a=daAccount($connection,$id);if(!$a)throw new InvalidArgumentException('کاربر یافت نشد.');
                     daSend('حساب '.daEsc($a['username']).' و ساب اختصاصی آن برای همیشه حذف شوند؟',[daBtn('تأیید حذف کامل','da_del_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
                 case 'del':
-                    daPgChange($connection,$id,true);daSend('✅ حذف حساب تأیید شد.');
+                    daPgChange($connection,$id,'delete');daSend('✅ حذف حساب تأیید شد.');
                     daList($connection,'users',0);break;
-                case 'ut': daPgChange($connection,$id);daUser($connection,$id);break;
+                case 'ut': daUser($connection,$id);break;
+                case 'pgdisable': daPgChange($connection,$id,'disable');daUser($connection,$id);break;
+                case 'pgenable': daPgChange($connection,$id,'enable');daUser($connection,$id);break;
                 case 'pgretry': daPgProvision($connection,$id);daSend('ساخت تأیید شد؛ برای دریافت رمز جدید، بازنشانی رمز را بزنید.',[daBtn('جزئیات','da_u_'.$id)]);break;
                 case 'rename':setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
                 case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
