@@ -9,7 +9,7 @@ function daHome(): void {
     $endpoint=rtrim((string)$botUrl,'/').'/delta_app_api.php';
     daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر حساب جدید دارای ساب اختصاصی پسارگارد است.",[
         daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
-        daBtn('🖥 پنل پسارگارد برنامه','da_pg'),daBtn('⚙️ انتخاب پنل و گروه','da_pgset'),
+        daBtn('🖥 پنل‌های اختصاصی برنامه','da_pg'),daBtn('➕ افزودن پنل برنامه','da_pgadd'),daBtn('⚙️ انتخاب پنل و گروه','da_pgset'),
         daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser')]);
 }
 function daList(mysqli $db,string $kind,int $page): void {
@@ -83,14 +83,19 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if($cb==='da_pgadd'){
+            setUser('da_pgadd');
+            daSend("پنل مستقل برنامه را در پنج خط ارسال کنید:\nآدرس HTTPS پنل\nنام کاربری مدیر برنامه در پسارگارد\nرمز مدیر برنامه\nشماره گروه اختصاصی\nآدرس HTTPS ساب (اختیاری؛ در صورت حذف، آدرس پنل)\n\nاز مدیر جداگانه با دسترسی محدود استفاده کنید. پیام اطلاعات ورود بلافاصله برای حذف ارسال می‌شود.",[daBtn('انصراف','da_pg')]);return true;
+        }
         if($cb==='da_pg'||$cb==='da_pgset'){
             $setting=daRow($connection,'SELECT * FROM delta_app_pg_settings WHERE id=1');
-            $txt="پنل اختصاصی برنامه:\n".($setting?'پنل #'.$setting['server_id'].' | گروه #'.$setting['group_id']:'تنظیم نشده');
-            $rows=daRows($connection,"SELECT id FROM server_config WHERE type='pasarguard' ORDER BY id LIMIT 50");
-            foreach($rows as $r)$txt.="\nپنل موجود #".$r['id'];
-            if($cb==='da_pgset'){setUser('da_pgset');$txt.="\nشماره پنل | شماره گروه را بفرستید. مثال: 1 | 2";}
+            $txt="🖥 پنل‌های مستقل برنامه:\n".($setting&&$setting['panel_kind']==='app'?'انتخاب فعلی #'.$setting['server_id'].' | گروه #'.$setting['group_id']:'پنل مستقل انتخاب نشده');
+            $items=daRows($connection,'SELECT id,panel_url,username,group_id FROM delta_app_panels ORDER BY id LIMIT 50');
+            foreach($items as $r)$txt.="\n#".$r['id']." | ".daEsc($r['panel_url'])." | ".daEsc($r['username'])." | گروه #".$r['group_id'];
+            if(!$items)$txt.="\nهنوز پنلی ثبت نشده است.";
+            if($cb==='da_pgset'){setUser('da_pgset');$txt.="\nشماره پنل برنامه | شماره گروه را بفرستید. مثال: 1 | 2";}
             else setUser();
-            daSend($txt,[daBtn('انتخاب پنل و گروه','da_pgset'),daBtn('بازگشت','da_home')]);return true;
+            daSend($txt,[daBtn('➕ افزودن پنل برنامه','da_pgadd'),daBtn('انتخاب پنل و گروه','da_pgset'),daBtn('بازگشت','da_home')]);return true;
         }
         if($cb==='da_addstock'||str_starts_with($cb,'da_stock_')||preg_match('/^da_(st|sf|sdask|sd)_/',$cb)||$step==='da_addstock'){setUser();daHome();return true;}
         if($cb==='da_search'){setUser('da_search');daSend('نام کاربری یا ابتدای آن را بفرستید.',[daBtn('بازگشت','da_users_0')]);return true;}
@@ -141,7 +146,14 @@ function deltaAppAdminHandle(): bool {
         $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
-        if($step==='da_pgset'){
+        if($step==='da_pgadd'){
+            // Never include submitted credentials in a response or a persistent bot step.
+            bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
+            $lines=preg_split('/\r\n|\r|\n/',(string)$text);
+            if(count($lines)<4||count($lines)>5||!preg_match('/^\d{1,10}$/D',trim($lines[3])))throw new InvalidArgumentException('فرمت پنل اشتباه است؛ چهار خط اصلی و یک خط اختیاری ساب.');
+            $id=daPanelRegister($connection,trim($lines[0]),trim($lines[1]),$lines[2],(int)trim($lines[3]),trim($lines[4]??''));
+            setUser();daSend('✅ پنل مستقل #'.$id.' و گروه تأیید و برای حساب‌های جدید انتخاب شدند.',[daBtn('پنل‌های برنامه','da_pg'),daBtn('بازگشت','da_home')]);
+        }elseif($step==='da_pgset'){
             if(!preg_match('/^(\d{1,9})\s*\|\s*(\d{1,9})$/D',$input,$m)||(int)$m[1]<1||(int)$m[2]<1)throw new InvalidArgumentException('فرمت: شماره پنل | شماره گروه');
             daPgConfigure($connection,(int)$m[1],(int)$m[2]);setUser();daSend('✅ پنل و گروه تأیید و ذخیره شدند.',[daBtn('بازگشت','da_home')]);
         }elseif($step==='da_search'||str_starts_with($step,'da_searchq_')){
@@ -169,6 +181,6 @@ function deltaAppAdminHandle(): bool {
             $id=(int)$m[1];$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
         }
     }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
-    catch(Throwable $e){daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
+    catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ HTTPS معتبر، اطلاعات مدیر و دسترسی گروه را بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
     return true;
 }

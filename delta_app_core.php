@@ -8,12 +8,17 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_panels (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, panel_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, username VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, group_id INT UNSIGNED NOT NULL, created BIGINT UNSIGNED NOT NULL, UNIQUE KEY panel_identity(panel_url,username)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_settings (id TINYINT PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
+    foreach(['delta_app_pg_settings','delta_app_pg_users'] as $table){
+        $col=daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='panel_kind'",'s',$table);
+        if(!$col)$db->query("ALTER TABLE `$table` ADD COLUMN panel_kind VARCHAR(8) NOT NULL DEFAULT 'legacy'");
+    }
 }
 function daQuery(mysqli $db,string $sql,string $types='',...$args): mysqli_stmt {
     $s=$db->prepare($sql); if(!$s)throw new RuntimeException('query');
@@ -164,12 +169,60 @@ function daPgBase(string $url): string {
     if(!$p||($p['scheme']??'')!=='https'||empty($p['host'])||isset($p['user'],$p['pass'])||isset($p['user'])||isset($p['pass'])||isset($p['query'])||isset($p['fragment'])||!empty($p['path']))throw new InvalidArgumentException('آدرس پنل باید HTTPS معتبر و بدون مسیر اضافی باشد.');
     return $base;
 }
-function daPgServer(mysqli $db,int $id,?string $expected=null): array {
-    $s=daRow($db,"SELECT * FROM server_config WHERE id=? AND type='pasarguard'",'i',$id);
-    if(!$s)throw new InvalidArgumentException('پنل پسارگارد ثبت‌شده پیدا نشد.');
+// Independent app credentials. A DB-only dump does not contain the encryption key.
+function daPanelKey(): string {
+    global $dbPassword;
+    if(!is_string($dbPassword??null)||$dbPassword==='')throw new RuntimeException('panel encryption unavailable');
+    return hash_hkdf('sha256',$dbPassword,32,'delta-app-panel-v1');
+}
+function daPanelEncrypt(string $password,string $base,string $name,?string $key=null): string {
+    $iv=random_bytes(12);$tag='';
+    $encrypted=openssl_encrypt($password,'aes-256-gcm',$key??daPanelKey(),OPENSSL_RAW_DATA,$iv,$tag,$base."\0".$name,16);
+    if($encrypted===false)throw new RuntimeException('panel encryption');
+    return base64_encode($iv.$tag.$encrypted);
+}
+function daPanelDecrypt(string $value,string $base,string $name,?string $key=null): string {
+    $raw=base64_decode($value,true);
+    if($raw===false||strlen($raw)<=28)throw new RuntimeException('panel secret invalid');
+    $plain=openssl_decrypt(substr($raw,28),'aes-256-gcm',$key??daPanelKey(),OPENSSL_RAW_DATA,substr($raw,0,12),substr($raw,12,16),$base."\0".$name);
+    if($plain===false)throw new RuntimeException('panel secret decrypt');
+    return $plain;
+}
+function daPgServer(mysqli $db,int $id,?string $expected=null,string $kind='app'): array {
+    if($kind==='legacy'){
+        // Only already-bound old accounts may use the historical sales-panel reference.
+        $s=daRow($db,"SELECT * FROM server_config WHERE id=? AND type='pasarguard'",'i',$id);
+    }elseif($kind==='app'){
+        $s=daRow($db,'SELECT * FROM delta_app_panels WHERE id=?','i',$id);
+        if($s)$s['password']=daPanelDecrypt($s['secret'],$s['panel_url'],$s['username']);
+    }else throw new RuntimeException('panel kind');
+    if(!$s)throw new InvalidArgumentException('پنل پسارگارد مربوط به حساب پیدا نشد.');
     $s['base']=daPgBase($s['panel_url']);
     if($expected!==null&&$s['base']!==$expected)throw new RuntimeException('panel changed');
     return $s;
+}
+function daPgCheckGroup(array $s,int $gid): array {
+    $token=daPgToken($s);
+    [$code,$raw]=daPgHttp($s['base'].'/api/group/'.$gid,'GET',$token);
+    if($code!==200)throw new InvalidArgumentException('گروه در پنل پیدا نشد یا دسترسی کافی نیست.');
+    $j=daPgJson($raw);
+    if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
+    return $j;
+}
+function daPanelRegister(mysqli $db,string $url,string $name,string $password,int $gid,string $sub=''): int {
+    $base=daPgBase($url);$sub=$sub===''?$base:daPgBase($sub);
+    if(strlen($base)>255||strlen($sub)>255||strlen($name)<1||strlen($name)>128||strlen($password)<1||strlen($password)>512||$gid<1||$gid>4294967295||preg_match('/[\x00-\x1f\x7f]/',$name))throw new InvalidArgumentException('مقادیر پنل نامعتبر است.');
+    if(daRow($db,'SELECT id FROM delta_app_panels WHERE panel_url=? AND username=?','ss',$base,$name))throw new InvalidArgumentException('این آدرس با همین نام مدیریتی قبلاً در برنامه ثبت شده است.');
+    $s=['base'=>$base,'username'=>$name,'password'=>$password];
+    daPgCheckGroup($s,$gid);
+    $secret=daPanelEncrypt($password,$base,$name);
+    $db->begin_transaction();
+    try{
+        daExec($db,'INSERT INTO delta_app_panels(panel_url,username,secret,sub_base_url,group_id,created) VALUES(?,?,?,?,?,?)','ssssii',$base,$name,$secret,$sub,$gid,time());
+        $id=(int)$db->insert_id;
+        daExec($db,"INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base,panel_kind) VALUES(1,?,?,?,'app') ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base),panel_kind='app'",'iis',$id,$gid,$base);
+        $db->commit();return $id;
+    }catch(Throwable $e){$db->rollback();throw $e;}
 }
 function daPgHttp(string $url,string $method='GET',?string $token=null,?array $body=null,bool $form=false): array {
     $data='';$ch=curl_init($url);
@@ -221,12 +274,14 @@ function daPgSub(array $s,array $j): string {
 }
 function daPgMap(mysqli $db,int $id): ?array {return daRow($db,'SELECT * FROM delta_app_pg_users WHERE account_id=?','i',$id);}
 function daPgConfigure(mysqli $db,int $sid,int $gid): void {
-    $s=daPgServer($db,$sid);$token=daPgToken($s);
-    [$code,$raw]=daPgHttp($s['base'].'/api/group/'.$gid,'GET',$token);
-    if($code!==200)throw new InvalidArgumentException('گروه در پنل پیدا نشد یا دسترسی کافی نیست.');
-    $j=daPgJson($raw);
-    if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
-    daExec($db,'INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base) VALUES(1,?,?,?) ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base)','iis',$sid,$gid,$s['base']);
+    $s=daPgServer($db,$sid);
+    daPgCheckGroup($s,$gid);
+    $db->begin_transaction();
+    try{
+        daExec($db,'UPDATE delta_app_panels SET group_id=? WHERE id=?','ii',$gid,$sid);
+        daExec($db,"INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base,panel_kind) VALUES(1,?,?,?,'app') ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base),panel_kind='app'",'iis',$sid,$gid,$s['base']);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
 }
 function daPgLocked(mysqli $db,int $id,callable $fn): mixed {
     $key='delta_pg_'.substr(hash('sha256',(string)daRow($db,'SELECT DATABASE() AS d')['d'].':'.$id),0,48);
@@ -238,7 +293,7 @@ function daPgProvision(mysqli $db,int $id): void {daPgLocked($db,$id,fn()=>daPgP
 function daPgProvisionLocked(mysqli $db,int $id): void {
     $a=daAccount($db,$id);$m=daPgMap($db,$id);
     if(!$a||!$m||$m['state']!=='pending'||(int)$a['expires']<=time())throw new InvalidArgumentException('حساب آماده ساخت یا بازیابی نیست.');
-    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$token=daPgToken($s);
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);
     $j=daPgGet($s,$token,$m);
     if($j===null){
         [$code,$raw]=daPgHttp($s['base'].'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>(int)$a['gb']*1073741824,'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
@@ -253,7 +308,7 @@ function daPgProvisionLocked(mysqli $db,int $id): void {
 }
 function daPgNew(mysqli $db,int $plan): array {
     $setting=daRow($db,'SELECT * FROM delta_app_pg_settings WHERE id=1');
-    if(!$setting)throw new InvalidArgumentException('ابتدا پنل و گروه برنامه را تنظیم کنید.');
+    if(!$setting||$setting['panel_kind']!=='app')throw new InvalidArgumentException('ابتدا پنل مستقل برنامه را ثبت کنید.');
     daPgServer($db,(int)$setting['server_id'],$setting['panel_base']);
     // Reserve a durable local record and unique random remote identity before the network call.
     $db->begin_transaction();
@@ -265,7 +320,7 @@ function daPgNew(mysqli $db,int $plan): array {
         $pass=daPassword();$now=time();$expires=$now+(int)$p['days']*86400;
         daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created) VALUES(?,?,?,?,?,0,?)','ssiiii',$name,password_hash($pass,PASSWORD_DEFAULT),$plan,(int)$p['gb'],$expires,$now);
         $id=(int)$db->insert_id;$remote='dapp_'.bin2hex(random_bytes(12));$marker='delta-app:'.bin2hex(random_bytes(16));
-        daExec($db,'INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker) VALUES(?,?,?,?,?,?)','iiisss',$id,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$remote,$marker);
+        daExec($db,'INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,\'app\')','iiisss',$id,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$remote,$marker);
         $db->commit();
     }catch(Throwable $e){$db->rollback();throw $e;}
     try{daPgProvision($db,$id);return ['id'=>$id,'username'=>$name,'password'=>$pass,'ready'=>true];}
@@ -274,7 +329,7 @@ function daPgNew(mysqli $db,int $plan): array {
 function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     $m=daPgMap($db,(int)$a['id']);
     if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
-    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
     if(!$j)throw new RuntimeException('panel user missing');
     $metrics=daPgMetrics($a,$j);$metrics['configs']=[];
     if($withConfigs&&$metrics['can_connect']){
@@ -294,7 +349,7 @@ function daPgChangeLocked(mysqli $db,int $id,string $action): void {
     if(!$m){if($delete){daDeleteAccount($db,$id);return;}throw new InvalidArgumentException('حساب قدیمی بدون ساب اختصاصی است.');}
     // First close local login, keep the mapping until panel deletion is confirmed.
     if($delete||$action==='disable'){daExec($db,'UPDATE delta_app_accounts SET active=0 WHERE id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);}
-    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base']);$t=daPgToken($s);$j=daPgGet($s,$t,$m);
+    $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$t=daPgToken($s);$j=daPgGet($s,$t,$m);
     if($delete){
         if($j!==null){[$code,$raw]=daPgHttp($s['base'].daPgPath($m),'DELETE',$t);if(!in_array($code,[200,204,404],true)||daPgGet($s,$t,$m)!==null)throw new RuntimeException('delete pending');}
         $db->begin_transaction();try{daExec($db,'DELETE FROM delta_app_pg_users WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daExec($db,'DELETE FROM delta_app_accounts WHERE id=?','i',$id);$db->commit();}catch(Throwable $e){$db->rollback();throw $e;}
