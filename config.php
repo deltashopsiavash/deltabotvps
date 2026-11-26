@@ -2216,17 +2216,25 @@ function sendDocument($documentPath, $caption = null, $keyboard = null, $parse =
 
 // Backup helpers (avoid sys_get_temp_dir/open_basedir issues)
 function ensureBackupDir(){
-    $dir = __DIR__ . '/settings/backups';
-    if(!is_dir($dir)){
-        @mkdir($dir, 0755, true);
-    }
+    // SQL files contain confidential customer data. Do not place them under
+    // the HTTP document root, including downloaded restore files.
+    $base='/var/lib/deltabotvps/backups';
+    $dbName=(string)($GLOBALS['dbName']??'');
+    if($dbName==='')throw new RuntimeException('backup database unavailable');
+    $dir=$base.'/'.hash('sha256',$dbName);
+    if(!is_dir($base)||is_link($base)||!is_writable($base))throw new RuntimeException('private backup directory unavailable');
+    if(!is_dir($dir)&&!@mkdir($dir,0700)&&!is_dir($dir))throw new RuntimeException('backup directory creation failed');
+    if(is_link($dir)||!is_writable($dir))throw new RuntimeException('invalid backup directory');
+    @chmod($dir,0700);
     return $dir;
 }
 
 function writeSqlBackupToFile($sql, $prefix = 'deltabotvps_backup'){
     $dir = ensureBackupDir();
     $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '.sql';
-    file_put_contents($path, $sql);
+    $old=umask(0077);
+    try{if(file_put_contents($path,$sql)===false)return null;}finally{umask($old);}
+    @chmod($path,0600);
     $real = realpath($path);
     return $real ? $real : $path;
 }
@@ -2279,7 +2287,7 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
         return null;
     }
 
-    $dir = ensureBackupDir();
+    try{$dir=ensureBackupDir();}catch(Throwable $e){error_log('Private backup directory unavailable');return null;}
     $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.sql';
     $oldUmask=umask(0077);
     try{
