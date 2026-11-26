@@ -14,12 +14,18 @@ $chatId = $argv[3] ?? '';
 $arg4 = $argv[4] ?? '';
 $arg5 = $argv[5] ?? '';
 
+if($mode==='scheduled'){
+    require_once __DIR__.'/baseInfo.php';
+    $mode='backup';$token=(string)($botToken??'');$chatId=(string)($admin??'');
+    $arg4='deltabotvps_scheduled_backup';$arg5=(string)($dbName??'');
+}
 if (!$mode || !$token || !$chatId) {
     fwrite(STDERR, "Invalid args\n");
     exit(1);
 }
 
 require_once __DIR__ . "/config.php";
+require_once __DIR__ . '/delta_backup_integrity.php';
 
 // override token for this worker run
 $GLOBALS['botToken'] = $token;
@@ -153,6 +159,32 @@ function restoreStreaming($sqlPath){
     return $ok;
 }
 
+// Keep the file below Telegram's cloud getFile limit when possible.
+function compressBackupFile(string $path): ?string {
+    $dest=$path.'.gz';$in=fopen($path,'rb');if(!$in)return null;
+    $old=umask(0077);$out=gzopen($dest,'wb6');umask($old);
+    if(!$out){fclose($in);return null;}
+    $ok=true;
+    try{while(!feof($in)){$chunk=fread($in,1048576);if($chunk===false||gzwrite($out,$chunk)!==strlen($chunk)){$ok=false;break;}}}
+    finally{fclose($in);if(!gzclose($out))$ok=false;}
+    if(!$ok){@unlink($dest);return null;}
+    return $dest;
+}
+function expandBackupFile(string $path): ?string {
+    if(file_get_contents($path,false,null,0,2)!=="\x1f\x8b")return $path;
+    $dest=ensureBackupDir().'/restore_expand_'.bin2hex(random_bytes(12)).'.sql';
+    $in=gzopen($path,'rb');if(!$in)return null;
+    $old=umask(0077);$out=fopen($dest,'xb');umask($old);
+    if(!$out){gzclose($in);return null;}
+    $ok=true;$size=0;
+    try{while(!gzeof($in)){
+        $chunk=gzread($in,1048576);
+        if($chunk===false||($size+=strlen($chunk))>536870912||fwrite($out,$chunk)!==strlen($chunk)){$ok=false;break;}
+    }}finally{gzclose($in);fclose($out);}
+    if(!$ok){@unlink($dest);return null;}
+    return $dest;
+}
+
 if($mode === 'backup'){
     $prefix = $arg4 ?: 'deltabotvps_backup';
     sendMsg($chatId, "⏳ در حال ساخت بکاپ... لطفا صبر کنید");
@@ -165,19 +197,25 @@ if($mode === 'backup'){
     $sz = @filesize($path);
     if($sz === false || $sz < 1024){
         // probably mysqldump error-output or empty dump
-        $head = @file_get_contents($path, false, null, 0, 1024);
-        $hint = $head ? ("\nنمونه خروجی:\n" . substr(trim($head), 0, 700)) : "";
+        $hint = ''; // Never send snippets of SQL or credentials to chat.
         sendMsg($chatId, "❌ بکاپ ساخته شد اما معتبر نیست (خیلی کوچک/خطا در mysqldump).{$hint}\n\nمسیر فایل: {$path}");
         exit(0);
     }
-    if(@filesize($path) > 49*1024*1024){
-        sendMsg($chatId, "❌ حجم بکاپ خیلی زیاد است و تلگرام اجازه ارسال نمی‌دهد.\nمسیر فایل: {$path}");
-        exit(0);
+    $unified=deltaUnifiedBackupIsMarked($path);
+    $rawPath=$path;
+    if($sz>18*1024*1024){
+        $compressed=compressBackupFile($path);
+        if($compressed)$path=$compressed;
     }
-    $cap = "🗄 بکاپ دیتابیس\n".date('Y-m-d H:i:s');
+    if(@filesize($path)>19*1024*1024){
+        sendMsg($chatId,"❌ فایل حتی پس از فشرده‌سازی از حد دانلود تلگرام بزرگ‌تر است. بکاپ روی سرور محفوظ است.\n".$rawPath);
+        exit(1);
+    }
+    $cap=($unified?'🗄 بکاپ کامل ربات + برنامه دلتا':'🗄 بکاپ دیتابیس')."\n".date('Y-m-d H:i:s');
     $res = sendDoc($chatId, $path, $cap);
     if(isset($res['ok']) && $res['ok']){
         @unlink($path);
+        if($rawPath!==$path)@unlink($rawPath);
         sendMsg($chatId, "✅ بکاپ ارسال شد.");
     }else{
         sendMsg($chatId, "❌ ارسال بکاپ ناموفق بود.\nمسیر فایل: {$path}");
@@ -191,24 +229,46 @@ if($mode === 'restore'){
         sendMsg($chatId, "❌ فایل بکاپ پیدا نشد.");
         exit(0);
     }
-    sendMsg($chatId, "⏳ در حال بازگردانی بکاپ... لطفا صبر کنید");
-    $ok = false;
-    $err = null;
-    // Prefer mysql CLI if available (robust)
-    if(restoreWithMysqlCli($sqlPath, $err)){
-        $ok = true;
-    }else{
-        // fallback: streaming parser (can fail on complex dumps)
-        $ok = restoreStreaming($sqlPath);
-        if(!$ok && !$err) $err = 'restoreStreaming failed';
+    $originalPath=$sqlPath;
+    $sqlPath=expandBackupFile($sqlPath);
+    if(!$sqlPath){sendMsg($chatId,'❌ فایل فشرده معتبر نیست.');exit(1);}
+    if($sqlPath!==$originalPath)register_shutdown_function(static function()use($sqlPath){@unlink($sqlPath);});
+    global $connection;
+    // Validate before touching any live tables. A dump containing the recovery
+    // key must have a valid signature, including if its footer was truncated.
+    $unified=deltaUnifiedBackupIsMarked($sqlPath)||deltaUnifiedBackupHasRecoveryTable($sqlPath);
+    if($unified&&!deltaUnifiedBackupCheck($sqlPath,$connection)){
+        sendMsg($chatId,'❌ فایل بکاپ کامل معتبر نیست یا توکن ربات مطابقت ندارد؛ هیچ تغییری اعمال نشد.');
+        exit(1);
+    }
+    if(!$unified){
+        if(!deltaLegacyBackupLooksComplete($sqlPath)){sendMsg($chatId,'❌ ساختار یا پایان فایل SQL معتبر نیست؛ هیچ تغییری اعمال نشد.');exit(1);}
+        $hasApp=daRow($connection,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts'");
+        if($hasApp&&daRow($connection,'SELECT id FROM delta_app_accounts LIMIT 1')&&!deltaUnifiedBackupHasTable($sqlPath,'delta_app_accounts')){
+            sendMsg($chatId,'❌ این بکاپ قدیمی اطلاعات برنامه را ندارد. برای جلوگیری از بازیابی ناقص، بکاپ کامل را انتخاب کنید.');
+            exit(1);
+        }
+        sendMsg($chatId,'⚠️ بکاپ قدیمی است؛ بازیابی کامل برنامه با رمز دیتابیس متفاوت تضمین نمی‌شود.');
+    }
+    // Preserve the current database before importing. Do not retry a failed
+    // partial mysql import with a different SQL parser.
+    $safety=dbCreateSqlBackupFile('before_restore');
+    if(!$safety){sendMsg($chatId,'❌ بکاپ ایمنی قبل از بازگردانی ساخته نشد؛ بازیابی متوقف شد.');exit(1);}
+    sendMsg($chatId,"⏳ در حال بازگردانی بکاپ...");
+    $err=null;
+    $ok=restoreWithMysqlCli($sqlPath,$err);
+    if($ok&&($unified||deltaUnifiedBackupHasTable($sqlPath,'delta_app_accounts'))){
+        try{
+            if($unified&&!daRecoveryTableExists($connection))throw new RuntimeException('missing recovery table');
+            daVerifyRecoverySecrets($connection);
+        }catch(Throwable $e){$ok=false;error_log('Unified restore verification failed: '.get_class($e));}
     }
     if($ok){
-        sendMsg($chatId, "✅ بکاپ با موفقیت بازگردانی شد.");
-        // keep file for audit then delete
-        @unlink($sqlPath);
+        sendMsg($chatId,$unified?'✅ بکاپ کامل ربات و برنامه دلتا بازگردانی شد؛ اتصال واقعی پنل را بررسی کنید.':'✅ بکاپ با موفقیت بازگردانی شد.');
+        // Preserve the original backup for repeat recovery.
     }else{
-        $extra = $err ? ("\n\nجزئیات خطا:\n" . substr($err, 0, 1200)) : '';
-        sendMsg($chatId, "❌ خطا در بازگردانی بکاپ.\nمسیر فایل: {$sqlPath}{$extra}");
+        // Do not print mysql output, which can contain sensitive SQL values.
+        sendMsg($chatId,"❌ بازگردانی کامل نشد. دیتابیس ممکن است جزئی تغییر کرده باشد؛ از بکاپ ایمنی قبل از بازگردانی استفاده کنید.\nمسیر بکاپ ایمنی: ".$safety);
     }
     exit(0);
 }

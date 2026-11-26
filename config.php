@@ -2216,17 +2216,25 @@ function sendDocument($documentPath, $caption = null, $keyboard = null, $parse =
 
 // Backup helpers (avoid sys_get_temp_dir/open_basedir issues)
 function ensureBackupDir(){
-    $dir = __DIR__ . '/settings/backups';
-    if(!is_dir($dir)){
-        @mkdir($dir, 0755, true);
-    }
+    // SQL files contain confidential customer data. Do not place them under
+    // the HTTP document root, including downloaded restore files.
+    $base='/var/lib/deltabotvps/backups';
+    $dbName=(string)($GLOBALS['dbName']??'');
+    if($dbName==='')throw new RuntimeException('backup database unavailable');
+    $dir=$base.'/'.hash('sha256',$dbName);
+    if(!is_dir($base)||is_link($base)||!is_writable($base))throw new RuntimeException('private backup directory unavailable');
+    if(!is_dir($dir)&&!@mkdir($dir,0700)&&!is_dir($dir))throw new RuntimeException('backup directory creation failed');
+    if(is_link($dir)||!is_writable($dir))throw new RuntimeException('invalid backup directory');
+    @chmod($dir,0700);
     return $dir;
 }
 
 function writeSqlBackupToFile($sql, $prefix = 'deltabotvps_backup'){
     $dir = ensureBackupDir();
     $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '.sql';
-    file_put_contents($path, $sql);
+    $old=umask(0077);
+    try{if(file_put_contents($path,$sql)===false)return null;}finally{umask($old);}
+    @chmod($path,0600);
     $real = realpath($path);
     return $real ? $real : $path;
 }
@@ -2260,8 +2268,29 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
     @set_time_limit(600);
     if(function_exists('ignore_user_abort')) @ignore_user_abort(true);
 
-    $dir = ensureBackupDir();
-    $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '.sql';
+    // Mother database includes the entire app catalog, accounts, sessions,
+    // devices, orders, financial tables and a portable encrypted panel key.
+    $appBackup=false;
+    try{
+        $q=$connection->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,10)='delta_app_' LIMIT 1");
+        $appBackup=$q&&$q->num_rows>0;
+        if($q)$q->close();
+        if($appBackup){
+            require_once __DIR__.'/delta_app_core.php';
+            require_once __DIR__.'/delta_app_real_checkout.php';
+            daSchema($connection);
+            daRealSchema($connection);
+            daPrepareRecoveryKey($connection);
+        }
+    }catch(Throwable $e){
+        error_log('Unified backup preparation failed: '.get_class($e));
+        return null;
+    }
+
+    try{$dir=ensureBackupDir();}catch(Throwable $e){error_log('Private backup directory unavailable');return null;}
+    $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.sql';
+    $oldUmask=umask(0077);
+    try{
 
     // 1) Try mysqldump (fast & reliable) if possible
     if(isShellExecAvailable()){
@@ -2273,11 +2302,11 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
             $hostArg = $dbHost ? ('--host=' . escapeshellarg((string)$dbHost)) : '';
             $cmd = $env .
                 ' ' . escapeshellcmd($which) .
-                ' --single-transaction --quick --skip-lock-tables --default-character-set=utf8mb4 ' .
+                ' --lock-all-tables --quick --no-tablespaces --hex-blob --default-character-set=utf8mb4 ' .
                 $hostArg .
                 ' --user=' . escapeshellarg((string)$dbUser) .
                 ' ' . escapeshellarg((string)$dbName) .
-                ' > ' . escapeshellarg($path) . ' 2>&1';
+                ' > ' . escapeshellarg($path) . ' 2>/dev/null';
 
             $out = [];
             $code = 0;
@@ -2298,6 +2327,12 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
             }
 
             if($ok){
+                if($appBackup){
+                    // A successful dump alone is not enough: verify required app tables,
+                    // the encrypted recovery key and the final completion marker.
+                    require_once __DIR__.'/delta_backup_integrity.php';
+                    if(!deltaUnifiedBackupCheck($path,$connection,true,true)||!deltaUnifiedBackupSign($path)||!deltaUnifiedBackupCheck($path,$connection,true)){@unlink($path);return null;}
+                }
                 $real = realpath($path);
                 return $real ? $real : $path;
             }else{
@@ -2307,6 +2342,8 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
         }
     }
 
+    // Never send a partial or non-consistent app dump as a complete backup.
+    if($appBackup)return null;
     // 2) Fallback: stream dump via mysqli (memory-safe)
     $fh = @fopen($path, 'w');
     if(!$fh) return null;
@@ -2371,9 +2408,8 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
     }
     @unlink($path);
     return null;
+    }finally{umask($oldUmask);}
 }
-
-
 
 // Create SQL dump of the current database (structure + data)
 function dbCreateSqlBackup(){
