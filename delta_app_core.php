@@ -10,6 +10,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panels (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, panel_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, username VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, group_id INT UNSIGNED NOT NULL, created BIGINT UNSIGNED NOT NULL, UNIQUE KEY panel_identity(panel_url,username)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panel_drafts (ticket CHAR(24) CHARACTER SET ascii PRIMARY KEY, panel_id INT UNSIGNED NULL, panel_url VARCHAR(255) NOT NULL, username VARCHAR(128) NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) NOT NULL, groups_json MEDIUMTEXT NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(expires)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_refresh (id TINYINT PRIMARY KEY, minutes INT UNSIGNED NOT NULL DEFAULT 5, revision BIGINT UNSIGNED NOT NULL DEFAULT 0, reconnect_revision BIGINT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_contacts (id TINYINT PRIMARY KEY, purchase VARCHAR(32) NOT NULL DEFAULT '', support VARCHAR(32) NOT NULL DEFAULT '') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_settings (id TINYINT PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -402,11 +403,11 @@ function daPgNew(mysqli $db,int $plan): array {
     try{
         $p=daRow($db,'SELECT * FROM delta_app_plans WHERE id=? AND active=1 FOR UPDATE','i',$plan);
         if(!$p)throw new InvalidArgumentException('پلن فعال پیدا نشد.');
-        $name=null;for($i=0;$i<40;$i++){$n='delta'.random_int(10000,99999);if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)){$name=$n;break;}}
+        $name=null;for($i=0;$i<40;$i++){$n='delta'.random_int(10000,99999);if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)&&!daRow($db,'SELECT account_id FROM delta_app_pg_users WHERE pg_name=?','s',$n)){$name=$n;break;}}
         if($name===null)throw new RuntimeException('name');
         $pass=daPassword();$now=time();$expires=$now+(int)$p['days']*86400;
         daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created) VALUES(?,?,?,?,?,0,?)','ssiiii',$name,password_hash($pass,PASSWORD_DEFAULT),$plan,(int)$p['gb'],$expires,$now);
-        $id=(int)$db->insert_id;$remote='dapp_'.bin2hex(random_bytes(12));$marker='delta-app:'.bin2hex(random_bytes(16));
+        $id=(int)$db->insert_id;$remote=$name;$marker='delta-app:'.bin2hex(random_bytes(16));
         daExec($db,'INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,\'app\')','iiisss',$id,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$remote,$marker);
         $db->commit();
     }catch(Throwable $e){$db->rollback();throw $e;}
@@ -467,4 +468,24 @@ function daContactSet(mysqli $db,string $kind,string $value): void {
     if(!in_array($kind,['purchase','support'],true))throw new InvalidArgumentException('نوع آیدی نامعتبر است.');
     $value=daContactName($value);
     daExec($db,"INSERT INTO delta_app_contacts(id,$kind) VALUES(1,?) ON DUPLICATE KEY UPDATE $kind=VALUES($kind)",'s',$value);
+}
+
+function daRefreshSettings(mysqli $db): array {
+    $r=daRow($db,'SELECT minutes,revision,reconnect_revision FROM delta_app_refresh WHERE id=1');
+    return ['refresh_minutes'=>(int)($r['minutes']??5),'refresh_revision'=>(int)($r['revision']??0),'reconnect_revision'=>(int)($r['reconnect_revision']??0)];
+}
+function daRefreshInterval(mysqli $db,int $minutes): void {
+    if($minutes<1||$minutes>1440)throw new InvalidArgumentException('فاصله باید بین ۱ تا ۱۴۴۰ دقیقه باشد.');
+    daExec($db,'INSERT INTO delta_app_refresh(id,minutes) VALUES(1,?) ON DUPLICATE KEY UPDATE minutes=VALUES(minutes)','i',$minutes);
+}
+function daRefreshBroadcast(mysqli $db,bool $reconnect): array {
+    $db->begin_transaction();
+    try{
+        daExec($db,'INSERT IGNORE INTO delta_app_refresh(id) VALUES(1)');
+        $r=daRow($db,'SELECT revision FROM delta_app_refresh WHERE id=1 FOR UPDATE');
+        $n=(int)$r['revision']+1;
+        if($reconnect)daExec($db,'UPDATE delta_app_refresh SET revision=?,reconnect_revision=? WHERE id=1','ii',$n,$n);
+        else daExec($db,'UPDATE delta_app_refresh SET revision=? WHERE id=1','i',$n);
+        $db->commit();return daRefreshSettings($db);
+    }catch(Throwable $e){$db->rollback();throw $e;}
 }

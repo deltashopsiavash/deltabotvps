@@ -10,7 +10,7 @@ function daHome(): void {
     daSend("🔐 <b>مدیریت برنامه دلتا VPN</b>\nفروش عمومی غیرفعال است.\nAPI: <code>".daEsc($endpoint)."</code>\nهر حساب جدید دارای ساب اختصاصی پسارگارد است.",[
         daBtn('📦 پلن‌ها','da_plans_0'),daBtn('➕ ساخت پلن','da_addplan'),
         daBtn('🖥 پنل‌های اختصاصی برنامه','da_pg'),daBtn('➕ افزودن پنل برنامه','da_pgadd'),daBtn('⚙️ انتخاب پنل و گروه','da_pgset'),
-        daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser'),daBtn('⚙️ آیدی خرید و پشتیبانی','da_contacts')]);
+        daBtn('👥 کاربران','da_users_0'),daBtn('➕ ساخت کاربر','da_adduser'),daBtn('⚙️ آیدی خرید و پشتیبانی','da_contacts'),daBtn('🔄 به‌روزرسانی ساب کاربران','da_refresh')]);
 }
 function daList(mysqli $db,string $kind,int $page): void {
     $off=$page*8;$rows=[];$txt='';
@@ -93,6 +93,19 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if($cb==='da_refresh'){
+            setUser();$r=daRefreshSettings($connection);
+            daSend("🔄 به‌روزرسانی اشتراک برنامه\nفاصله خودکار: ".$r['refresh_minutes']." دقیقه\nآخرین فرمان: #".$r['refresh_revision']."\nفرمان روی گوشی آنلاین هنگام بررسی بعدی دریافت می‌شود.",[daBtn('تنظیم فاصله خودکار','da_refinterval'),daBtn('به‌روزرسانی همین الان','da_refnow'),daBtn('بازگشت','da_home')]);return true;
+        }
+        if($cb==='da_refinterval'){setUser('da_refinterval');daSend('فاصله به دقیقه (۱ تا ۱۴۴۰) را بفرستید.',[daBtn('انصراف','da_refresh')]);return true;}
+        if($cb==='da_refnow'){
+            setUser('da_refconfirm');daSend('نحوه به‌روزرسانی همه حساب‌های برنامه را انتخاب کنید. این فرمان مشتریان ربات فروش را تغییر نمی‌دهد.',[daBtn('قطع و اتصال مجدد کاربران متصل','da_refrestart'),daBtn('به‌روزرسانی بدون قطعی','da_refquiet'),daBtn('انصراف','da_refresh')]);return true;
+        }
+        if(in_array($cb,['da_refrestart','da_refquiet'],true)){
+            if($step!=='da_refconfirm')throw new InvalidArgumentException('دوباره به‌روزرسانی همین الان را انتخاب کنید.');
+            $r=daRefreshBroadcast($connection,$cb==='da_refrestart');setUser();
+            daSend('✅ فرمان #'.$r['refresh_revision'].' ثبت شد. دریافت و اجرای فرمان به آنلاین بودن و فعالیت برنامه بستگی دارد؛ اجرای همه گوشی‌ها هنوز تأیید نشده.',[daBtn('بازگشت','da_refresh')]);return true;
+        }
         if($cb==='da_contacts'){
             setUser();$c=daContacts($connection);
             daSend("آیدی‌های برنامه:\nخرید: ".($c['purchase']===''?'تنظیم نشده':'@'.daEsc($c['purchase']))."\nپشتیبانی: ".($c['support']===''?'تنظیم نشده':'@'.daEsc($c['support'])),[daBtn('تنظیم آیدی خرید','da_contact_purchase'),daBtn('تنظیم آیدی پشتیبانی','da_contact_support'),daBtn('بازگشت','da_home')]);return true;
@@ -163,7 +176,7 @@ function deltaAppAdminHandle(): bool {
                 case 'pgdisable': daPgChange($connection,$id,'disable');daUser($connection,$id);break;
                 case 'pgenable': daPgChange($connection,$id,'enable');daUser($connection,$id);break;
                 case 'pgretry': daPgProvision($connection,$id);daSend('ساخت تأیید شد؛ برای دریافت رمز جدید، بازنشانی رمز را بزنید.',[daBtn('جزئیات','da_u_'.$id)]);break;
-                case 'rename':setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
+                case 'rename':if(daPgMap($connection,$id))throw new InvalidArgumentException('برای حفظ تطابق حساب با پسارگارد، تغییر نام حساب اختصاصی فعلاً غیرفعال است.');setUser('da_rename_'.$id);daSend('نام کاربری جدید انگلیسی را بفرستید.',[daBtn('انصراف','da_home')]);break;
                 case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
                 case 'reset':
                     if(!daAccount($connection,$id))throw new InvalidArgumentException('کاربر یافت نشد.');
@@ -175,7 +188,10 @@ function deltaAppAdminHandle(): bool {
         $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
-        if(in_array($step,['da_contact_purchase','da_contact_support'],true)){
+        if($step==='da_refinterval'){
+            if(!preg_match('/^\d{1,4}$/D',$input))throw new InvalidArgumentException('عدد دقیقه را وارد کنید.');
+            daRefreshInterval($connection,(int)$input);setUser();daSend('✅ فاصله به‌روزرسانی ذخیره شد.',[daBtn('بازگشت','da_refresh')]);
+        }elseif(in_array($step,['da_contact_purchase','da_contact_support'],true)){
             daContactSet($connection,substr($step,11),$input);setUser();daSend('✅ آیدی ذخیره شد.',[daBtn('آیدی‌های برنامه','da_contacts'),daBtn('بازگشت','da_home')]);
         }elseif($step==='da_pgadd'){
             bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
@@ -205,7 +221,7 @@ function deltaAppAdminHandle(): bool {
             daSend(($ok>0?"✅ ":"❌ ").$ok." ساب ثبت شد.\n".daEsc(implode("\n",$report))."\nلینک بعدی را بفرستید یا فهرست را باز کنید.",[daBtn('فهرست ساب‌ها','da_stock_0'),daBtn('بازگشت','da_home')]);
         }elseif(preg_match('/^da_rename_(\d+)$/D',$step,$m)){
             if(!daName($input))throw new InvalidArgumentException('نام کاربری نامعتبر است.');
-            $id=(int)$m[1];$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
+            $id=(int)$m[1];if(daPgMap($connection,$id))throw new InvalidArgumentException('تغییر نام حساب اختصاصی فعلاً غیرفعال است.');$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
         }
     }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
     catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ اگر آدرس پنل IP است، دامنه معتبر SSL را در خط پنجم بفرستید. اطلاعات مدیر و دسترسی گروه را هم بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}

@@ -86,3 +86,8 @@ ok(daContactName('@DeltaSupport')==='DeltaSupport');ok(daContactName('-')==='');
 $bad=false;try{daContactName('https://evil.example');}catch(InvalidArgumentException $e){$bad=true;}ok($bad);
 daContactSet($db,'purchase','@DeltaBuy');daContactSet($db,'support','@DeltaSupport');ok(daContacts($db)===['purchase'=>'DeltaBuy','support'=>'DeltaSupport']);
 daContactSet($db,'purchase','-');ok(daContacts($db)['purchase']===''&&daContacts($db)['support']==='DeltaSupport');
+
+ok(daRefreshSettings($db)['refresh_minutes']===5);
+daRefreshInterval($db,9);ok(daRefreshSettings($db)['refresh_minutes']===9);
+$r=daRefreshBroadcast($db,true);ok($r['refresh_revision']===1&&$r['reconnect_revision']===1);
+$r=daRefreshBroadcast($db,false);ok($r['refresh_revision']===2&&$r['reconnect_revision']===1);
