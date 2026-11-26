@@ -508,6 +508,13 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
     if(!$j)throw new RuntimeException('panel user missing');
+    // A confirmed renewal may have committed while the panel request was running.
+    $fresh=daAccount($db,(int)$a['id']);if(!$fresh)throw new RuntimeException('account missing');
+    $a=$fresh;
+    if(daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_renewals'")){
+        $pending=daRow($db,"SELECT r.target_limit,r.target_expires FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.account_id=? AND o.state='provisioning' AND r.target_limit IS NOT NULL LIMIT 1",'i',(int)$a['id']);
+        if($pending&&(int)$pending['target_limit']===($j['data_limit']??null))throw new RuntimeException('renewal completion pending');
+    }
     $metrics=daPgMetrics($a,$j,false);$metrics['configs']=[];
     if($withConfigs&&$metrics['can_connect']){
         [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
@@ -522,6 +529,7 @@ function daPgChange(mysqli $db,int $id,string $action): void {
 }
 function daPgChangeLocked(mysqli $db,int $id,string $action): void {
     $delete=$action==='delete';
+    if($delete&&daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_renewals'")&&daRow($db,"SELECT r.order_id FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.account_id=? AND o.state IN ('pending','paid','provisioning') LIMIT 1",'i',$id))throw new InvalidArgumentException('ابتدا فاکتور تمدید باز را تعیین تکلیف کنید.');
     $a=daAccount($db,$id);$m=daPgMap($db,$id);if(!$a)throw new InvalidArgumentException('حساب یافت نشد.');
     if(!$m){if($delete){daDeleteAccount($db,$id);return;}throw new InvalidArgumentException('حساب قدیمی بدون ساب اختصاصی است.');}
     // First close local login, keep the mapping until panel deletion is confirmed.
