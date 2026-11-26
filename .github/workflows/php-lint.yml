@@ -45,6 +45,9 @@ jobs:
           php -l settings/warnusers.php
           php -l settings/expired_subscriptions_admin.php
           php -l config.php
+          php -l backup_worker.php
+          php -l delta_backup_integrity.php
+          php -l tests/delta_unified_backup_mysql.php
           php -l delta_order_features.php
           php -l delta_sms_approval.php
           php -l delta_sms_review.php
@@ -129,10 +132,12 @@ jobs:
           php-version: '8.3'
           extensions: mysqli
           coverage: none
-      - name: Verify card-only checkout with MyISAM users
+      - name: Verify checkout and unified database recovery
         env:
           DELTA_TEST_DB: delta_checkout_fixture
           DELTA_TEST_HOST: 127.0.0.1
           DELTA_TEST_USER: root
           DELTA_TEST_PASSWORD: ci_test_password
-        run: php tests/delta_app_real_checkout_fixture.php
+        run: |
+          php tests/delta_app_real_checkout_fixture.php
+          php tests/delta_unified_backup_mysql.php
