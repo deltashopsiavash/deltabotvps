@@ -200,6 +200,9 @@ function daRealDeleteService(mysqli $db,int $buyer,int $order,string $token): vo
             if(!$ok)throw new InvalidArgumentException('تأیید نهایی معتبر نیست؛ دوباره از ابتدا اقدام کنید.');
             $a=daAccount($db,$id);
             if(!$a&&$o['state']!=='deleting')throw new InvalidArgumentException('حساب یافت نشد.');
+            $map=daPgMap($db,$id);
+            if(($a&&(!$map||$map['panel_kind']!=='app'))||(!$a&&$map))throw new RuntimeException('account mapping requires admin review');
+
             daExec($db,"UPDATE delta_app_real_orders SET state='deleting' WHERE id=?",'i',$order);
             $db->commit();
         }catch(Throwable $e){$db->rollback();throw $e;}
