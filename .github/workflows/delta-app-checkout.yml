@@ -1,0 +1,39 @@
+name: Delta app checkout verification
+on:
+  push:
+    branches: [delta-buy-real-payments]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checkout-fixture:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: fixture-only-password
+          MYSQL_DATABASE: delta_checkout_fixture
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pfixture-only-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax
+        run: |
+          php -v
+          for file in bot.php payment_card_rotation.php delta_app_admin.php delta_app_core.php delta_app_real_checkout.php settings/rewardReport.php tests/delta_app_real_checkout_fixture.php; do php -l "$file" || exit 1; done
+      - name: Check mysqli
+        run: php -r 'exit(extension_loaded("mysqli") ? 0 : 1);'
+      - name: Isolated financial fixture
+        env:
+          DELTA_TEST_DB: delta_checkout_fixture
+          DELTA_TEST_HOST: 127.0.0.1
+          DELTA_TEST_USER: root
+          DELTA_TEST_PASSWORD: fixture-only-password
+        run: php tests/delta_app_real_checkout_fixture.php
