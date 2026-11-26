@@ -48,7 +48,7 @@ function daRealWallet(mysqli $db,int $buyer,int $id): void {
         if(!$p || (int)$p['price']!==(int)$o['price'])throw new RuntimeException('payment mismatch');
         if(in_array($o['state'],['paid','provisioning','delivered'],true)&&$p['state']==='paid_with_wallet'){$db->commit();return;}
         if($o['state']!=='pending'||$p['state']!=='pending'||(int)$o['created']<time()-3600||(int)$o['price']<=0)throw new InvalidArgumentException('فاکتور قابل پرداخت نیست.');
-        if(daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
+        if($o['method']==='card'||daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
         $price=(int)$o['price'];
         $s=daQuery($db,'UPDATE users SET wallet=wallet-? WHERE userid=? AND wallet>=?','iii',$price,$buyer,$price);
         $ok=$s->affected_rows===1;$s->close();
@@ -64,7 +64,7 @@ function daRealCancel(mysqli $db,int $buyer,int $id): void {
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
         if(!$o||$o['state']!=='pending')throw new InvalidArgumentException('فاکتور قابل لغو نیست.');
-        if(daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
+        if($o['method']==='card'||daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
         $s=daQuery($db,"UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' AND state='pending'",'si',$o['pay_hash'],$buyer);
         $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new InvalidArgumentException('وضعیت پرداخت تغییر کرده است.');
         daExec($db,"UPDATE delta_app_real_orders SET state='cancelled' WHERE id=?",'i',$id);$db->commit();
@@ -179,4 +179,33 @@ function daRealDeliverPaidHash(mysqli $db,string $hash): array {
     $keys=json_encode(['inline_keyboard'=>[[['text'=>'👤 سرویس من','callback_data'=>'dar_service_'.$o['id']]]]],JSON_UNESCAPED_UNICODE);
     $sent=sendMessage($msg,$keys,'HTML',(int)$o['buyer']);
     return ['order'=>$o,'notified'=>is_object($sent)&&!empty($sent->ok)];
+}
+
+function daRealPrepareCard(mysqli $db,int $buyer,int $id): array {
+    $db->begin_transaction();
+    try{
+        $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
+        if(!$o||$o['state']!=='pending'||(int)$o['created']<time()-3600)throw new InvalidArgumentException('فاکتور قابل پرداخت نیست.');
+        $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$o['pay_hash'],$buyer);
+        if(!$p||$p['state']!=='pending'||(int)$p['price']!==(int)$o['price'])throw new InvalidArgumentException('وضعیت پرداخت تغییر کرده است.');
+        daExec($db,"UPDATE delta_app_real_orders SET method='card' WHERE id=?",'i',$id);
+        $db->commit();return $p;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daRealManualClaim(mysqli $db,string $hash): void {
+    global $botState;
+    $p=daRealPayByHash($db,$hash);
+    if(!$p)throw new RuntimeException('invoice missing');
+    if(in_array($p['state'],['paid','approved'],true))return;
+    if($p['state']!=='have_sent'||!deltaReceiptHasSubmissionMarker($hash))throw new InvalidArgumentException('ابتدا رسید معتبر ثبت شود.');
+    // In SMS mode never bypass the shared bank-event claim; ambiguous transfers
+    // must first be resolved in the existing SMS review workflow.
+    if(deltaReceiptApprovalMode($botState)==='sms'){
+        $binding=deltaSmsReviewQueuedBinding($p)??deltaSmsFindBinding($p,deltaReceiptSubmittedAt($hash,0));
+        if(!$binding||!deltaSmsClaimInvoice($p,$binding,'sms'))throw new InvalidArgumentException('واریز بانکی هنوز تأیید نشده یا نیاز به بررسی تطبیق پیامک دارد.');
+        return;
+    }
+    // Legacy mode: explicit owner confirmation after checking bank statement.
+    $s=daQuery($db,"UPDATE pays SET state='approved' WHERE hash_id=? AND type='DELTA_APP_BUY' AND state='have_sent'",'s',$hash);
+    $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new RuntimeException('payment already processed');
 }
