@@ -34,6 +34,8 @@ jobs:
           php -l tests/phone_registration.php
           php -l delta_app_core.php
           php -l delta_app_admin.php
+          php -l delta_app_real_checkout.php
+          php -l tests/delta_app_real_checkout_fixture.php
           php -l delta_app_api.php
           php -l tests/delta_app_mysql.php
           php -l admin_service_manager.php
@@ -104,3 +106,33 @@ jobs:
           php -l tests/sms_approval_mysql.php
           php tests/sms_approval_mysql.php
           php tests/delta_app_mysql.php
+
+  delta-app-real-checkout:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_test_password
+          MYSQL_DATABASE: delta_checkout_fixture
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci_test_password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli
+          coverage: none
+      - name: Verify card-only checkout with MyISAM users
+        env:
+          DELTA_TEST_DB: delta_checkout_fixture
+          DELTA_TEST_HOST: 127.0.0.1
+          DELTA_TEST_USER: root
+          DELTA_TEST_PASSWORD: ci_test_password
+        run: php tests/delta_app_real_checkout_fixture.php
