@@ -7,6 +7,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_stock (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, plan_id INT UNSIGNED NOT NULL, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, active TINYINT NOT NULL DEFAULT 1, INDEX(plan_id,active)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
+        "CREATE TABLE IF NOT EXISTS delta_app_devices (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, account_id INT UNSIGNED NOT NULL, device_hash CHAR(64) CHARACTER SET ascii NOT NULL, token_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, model VARCHAR(100) NOT NULL, created BIGINT UNSIGNED NOT NULL, last_seen BIGINT UNSIGNED NOT NULL, UNIQUE KEY account_device(account_id,device_hash)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panels (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, panel_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, username VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, group_id INT UNSIGNED NOT NULL, created BIGINT UNSIGNED NOT NULL, UNIQUE KEY panel_identity(panel_url,username)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panel_drafts (ticket CHAR(24) CHARACTER SET ascii PRIMARY KEY, panel_id INT UNSIGNED NULL, panel_url VARCHAR(255) NOT NULL, username VARCHAR(128) NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) NOT NULL, groups_json MEDIUMTEXT NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(expires)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -18,6 +19,9 @@ function daSchema(mysqli $db): void {
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
+    foreach(['delta_app_plans','delta_app_accounts'] as $table){
+        if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='device_limit'",'s',$table))$db->query("ALTER TABLE `$table` ADD COLUMN device_limit INT UNSIGNED NOT NULL DEFAULT 1");
+    }
     foreach(['delta_app_pg_settings','delta_app_pg_users'] as $table){
         $col=daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='panel_kind'",'s',$table);
         if(!$col)$db->query("ALTER TABLE `$table` ADD COLUMN panel_kind VARCHAR(8) NOT NULL DEFAULT 'legacy'");
@@ -344,11 +348,12 @@ function daPgGet(array $s,string $token,array $m): ?array {
     if(($j['username']??null)!==$m['pg_name']||($j['note']??null)!==$m['marker']||!is_int($j['id']??null)||$j['id']<1||($m['remote_id']!==null&&(int)$m['remote_id']!==$j['id']))throw new RuntimeException('panel identity mismatch');
     return $j;
 }
-function daPgMetrics(array $a,array $j): array {
+function daPgMetrics(array $a,array $j,bool $strict=true): array {
     $limit=(int)$a['gb']*1073741824;
     $used=$j['used_traffic']??null;$actual=$j['data_limit']??null;$raw=$j['expire']??null;
     $expires=is_int($raw)?$raw:(is_string($raw)&&preg_match('/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/D',$raw)?strtotime($raw):false);
-    if(!is_int($used)||$used<0||!is_int($actual)||$actual!==$limit||$expires===false||$expires<=0||$expires!==(int)$a['expires']||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
+    if(!is_int($used)||$used<0||!is_int($actual)||$actual<1||($strict&&$actual!==$limit)||$expires===false||$expires<=0||($strict&&$expires!==(int)$a['expires'])||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
+    $limit=$actual;
     $status=$j['status']??'unknown';
     return ['limit_bytes'=>$limit,'used_bytes'=>$used,'remaining_bytes'=>max(0,$limit-$used),'expires'=>$expires,'panel_status'=>$status,'can_connect'=>$status==='active'&&$used<$limit&&$expires>time()&&(int)$a['active']===1];
 }
@@ -406,7 +411,7 @@ function daPgNew(mysqli $db,int $plan): array {
         $name=null;for($i=0;$i<40;$i++){$n='delta'.random_int(10000,99999);if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)&&!daRow($db,'SELECT account_id FROM delta_app_pg_users WHERE pg_name=?','s',$n)){$name=$n;break;}}
         if($name===null)throw new RuntimeException('name');
         $pass=daPassword();$now=time();$expires=$now+(int)$p['days']*86400;
-        daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created) VALUES(?,?,?,?,?,0,?)','ssiiii',$name,password_hash($pass,PASSWORD_DEFAULT),$plan,(int)$p['gb'],$expires,$now);
+        daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssiiiii',$name,password_hash($pass,PASSWORD_DEFAULT),$plan,(int)$p['gb'],$expires,$now,(int)$p['device_limit']);
         $id=(int)$db->insert_id;$remote=$name;$marker='delta-app:'.bin2hex(random_bytes(16));
         daExec($db,'INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,\'app\')','iiisss',$id,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$remote,$marker);
         $db->commit();
@@ -419,7 +424,7 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
     if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
     if(!$j)throw new RuntimeException('panel user missing');
-    $metrics=daPgMetrics($a,$j);$metrics['configs']=[];
+    $metrics=daPgMetrics($a,$j,false);$metrics['configs']=[];
     if($withConfigs&&$metrics['can_connect']){
         [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
         if($code!==200)throw new RuntimeException('sub fetch');
@@ -487,5 +492,18 @@ function daRefreshBroadcast(mysqli $db,bool $reconnect): array {
         if($reconnect)daExec($db,'UPDATE delta_app_refresh SET revision=?,reconnect_revision=? WHERE id=1','ii',$n,$n);
         else daExec($db,'UPDATE delta_app_refresh SET revision=? WHERE id=1','i',$n);
         $db->commit();return daRefreshSettings($db);
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+
+function daDeviceList(mysqli $db,int $id): array {
+    return array_map(fn($r)=>['id'=>(int)$r['id'],'model'=>$r['model'],'created'=>(int)$r['created'],'last_seen'=>(int)$r['last_seen'],'used_bytes'=>null],daRows($db,'SELECT id,model,created,last_seen FROM delta_app_devices WHERE account_id=? ORDER BY created,id','i',$id));
+}
+function daDeviceRevoke(mysqli $db,int $id,int $device): void {
+    $db->begin_transaction();
+    try{
+        daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
+        $r=daRow($db,'SELECT token_hash FROM delta_app_devices WHERE account_id=? AND id=?','ii',$id,$device);
+        if($r){daExec($db,'DELETE FROM delta_app_sessions WHERE token_hash=?','s',$r['token_hash']);daExec($db,'DELETE FROM delta_app_devices WHERE account_id=? AND id=?','ii',$id,$device);}
+        $db->commit();
     }catch(Throwable $e){$db->rollback();throw $e;}
 }

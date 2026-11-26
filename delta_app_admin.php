@@ -60,11 +60,11 @@ function daUser(mysqli $db,int $id): void {
     $remaining=intdiv($left,86400).' روز و '.intdiv($left%86400,3600).' ساعت و '.intdiv($left%3600,60).' دقیقه و '.($left%60).' ثانیه';
     $fmt=fn($b)=>number_format($b/1073741824,4).' GB';
     $traffic='مصرف: نامشخص (پنل تأیید نشده)';$status=$m?($m['state']==='pending'?'در انتظار ساخت':'نامشخص'):'قدیمی؛ نیازمند حساب اختصاصی';
-    if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
+    if($m&&$m['state']==='ready'){try{$v=daPgLive($db,$a);$a['expires']=$v['expires'];$a['gb']=$v['limit_bytes']/1073741824;$traffic='مصرف: '.$fmt($v['used_bytes'])."\nباقی‌مانده: ".$fmt($v['remaining_bytes']);$status=(!$a['active']?'ورود غیرفعال؛ ': '').daEsc($v['panel_status']);}catch(Throwable $e){}}
     $rows=[daBtn('✏️ تغییر نام کاربری','da_rename_'.$id),daBtn('🔑 ساخت رمز جدید','da_resetask_'.$id)];
     if($m&&$m['state']==='pending')$rows[]=daBtn('🔄 بازیابی ساخت','da_pgretry_'.$id);
     if($m&&$m['state']==='ready'){$rows[]=daBtn('⛔ غیرفعال کردن / تلاش مجدد','da_pgdisable_'.$id);if(!$a['active'])$rows[]=daBtn('✅ فعال کردن','da_pgenable_'.$id);}
-    $rows[]=daBtn('🗑 حذف کامل کاربر','da_delask_'.$id);$rows[]=daBtn('بازگشت','da_users_0');
+    $rows[]=daBtn('📱 دستگاه‌ها','da_devices_'.$id);$rows[]=daBtn('🗑 حذف کامل کاربر','da_delask_'.$id);$rows[]=daBtn('بازگشت','da_users_0');
     daSend("👤 <code>".daEsc($a['username'])."</code>\nشناسه: ".$id."\nتاریخ ایجاد: ".daIranDate((int)$a['created'])."\nپایان: ".daIranDate((int)$a['expires'])."\nباقی‌مانده: ".$remaining."\nحجم خریداری‌شده: ".$a['gb']." GB\n".$traffic."\nوضعیت: ".$status."\nرمز قبلی قابل مشاهده نیست.",$rows);
 }
 function daPgGroupButtons(string $ticket,array $groups,int $page=0): void {
@@ -93,6 +93,13 @@ function deltaAppAdminHandle(): bool {
         if($command||$cb==='da_home'){setUser();daHome();return true;}
         if($input==='/start'&&$cb===''){setUser();return false;}
         if($cb!==''&&!str_starts_with($cb,'da_')){setUser();return false;}
+        if(preg_match('/^da_devices_(\d+)$/D',$cb,$m)){
+            $id=(int)$m[1];$account=daAccount($connection,$id);if(!$account)throw new InvalidArgumentException('حساب یافت نشد.');
+            $items=daDeviceList($connection,$id);$rows=[];$msg='دستگاه‌ها: '.count($items).' / '.$account['device_limit'];
+            foreach($items as $item){$msg.="\n".daEsc($item['model']).' | '.daIranDate($item['last_seen']).' | مصرف مستقل: نامشخص';$rows[]=daBtn('خروج '. $item['model'],'da_dkick_'.$id.'_'.$item['id']);}
+            $rows[]=daBtn('بازگشت','da_u_'.$id);daSend($msg,$rows);return true;
+        }
+        if(preg_match('/^da_dkick_(\d+)_(\d+)$/D',$cb,$m)){daDeviceRevoke($connection,(int)$m[1],(int)$m[2]);daSend('نشست دستگاه لغو شد.',[daBtn('دستگاه‌ها','da_devices_'.$m[1])]);return true;}
         if($cb==='da_refresh'){
             setUser();$r=daRefreshSettings($connection);
             daSend("🔄 به‌روزرسانی اشتراک برنامه\nفاصله خودکار: ".$r['refresh_minutes']." دقیقه\nآخرین فرمان: #".$r['refresh_revision']."\nفرمان روی گوشی آنلاین هنگام بررسی بعدی دریافت می‌شود.",[daBtn('تنظیم فاصله خودکار','da_refinterval'),daBtn('به‌روزرسانی همین الان','da_refnow'),daBtn('بازگشت','da_home')]);return true;
@@ -185,7 +192,7 @@ function deltaAppAdminHandle(): bool {
                 default:daUser($connection,$id);
             }return true;
         }
-        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان'."\n".'مثال: 10GB | 10 | 30 | 100000','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
+        $hints=['da_addplan'=>'نام پلن | گیگ | روز | قیمت تومان | تعداد دستگاه'."\n".'مثال: 10GB | 10 | 30 | 100000 | 1','da_addstock'=>'فقط لینک ساب را ارسال کنید. چند لینک را در خط‌های جدا یا پیام‌های جدا بفرستید (حداکثر ۲۰ ساب).'];
         if(isset($hints[$cb])){setUser($cb);daSend($hints[$cb],[daBtn('انصراف','da_home')]);return true;}
         if($cb!==''||!isset($update->message->text))return true;
         if($step==='da_refinterval'){
@@ -203,8 +210,8 @@ function deltaAppAdminHandle(): bool {
             $prefix=strtolower($input);if(!preg_match('/^[a-z0-9_]{1,48}$/D',$prefix))throw new InvalidArgumentException('نام کاربری انگلیسی را وارد کنید.');
             setUser('da_searchq_'.$prefix);daSearchResults($connection,$prefix);
         }elseif($step==='da_addplan'){
-            $a=array_map('trim',explode('|',$input));if(count($a)!==4||$a[0]===''||strlen($a[0])>80||!ctype_digit($a[1])||!ctype_digit($a[2])||!ctype_digit($a[3])||(int)$a[1]<1||(int)$a[1]>100000||(int)$a[2]<1||(int)$a[2]>3650||(int)$a[3]>1000000000)throw new InvalidArgumentException('فرمت یا مقادیر پلن نامعتبر است.');
-            daExec($connection,'INSERT INTO delta_app_plans(name,gb,days,price) VALUES(?,?,?,?)','siii',$a[0],(int)$a[1],(int)$a[2],(int)$a[3]);setUser();daList($connection,'plans',0);
+            $a=array_map('trim',explode('|',$input));if(count($a)!==5||!ctype_digit($a[4])||(int)$a[4]<1||(int)$a[4]>20||$a[0]===''||strlen($a[0])>80||!ctype_digit($a[1])||!ctype_digit($a[2])||!ctype_digit($a[3])||(int)$a[1]<1||(int)$a[1]>100000||(int)$a[2]<1||(int)$a[2]>3650||(int)$a[3]>1000000000)throw new InvalidArgumentException('فرمت یا مقادیر پلن نامعتبر است.');
+            daExec($connection,'INSERT INTO delta_app_plans(name,gb,days,price,device_limit) VALUES(?,?,?,?,?)','siiii',$a[0],(int)$a[1],(int)$a[2],(int)$a[3],(int)$a[4]);setUser();daList($connection,'plans',0);
         }elseif($step==='da_addstock'){
             $urls=array_values(array_unique(preg_split('/\s+/',trim($input),-1,PREG_SPLIT_NO_EMPTY)));
             if(!$urls||count($urls)>20)throw new InvalidArgumentException('۱ تا ۲۰ لینک ارسال کنید.');
