@@ -1,0 +1,25 @@
+name: Delta quota gateway lab
+on:
+  push:
+    branches: [main]
+    paths: ['gateway/**', '.github/workflows/delta-quota-lab.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s gateway -p 'test_*.py'
+      - name: Validate nft syntax in an isolated network namespace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
+          python3 - <<'PY'
+          import json,time
+          with open('/tmp/delta-quota-lab.json','w') as f:
+              json.dump({'interface':'wgdelta','accounts':[{'id':1,'ip':'10.120.0.2','gb':10,'used_bytes':0,'expires':int(time.time())+300,'active':True},{'id':2,'ip':'10.120.0.3','gb':20,'used_bytes':0,'expires':int(time.time())+300,'active':True}]},f)
+          PY
+          sudo unshare -n python3 gateway/quota_gate.py check /tmp/delta-quota-lab.json
+          sudo unshare -n sh -ec 'python3 gateway/quota_gate.py install-once /tmp/delta-quota-lab.json; python3 gateway/quota_gate.py snapshot /tmp/delta-quota-lab.json; if python3 gateway/quota_gate.py install-once /tmp/delta-quota-lab.json; then exit 1; fi'
