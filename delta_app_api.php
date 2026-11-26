@@ -26,7 +26,7 @@ try{
         try {
             $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE username=? FOR UPDATE','s',$name);
             if(!$a||!password_verify($password,$a['password_hash'])||!daAllowed($a)){$db->rollback();daRespond(401,['error'=>'login']);}
-            $token=bin2hex(random_bytes(32));$id=(int)$a['id'];$exp=min(time()+86400,(int)$a['expires']);
+            $token=bin2hex(random_bytes(32));$id=(int)$a['id'];$exp=(int)$a['expires'];
             daExec($db,'DELETE FROM delta_app_sessions WHERE expires<=? OR account_id=?','ii',time(),$id);
             daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',hash('sha256',$token),$id,$exp);
             $db->commit();
@@ -39,5 +39,5 @@ try{
         if($action==='logout'){daExec($db,'DELETE FROM delta_app_sessions WHERE token_hash=?','s',$h);daRespond(200,['ok'=>true]);}
         $a=daAccount($db,(int)$s['account_id']);if(!daAllowed($a))daRespond(401,['error'=>'session']);
     }else daRespond(400,['error'=>'action']);
-    daRespond(200,['token'=>$token,'username'=>$a['username'],'configs'=>daCatalog($db),'quota_enforced'=>false,'gb'=>(int)$a['gb'],'expires'=>(int)$a['expires']]);
+    daRespond(200,['token'=>$token,'username'=>$a['username'],'configs'=>daCatalog($db),'quota_enforced'=>false,'gb'=>(int)$a['gb'],'expires'=>(int)$a['expires'],'server_now'=>time(),'created'=>(int)$a['created'],'used_bytes'=>null,'remaining_bytes'=>null]);
 }catch(Throwable $e){daRespond(503,['error'=>'unavailable']);}

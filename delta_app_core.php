@@ -131,3 +131,26 @@ function daCatalog(mysqli $db): array {
     }
     return array_keys($out);
 }
+
+function daDeleteAccount(mysqli $db,int $id): bool {
+    $db->begin_transaction();
+    try {
+        $a=daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
+        if(!$a){$db->rollback();return false;}
+        daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);
+        daExec($db,'DELETE FROM delta_app_accounts WHERE id=?','i',$id);
+        $db->commit();return true;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daFindUsers(mysqli $db,string $prefix,int $offset=0): array {
+    if(!preg_match('/^[a-z0-9_]{1,48}$/D',$prefix))throw new InvalidArgumentException('نام کاربری انگلیسی را وارد کنید.');
+    $pattern=str_replace('_','!_',$prefix).'%';
+    return daRows($db,"SELECT id,username,active,expires FROM delta_app_accounts WHERE username LIKE ? ESCAPE '!' ORDER BY username LIMIT 9 OFFSET ?",'si',$pattern,$offset);
+}
+function daRemainingSeconds(int $expires,?int $now=null): int {return max(0,$expires-($now??time()));}
+function daIranDate(int $timestamp): string {
+    require_once __DIR__.'/settings/jdf.php';
+    $d=(new DateTimeImmutable('@'.$timestamp))->setTimezone(new DateTimeZone('Asia/Tehran'));
+    [$y,$m,$day]=gregorian_to_jalali((int)$d->format('Y'),(int)$d->format('n'),(int)$d->format('j'));
+    return sprintf('%04d/%02d/%02d %s',$y,$m,$day,$d->format('H:i:s'));
+}
