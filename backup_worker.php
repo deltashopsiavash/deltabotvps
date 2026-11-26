@@ -20,6 +20,7 @@ if (!$mode || !$token || !$chatId) {
 }
 
 require_once __DIR__ . "/config.php";
+require_once __DIR__ . '/delta_backup_integrity.php';
 
 // override token for this worker run
 $GLOBALS['botToken'] = $token;
@@ -165,8 +166,7 @@ if($mode === 'backup'){
     $sz = @filesize($path);
     if($sz === false || $sz < 1024){
         // probably mysqldump error-output or empty dump
-        $head = @file_get_contents($path, false, null, 0, 1024);
-        $hint = $head ? ("\nنمونه خروجی:\n" . substr(trim($head), 0, 700)) : "";
+        $hint = ''; // Never send snippets of SQL or credentials to chat.
         sendMsg($chatId, "❌ بکاپ ساخته شد اما معتبر نیست (خیلی کوچک/خطا در mysqldump).{$hint}\n\nمسیر فایل: {$path}");
         exit(0);
     }
@@ -174,7 +174,8 @@ if($mode === 'backup'){
         sendMsg($chatId, "❌ حجم بکاپ خیلی زیاد است و تلگرام اجازه ارسال نمی‌دهد.\nمسیر فایل: {$path}");
         exit(0);
     }
-    $cap = "🗄 بکاپ دیتابیس\n".date('Y-m-d H:i:s');
+    $unified=deltaUnifiedBackupIsMarked($path);
+    $cap = ($unified?'🗄 بکاپ کامل ربات + برنامه دلتا (SQL)':'🗄 بکاپ دیتابیس')."\n".date('Y-m-d H:i:s');
     $res = sendDoc($chatId, $path, $cap);
     if(isset($res['ok']) && $res['ok']){
         @unlink($path);
@@ -191,24 +192,41 @@ if($mode === 'restore'){
         sendMsg($chatId, "❌ فایل بکاپ پیدا نشد.");
         exit(0);
     }
-    sendMsg($chatId, "⏳ در حال بازگردانی بکاپ... لطفا صبر کنید");
-    $ok = false;
-    $err = null;
-    // Prefer mysql CLI if available (robust)
-    if(restoreWithMysqlCli($sqlPath, $err)){
-        $ok = true;
-    }else{
-        // fallback: streaming parser (can fail on complex dumps)
-        $ok = restoreStreaming($sqlPath);
-        if(!$ok && !$err) $err = 'restoreStreaming failed';
+    global $connection;
+    // Validate before touching any live tables. A dump containing the recovery
+    // key must have a valid signature, including if its footer was truncated.
+    $unified=deltaUnifiedBackupIsMarked($sqlPath)||deltaUnifiedBackupHasRecoveryTable($sqlPath);
+    if($unified&&!deltaUnifiedBackupCheck($sqlPath,$connection)){
+        sendMsg($chatId,'❌ فایل بکاپ کامل معتبر نیست یا توکن ربات مطابقت ندارد؛ هیچ تغییری اعمال نشد.');
+        exit(1);
+    }
+    if(!$unified){
+        $hasApp=daRow($connection,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts'");
+        if($hasApp&&daRow($connection,'SELECT id FROM delta_app_accounts LIMIT 1')&&!deltaUnifiedBackupHasTable($sqlPath,'delta_app_accounts')){
+            sendMsg($chatId,'❌ این بکاپ قدیمی اطلاعات برنامه را ندارد. برای جلوگیری از بازیابی ناقص، بکاپ کامل را انتخاب کنید.');
+            exit(1);
+        }
+        sendMsg($chatId,'⚠️ بکاپ قدیمی است؛ بازیابی کامل برنامه با رمز دیتابیس متفاوت تضمین نمی‌شود.');
+    }
+    // Preserve the current database before importing. Do not retry a failed
+    // partial mysql import with a different SQL parser.
+    $safety=dbCreateSqlBackupFile('before_restore');
+    if(!$safety){sendMsg($chatId,'❌ بکاپ ایمنی قبل از بازگردانی ساخته نشد؛ بازیابی متوقف شد.');exit(1);}
+    sendMsg($chatId,"⏳ در حال بازگردانی بکاپ...");
+    $err=null;
+    $ok=restoreWithMysqlCli($sqlPath,$err);
+    if($ok&&$unified){
+        try{
+            if(!daRecoveryTableExists($connection))throw new RuntimeException('missing recovery table');
+            daVerifyRecoverySecrets($connection);
+        }catch(Throwable $e){$ok=false;error_log('Unified restore verification failed: '.get_class($e));}
     }
     if($ok){
-        sendMsg($chatId, "✅ بکاپ با موفقیت بازگردانی شد.");
-        // keep file for audit then delete
+        sendMsg($chatId,$unified?'✅ بکاپ کامل ربات و برنامه دلتا بازگردانی شد؛ اتصال واقعی پنل را بررسی کنید.':'✅ بکاپ با موفقیت بازگردانی شد.');
         @unlink($sqlPath);
     }else{
-        $extra = $err ? ("\n\nجزئیات خطا:\n" . substr($err, 0, 1200)) : '';
-        sendMsg($chatId, "❌ خطا در بازگردانی بکاپ.\nمسیر فایل: {$sqlPath}{$extra}");
+        // Do not print mysql output, which can contain sensitive SQL values.
+        sendMsg($chatId,"❌ بازگردانی کامل نشد. دیتابیس ممکن است جزئی تغییر کرده باشد؛ از بکاپ ایمنی قبل از بازگردانی استفاده کنید.\nمسیر بکاپ ایمنی: ".$safety);
     }
     exit(0);
 }
