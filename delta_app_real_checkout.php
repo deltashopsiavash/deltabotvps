@@ -7,7 +7,7 @@ function daRealSchema(mysqli $db): void {
     if(!$db->query("CREATE TABLE IF NOT EXISTS delta_app_real_orders (
       id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       buyer BIGINT NOT NULL, plan_id INT UNSIGNED NOT NULL,
-      name VARCHAR(80) NOT NULL, gb INT UNSIGNED NOT NULL, days INT UNSIGNED NOT NULL,
+      name VARCHAR(80) NOT NULL, gb DECIMAL(13,3) UNSIGNED NOT NULL, days INT UNSIGNED NOT NULL,
       price BIGINT UNSIGNED NOT NULL, device_limit INT UNSIGNED NOT NULL,
       pay_hash VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE,
       state VARCHAR(20) NOT NULL DEFAULT 'pending', method VARCHAR(16) NULL,
@@ -21,7 +21,9 @@ function daRealSchema(mysqli $db): void {
       stage TINYINT UNSIGNED NOT NULL,expires BIGINT UNSIGNED NOT NULL
     ) ENGINE=InnoDB"))throw new RuntimeException('delete request schema');
 
-    $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_settings (id TINYINT PRIMARY KEY,enabled TINYINT NOT NULL DEFAULT 0,gb INT UNSIGNED NOT NULL DEFAULT 1,days INT UNSIGNED NOT NULL DEFAULT 1,devices INT UNSIGNED NOT NULL DEFAULT 1,daily_cap INT UNSIGNED NOT NULL DEFAULT 30,require_phone TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB");
+    $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_settings (id TINYINT PRIMARY KEY,enabled TINYINT NOT NULL DEFAULT 0,gb DECIMAL(13,3) UNSIGNED NOT NULL DEFAULT 1,days INT UNSIGNED NOT NULL DEFAULT 1,devices INT UNSIGNED NOT NULL DEFAULT 1,daily_cap INT UNSIGNED NOT NULL DEFAULT 30,require_phone TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB");
+    daEnsureDecimalQuota($db,'delta_app_real_orders');
+    daEnsureDecimalQuota($db,'delta_app_trial_settings');
     $db->query("INSERT IGNORE INTO delta_app_trial_settings(id) VALUES(1)");
     $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_claims (order_id BIGINT UNSIGNED PRIMARY KEY,buyer BIGINT NOT NULL,claimed BIGINT UNSIGNED NOT NULL,released_at BIGINT UNSIGNED NULL,INDEX(buyer,released_at),INDEX(claimed)) ENGINE=InnoDB");
 }
@@ -104,10 +106,25 @@ function daTrialSettings(mysqli $db): array {
 function daTrialDayStart(): int {
     return (new DateTimeImmutable('today',new DateTimeZone('Asia/Tehran')))->getTimestamp();
 }
-function daTrialSet(mysqli $db,string $field,int $value): void {
-    $ranges=['enabled'=>[0,1],'gb'=>[1,100],'days'=>[1,30],'devices'=>[1,10],'daily_cap'=>[1,1000],'require_phone'=>[0,1]];
-    if(!isset($ranges[$field])||$value<$ranges[$field][0]||$value>$ranges[$field][1])throw new InvalidArgumentException('مقدار نامعتبر است.');
-    daExec($db,'UPDATE delta_app_trial_settings SET '.$field.'=? WHERE id=1','i',$value);
+function daTrialSet(mysqli $db,string $field,int|string $value): void {
+    if($field==='gb'){
+        $v=(string)$value;
+        if(!preg_match('/^\d{1,3}(?:\.\d{1,3})?$/D',$v)||(float)$v<0.001||(float)$v>100)throw new InvalidArgumentException('حجم باید بین ۰٫۰۰۱ و ۱۰۰ گیگ باشد؛ مثل 0.1 یا 0.25.');
+        daQuotaBytes($v);
+        daExec($db,'UPDATE delta_app_trial_settings SET gb=? WHERE id=1','s',$v);
+        return;
+    }
+    $ranges=['enabled'=>[0,1],'days'=>[1,30],'devices'=>[1,10],'daily_cap'=>[1,1000],'require_phone'=>[0,1]];
+    if(!isset($ranges[$field])||!preg_match('/^\d{1,4}$/D',(string)$value)||(int)$value<$ranges[$field][0]||(int)$value>$ranges[$field][1])throw new InvalidArgumentException('مقدار نامعتبر است.');
+    daExec($db,'UPDATE delta_app_trial_settings SET '.$field.'=? WHERE id=1','i',(int)$value);
+}
+function daRealAccountName(mysqli $db,bool $trial): string {
+    $prefix=$trial?'testdelta':'delta';
+    for($i=0;$i<40;$i++){
+        $name=$prefix.random_int(10000,99999);
+        if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$name)&&!daRow($db,'SELECT account_id FROM delta_app_pg_users WHERE pg_name=?','s',$name))return $name;
+    }
+    throw new RuntimeException('name');
 }
 function daTrialCurrent(mysqli $db,int $buyer): ?array {
     return daRow($db,"SELECT o.* FROM delta_app_trial_claims c JOIN delta_app_real_orders o ON o.id=c.order_id AND o.buyer=c.buyer WHERE c.buyer=? AND c.released_at IS NULL AND o.method='trial' ORDER BY c.order_id DESC LIMIT 1",'i',$buyer);
@@ -132,7 +149,7 @@ function daTrialReserve(mysqli $db,int $buyer,bool $phone): int {
         $pg=daRow($db,"SELECT * FROM delta_app_pg_settings WHERE id=1 AND panel_kind='app'");
         if(!$pg)throw new InvalidArgumentException('پنل اختصاصی برنامه تنظیم نشده است.');
         $now=time();$hash='TR'.bin2hex(random_bytes(12));
-        daExec($db,"INSERT INTO delta_app_real_orders(buyer,plan_id,name,gb,days,price,device_limit,pay_hash,state,method,created,approved_at) VALUES(?,0,'اشتراک تست رایگان',?,?,0,?,?,'paid','trial',?,?)",'iiiisii',$buyer,(int)$s['gb'],(int)$s['days'],(int)$s['devices'],$hash,$now,$now);
+        daExec($db,"INSERT INTO delta_app_real_orders(buyer,plan_id,name,gb,days,price,device_limit,pay_hash,state,method,created,approved_at) VALUES(?,0,'اشتراک تست رایگان',?,?,0,?,?,'paid','trial',?,?)",'isiisii',$buyer,(string)$s['gb'],(int)$s['days'],(int)$s['devices'],$hash,$now,$now);
         $id=(int)$db->insert_id;
         daExec($db,'INSERT INTO delta_app_trial_claims(order_id,buyer,claimed) VALUES(?,?,?)','iii',$id,$buyer,$now);
         $db->commit();return $id;
@@ -165,8 +182,8 @@ function daTrialDeliver(mysqli $db,int $buyer,int $id): array {
         $name=htmlspecialchars($a['username'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
         $pass=htmlspecialchars($r['password'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
         $o=$r['order'];
-        sendMessage("🎁 اشتراک تست دلتا فعال شد\nنام کاربری: <code>".$name."</code>\nرمز: <code>".$pass."</code>\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit'],null,'HTML',$buyer);
-        try{sendToAdmins("🎁 دریافت اشتراک تست برنامه دلتا\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری برنامه: <code>".$name."</code>\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\n📅 ".daIranDate(time())." (ایران)",null,'HTML');}catch(Throwable $e){error_log('Delta trial report failed');}
+        sendMessage("🎁 اشتراک تست دلتا فعال شد\nنام کاربری: <code>".$name."</code>\nرمز: <code>".$pass."</code>\nحجم: ".daQuotaLabel($o['gb'])." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit'],null,'HTML',$buyer);
+        try{sendToAdmins("🎁 دریافت اشتراک تست برنامه دلتا\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری برنامه: <code>".$name."</code>\nحجم: ".daQuotaLabel($o['gb'])." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\n📅 ".daIranDate(time())." (ایران)",null,'HTML');}catch(Throwable $e){error_log('Delta trial report failed');}
     }
     return $r;
 }
@@ -189,14 +206,9 @@ function daRealDeliver(mysqli $db,int $buyer,int $id): array {
             try{
                 $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$id,$buyer);
                 if(!$o||$o['state']!=='paid'||$o['account_id']!==null)throw new InvalidArgumentException('فاکتور تغییر کرده است.');
-                $name=null;
-                for($i=0;$i<40;$i++){
-                    $n='delta'.random_int(10000,99999);
-                    if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)&&!daRow($db,'SELECT account_id FROM delta_app_pg_users WHERE pg_name=?','s',$n)){$name=$n;break;}
-                }
-                if($name===null)throw new RuntimeException('name');
+                $name=daRealAccountName($db,$o['method']==='trial');
                 $pass=daPassword();$now=time();$expires=$now+(int)$o['days']*86400;
-                daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssiiiii',$name,password_hash($pass,PASSWORD_DEFAULT),(int)$o['plan_id'],(int)$o['gb'],$expires,$now,(int)$o['device_limit']);
+                daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssisiii',$name,password_hash($pass,PASSWORD_DEFAULT),(int)$o['plan_id'],(string)$o['gb'],$expires,$now,(int)$o['device_limit']);
                 $aid=(int)$db->insert_id;
                 daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,'app')",'iiisss',$aid,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$name,'delta-app:'.bin2hex(random_bytes(16)));
                 daExec($db,"UPDATE delta_app_real_orders SET account_id=?,state='provisioning',approved_at=? WHERE id=?",'iii',$aid,$now,$id);
