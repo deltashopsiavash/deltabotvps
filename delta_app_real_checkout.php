@@ -39,9 +39,13 @@ function daRealOrder(mysqli $db,int $buyer,int $id): array {
     if(!$o)throw new InvalidArgumentException('فاکتور پیدا نشد.');
     return $o;
 }
-function daRealInvoice(mysqli $db,int $buyer,int $plan,int $renewRoot=0): int {
+function daRealInvoice(mysqli $db,int $buyer,int $plan,int $renewRoot=0,bool $accountLocked=false): int {
     daRealSchema($db);
     daRealFinancePreflight($db);
+    if($renewRoot>0&&!$accountLocked){
+        $a=daRenewTarget($db,$buyer,$renewRoot);
+        return daPgLocked($db,(int)$a['id'],fn()=>daRealInvoice($db,$buyer,$plan,$renewRoot,true));
+    }
     $db->begin_transaction();
     try{
         $target=null;
@@ -110,6 +114,9 @@ function daRenewStage(mysqli $db,array $o,array $r,array $remote): array {
         $locked=daRow($db,'SELECT * FROM delta_app_renewals WHERE order_id=? FOR UPDATE','i',(int)$o['id']);
         if(!$locked)throw new RuntimeException('renewal missing');
         if($locked['target_limit']===null){
+            $fresh=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? FOR UPDATE','i',(int)$o['id']);
+            $pay=daRealPayByHash($db,$o['pay_hash']);
+            if(!$fresh||$fresh['state']!=='paid'||!$pay||(int)$pay['user_id']!==(int)$fresh['buyer']||(int)$pay['price']!==(int)$fresh['price']||!daRealPaymentSettled($fresh,$pay))throw new RuntimeException('renewal payment not settled');
             daExec($db,'UPDATE delta_app_renewals SET old_limit=?,old_expires=?,baseline=?,target_limit=?,target_expires=? WHERE order_id=?','iiiiii',$remote['limit'],$remote['expires'],$v['baseline'],$v['limit'],$v['expires'],(int)$o['id']);
             daExec($db,"UPDATE delta_app_real_orders SET state='provisioning' WHERE id=? AND state='paid'",'i',(int)$o['id']);
         }
@@ -129,6 +136,10 @@ function daRenewFinish(mysqli $db,array $o,array $r,array $remote): bool {
         if(!$fresh)throw new RuntimeException('renewal missing');
         if($fresh['state']==='delivered'){$db->commit();return false;}
         if($fresh['state']!=='provisioning')throw new RuntimeException('renewal state');
+        $pay=daRealPayByHash($db,$fresh['pay_hash']);
+        if(!$pay||(int)$pay['user_id']!==(int)$fresh['buyer']||(int)$pay['price']!==(int)$fresh['price']||!daRealPaymentSettled($fresh,$pay))throw new RuntimeException('renewal payment not settled');
+        $actual=daRenewLink($db,$id);
+        if(!$actual||!daRenewMatches($actual,$remote)||(int)$actual['account_id']!==$aid)throw new RuntimeException('renewal target mismatch');
         $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$aid);
         if(!$a||!(int)$a['active']||(int)$o['device_limit']<(int)$a['device_limit'])throw new RuntimeException('account requires review');
         daExec($db,'UPDATE delta_app_accounts SET plan_id=?,gb=?,expires=?,quota_baseline_bytes=?,device_limit=? WHERE id=?','isiiii',(int)$o['plan_id'],(string)$o['gb'],(int)$r['target_expires'],(int)$r['baseline'],(int)$o['device_limit'],$aid);
@@ -152,6 +163,7 @@ function daRenewApply(mysqli $db,array $o,array $r): array {
         if(!$j)throw new RuntimeException('renewal account missing on panel');
         $remote=daRenewRemoteSnapshot($j);$r=daRenewStage($db,$o,$r,$remote);
         if(!daRenewMatches($r,$remote)){
+            if((int)$r['target_expires']<=time())throw new RuntimeException('renewal target expired; admin review required');
             if($remote['limit']!==(int)$r['old_limit']||$remote['expires']!==(int)$r['old_expires']||$remote['used']<(int)$r['baseline'])throw new RuntimeException('renewal remote state changed; review required');
             [$code,$raw]=daPgApi($s,daPgPath($m),'PUT',$token,['status'=>'active','expire'=>gmdate('c',(int)$r['target_expires']),'data_limit'=>(int)$r['target_limit'],'data_limit_reset_strategy'=>'no_reset']);
             if(!in_array($code,[200,204],true))throw new RuntimeException('renewal panel update');
@@ -184,6 +196,7 @@ function daRealWallet(mysqli $db,int $buyer,int $id): void {
         $p=daRow($db,"SELECT * FROM pays WHERE BINARY hash_id=BINARY ? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$o['pay_hash'],$buyer);
         if(!$p||(int)$p['price']!==(int)$o['price'])throw new RuntimeException('payment mismatch');
         if($o['method']==='wallet'&&$p['state']==='paid_with_wallet'&&in_array($o['state'],['paid','provisioning','delivered'],true)){$db->commit();return;}
+        $renew=daRenewLink($db,$id);if($renew)daRenewTarget($db,$buyer,(int)$renew['root_order_id']);
         if($o['state']!=='pending'||$p['state']!=='pending'||$o['method']!==null||daRealHasCard($db,$o['pay_hash'])||(int)$o['created']<time()-3600||(int)$o['price']<=0)throw new InvalidArgumentException('فاکتور قابل پرداخت از موجودی نیست.');
         $price=(int)$o['price'];
         $s=daQuery($db,'UPDATE users SET wallet=wallet-? WHERE userid=? AND wallet>=?','iii',$price,$buyer,$price);
@@ -305,6 +318,7 @@ function daRealReserveAccount(mysqli $db,int $buyer,int $id,array $setting): int
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$id,$buyer);
         if(!$o||$o['state']!=='paid'||$o['account_id']!==null)throw new InvalidArgumentException('فاکتور تغییر کرده است.');
+        if(daRenewLink($db,$id))throw new InvalidArgumentException('فاکتور تمدید است.');
         if($o['method']==='trial'){
             if(!daTrialAuthorized($db,$o))throw new InvalidArgumentException('درخواست تست معتبر نیست.');
         }else{
@@ -500,6 +514,7 @@ function daRealPrepareCard(mysqli $db,int $buyer,int $id): array {
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
         if(!$o||$o['state']!=='pending'||!in_array($o['method'],[null,'card'],true)||(int)$o['created']<time()-3600)throw new InvalidArgumentException('فاکتور قابل پرداخت نیست.');
+        $renew=daRenewLink($db,$id);if($renew)daRenewTarget($db,$buyer,(int)$renew['root_order_id']);
         $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$o['pay_hash'],$buyer);
         if(!$p||$p['state']!=='pending'||(int)$p['price']!==(int)$o['price'])throw new InvalidArgumentException('وضعیت پرداخت تغییر کرده است.');
         daExec($db,"UPDATE delta_app_real_orders SET method='card' WHERE id=?",'i',$id);
