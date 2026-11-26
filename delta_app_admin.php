@@ -444,3 +444,79 @@ function daRealDevicesView(mysqli $db,int $buyer,int $id): void {
     foreach($items as $item){$msg.="\n".daEsc($item['model'])." | ".daIranDate($item['last_seen'])." | مصرف مستقل: نامشخص";$rows[]=daBtn('🚪 خروج '.$item['model'],'dar_kickask_'.$id.'_'.$item['id']);}
     $rows[]=daBtn('بازگشت','dar_service_'.$id);daSend($msg,$rows);
 }
+
+
+/** Isolate app receipt callbacks from legacy server_plans provisioning. */
+function daRealReceiptHandle(): bool {
+    global $connection,$from_id,$admin,$chat_id,$isChildBot,$update,$data,$text,$userInfo,$botToken,$botState,$buttonValues;
+    if(!empty($isChildBot))return false;
+    $cb=(string)($data??'');$step=(string)($userInfo['step']??'');
+    $hash='';$kind='';$display=0;$action='';
+    if(preg_match('/^pay(Photo|Text)Receipt(.+)$/D',$cb,$m)){
+        $ref=deltaCardParseReceiptRef($m[2]);$hash=(string)$ref['hash'];$display=(int)$ref['id'];$kind=strtolower($m[1]);$action='prompt';
+    }elseif(preg_match('/^deltaCardSwitch(.+)~([0-9]+)$/D',$cb,$m)){
+        $hash=$m[1];$action='switch';
+    }elseif(preg_match('/^(?:accept|accCustom|approvePayment|payWithWallet|payCustomWithWallet|payWithCartToCart|payCustomWithCartToCart|payWithTronWallet|payWithWeSwap|payWithUsdt|havePaiedWeSwap|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew)([a-f0-9]{18})$/D',$cb,$m)){
+        $hash=$m[1];$action='legacy';
+    }elseif(preg_match('/^dar_receipt_(photo|text)_([a-f0-9]{18})$/D',$step,$m)){
+        if($cb!==''||trim((string)$text)==='/start'||trim((string)$text)==='/buy'||(string)$text===(string)($buttonValues['cancel']??'انصراف')){
+            setUser();return false;
+        }
+        $kind=$m[1];$hash=$m[2];$action='submit';
+    }else return false;
+    $p=daRealPayByHash($connection,$hash);
+    if(!$p)return false;
+    if((int)$from_id!==(int)$admin||(int)$chat_id!==(int)$admin||(int)$p['user_id']!==(int)$admin||
+        !is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
+        return true;
+    }
+    try{
+        daRealSchema($connection);
+        $o=daRow($connection,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=?','si',$hash,(int)$from_id);
+        if(!$o)throw new RuntimeException('order missing');
+        if($action==='legacy'){
+            // Old approval buttons may appear in the general pending-receipt UI.
+            // Route them to a real bank confirmation rather than normal VPN delivery.
+            if($cb==='accept'.$hash||$cb==='accCustom'.$hash){
+                sendMessage('ابتدا واریز بانکی را بررسی کنید.',daKeys([daBtn('بررسی فاکتور','dar_bankask_'.$o['id'])]),'HTML');
+            }else answerQuery('از فاکتور اختصاصی دلتا استفاده کنید.',true);
+            return true;
+        }
+        if($p['state']!=='pending'||$o['state']!=='pending'||$o['method']!=='card')throw new InvalidArgumentException('فاکتور دیگر قابل پرداخت نیست.');
+        if($action==='switch'){
+            if((int)$o['created']<time()-3600||($botState['cartToCartState']??'off')!=='on')throw new InvalidArgumentException('مهلت پرداخت تمام شده است.');
+            deltaCardSwitchAction($cb);return true;
+        }
+        if($action==='prompt'){
+            if($display<=0||!deltaCardBindReceipt($hash,$display,(int)$from_id))throw new InvalidArgumentException('شماره کارت معتبر نیست.');
+            setUser('dar_receipt_'.$kind.'_'.$hash);
+            answerQuery();
+            sendMessage($kind==='photo'?deltaCardPhotoPrompt():deltaCardSmsPrompt(),deltaCardReceiptCancelKeys(),null);return true;
+        }
+        $photo='';
+        if($kind==='photo'){
+            $photos=$update->message->photo??null;
+            if(!is_array($photos)||!$photos){sendMessage('لطفاً عکس واریزی را بفرستید.');return true;}
+            $last=end($photos);$photo=(string)($last->file_id??'');
+            if($photo==='')throw new InvalidArgumentException('عکس معتبر نیست.');
+        }elseif(!isset($update->message->text)||trim((string)$text)===''){
+            sendMessage('لطفاً متن پیامک واریزی را بفرستید.');return true;
+        }
+        $at=min(time(),(int)($_SERVER['REQUEST_TIME']??time()));
+        if(!daRealRegisterReceipt($connection,$hash,(int)$from_id,$kind,$at))throw new RuntimeException('receipt already submitted');
+        setUser();
+        $msg="📨 رسید خرید برنامه دلتا\n".deltaUserShortInfo((int)$from_id)."\n📦 پلن: ".daEsc($o['name'])."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n".deltaTrackingLine($hash);
+        if($kind==='text')$msg.="\n📝 ".daEsc(mb_substr((string)$text,0,1500));
+        $keys=daKeys([daBtn('🔎 بررسی و تأیید واریزی','dar_bankask_'.$o['id']),daBtn('🧾 وضعیت فاکتور','dar_invoice_'.$o['id'])]);
+        $res=$kind==='photo'?sendPhotoToAdmins($photo,$msg,$keys,'HTML',$hash):sendToAdmins($msg,$keys,'HTML',null,$hash);
+        if(is_object($res)&&!empty($res->ok)){
+            $mid=(int)($res->result->message_id??0);$cid=(int)($res->result->chat->id??0);
+            if($mid>0&&$cid!==0)daExec($connection,"UPDATE pays SET message_id=?,chat_id=? WHERE hash_id=? AND type='DELTA_APP_BUY'",'iis',$mid,$cid,$hash);
+        }
+        sendMessage('✅ رسید ثبت شد. منتظر بررسی واریز باشید؛ دوباره پرداخت نکنید.',daKeys([daBtn('🧾 وضعیت فاکتور','dar_invoice_'.$o['id'])]),'HTML');return true;
+    }catch(Throwable $e){
+        error_log('Delta app receipt: '.get_class($e));
+        $msg=$e instanceof InvalidArgumentException?$e->getMessage():'عملیات کامل نشد؛ وضعیت فاکتور را بررسی کنید و دوباره واریز نکنید.';
+        if($cb!=='')answerQuery($msg,true);else sendMessage($msg);return true;
+    }
+}
