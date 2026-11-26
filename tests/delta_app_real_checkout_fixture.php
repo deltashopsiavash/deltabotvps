@@ -12,7 +12,7 @@ function upsertSettingValue($key,$value): bool {global $db;daExec($db,'INSERT IN
 function deltaMarkReceiptSubmitted($hash,$at=null): bool {return upsertSettingValue('RECEIPT_AT_'.sha1($hash),(string)($at??time()));}
 function deltaReceiptHasSubmissionMarker($hash): bool {global $db;return (bool)daRow($db,'SELECT value FROM setting WHERE type=?','s','RECEIPT_AT_'.sha1($hash));}
 foreach([
-"CREATE TABLE pays(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,hash_id VARCHAR(9) NOT NULL UNIQUE,description TEXT,user_id BIGINT NOT NULL,type VARCHAR(64) NOT NULL,plan_id INT NOT NULL,volume INT NOT NULL,day INT NOT NULL,price BIGINT NOT NULL,request_date BIGINT NOT NULL,state VARCHAR(32) NOT NULL) ENGINE=InnoDB",
+"CREATE TABLE pays(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,hash_id VARCHAR(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL, UNIQUE KEY fixture_hash(hash_id(64)),description TEXT,user_id BIGINT NOT NULL,type VARCHAR(100) NOT NULL,plan_id INT NOT NULL,volume INT NOT NULL,day INT NOT NULL,price INT NOT NULL,request_date BIGINT NOT NULL,state VARCHAR(255) NOT NULL) ENGINE=InnoDB",
 "CREATE TABLE users(userid BIGINT PRIMARY KEY,wallet BIGINT NOT NULL) ENGINE=MyISAM",
 "CREATE TABLE setting(type VARCHAR(190) PRIMARY KEY,value TEXT NOT NULL) ENGINE=InnoDB",
 "CREATE TABLE payment_card_displays(id BIGINT AUTO_INCREMENT PRIMARY KEY,hash_id VARCHAR(9) NOT NULL) ENGINE=InnoDB"
@@ -32,6 +32,10 @@ check(!daRow($db,'SELECT id FROM delta_app_accounts LIMIT 1'),'unpaid order crea
 rejected(fn()=>daRealWallet($db,1001,$id),'wallet disabled before any debit on MyISAM');
 check((int)daRow($db,'SELECT wallet FROM users WHERE userid=1001')['wallet']===100000,'existing wallet unchanged');
 check(daRealPayByHash($db,$h)['state']==='pending','disabled wallet leaves invoice pending');
+// A forged or obsolete wallet state must never provision a card-only order.
+daExec($db,"UPDATE pays SET state='paid_with_wallet' WHERE hash_id=?",'s',$h);
+rejected(fn()=>daRealSyncPaid($db,$h),'wallet financial state rejected');
+daExec($db,"UPDATE pays SET state='pending' WHERE hash_id=?",'s',$h);
 $id2=$id;$o2=$o;
 $p=daRealPrepareCard($db,1001,$id2);
 check((int)$p['price']===30000,'exact card amount');
