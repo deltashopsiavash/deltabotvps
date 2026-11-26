@@ -2260,8 +2260,29 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
     @set_time_limit(600);
     if(function_exists('ignore_user_abort')) @ignore_user_abort(true);
 
+    // Mother database includes the entire app catalog, accounts, sessions,
+    // devices, orders, financial tables and a portable encrypted panel key.
+    $appBackup=false;
+    try{
+        $q=$connection->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,10)='delta_app_' LIMIT 1");
+        $appBackup=$q&&$q->num_rows>0;
+        if($q)$q->close();
+        if($appBackup){
+            require_once __DIR__.'/delta_app_core.php';
+            require_once __DIR__.'/delta_app_real_checkout.php';
+            daSchema($connection);
+            daRealSchema($connection);
+            daPrepareRecoveryKey($connection);
+        }
+    }catch(Throwable $e){
+        error_log('Unified backup preparation failed: '.get_class($e));
+        return null;
+    }
+
     $dir = ensureBackupDir();
-    $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '.sql';
+    $path = $dir . '/' . $prefix . '_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.sql';
+    $oldUmask=umask(0077);
+    try{
 
     // 1) Try mysqldump (fast & reliable) if possible
     if(isShellExecAvailable()){
@@ -2273,11 +2294,11 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
             $hostArg = $dbHost ? ('--host=' . escapeshellarg((string)$dbHost)) : '';
             $cmd = $env .
                 ' ' . escapeshellcmd($which) .
-                ' --single-transaction --quick --skip-lock-tables --default-character-set=utf8mb4 ' .
+                ' --lock-all-tables --quick --no-tablespaces --hex-blob --default-character-set=utf8mb4 ' .
                 $hostArg .
                 ' --user=' . escapeshellarg((string)$dbUser) .
                 ' ' . escapeshellarg((string)$dbName) .
-                ' > ' . escapeshellarg($path) . ' 2>&1';
+                ' > ' . escapeshellarg($path) . ' 2>/dev/null';
 
             $out = [];
             $code = 0;
@@ -2298,6 +2319,11 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
             }
 
             if($ok){
+                if($appBackup){
+                    // A successful dump alone is not enough: verify required app tables,
+                    // the encrypted recovery key and the final completion marker.
+                    if(!deltaUnifiedBackupCheck($path,$connection,true)){@unlink($path);return null;}
+                }
                 $real = realpath($path);
                 return $real ? $real : $path;
             }else{
@@ -2307,6 +2333,8 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
         }
     }
 
+    // Never send a partial or non-consistent app dump as a complete backup.
+    if($appBackup)return null;
     // 2) Fallback: stream dump via mysqli (memory-safe)
     $fh = @fopen($path, 'w');
     if(!$fh) return null;
@@ -2371,9 +2399,33 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
     }
     @unlink($path);
     return null;
+    }finally{umask($oldUmask);}
 }
 
-
+// Validate a combined SQL file without executing it or exposing credentials.
+// Every app table currently in the database must be present in a new dump.
+function deltaUnifiedBackupCheck(string $path, mysqli $db, bool $compareLive=false): bool {
+    $fh=@fopen($path,'rb');if(!$fh)return false;
+    $tables=[];$complete=false;$envelope=null;
+    try{
+        while(($line=fgets($fh))!==false){
+            if(preg_match('/^CREATE TABLE `([A-Za-z0-9_]+)`/D',$line,$m))$tables[$m[1]]=true;
+            if(preg_match('/^INSERT INTO `delta_app_backup_key` VALUES \(1,\x27([A-Za-z0-9+\/=]+)\x27\);/D',$line,$m))$envelope=$m[1];
+            if(str_starts_with($line,'-- Dump completed on '))$complete=true;
+        }
+    }finally{fclose($fh);}
+    if(!$complete||!isset($tables['users'],$tables['pays'],$tables['setting'],$tables['delta_app_accounts'],$tables['delta_app_real_orders'],$tables['delta_app_pg_users'],$tables['delta_app_devices'],$tables['delta_app_sessions'],$tables['delta_app_panels'],$tables['delta_app_backup_key'])||$envelope===null)return false;
+    if($compareLive){
+        $q=$db->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE'");
+        while($r=$q->fetch_assoc()){if(!isset($tables[$r['TABLE_NAME']])){$q->close();return false;}}
+        $q->close();
+    }
+    try{
+        require_once __DIR__.'/delta_app_core.php';
+        daRecoveryUnwrap($envelope,(string)($GLOBALS['botToken']??''));
+        return true;
+    }catch(Throwable $e){return false;}
+}
 
 // Create SQL dump of the current database (structure + data)
 function dbCreateSqlBackup(){
