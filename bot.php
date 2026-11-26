@@ -10,6 +10,11 @@ require_once __DIR__ . '/financial_reports.php';
 
 require_once __DIR__ . '/admin_service_manager.php';
 require_once __DIR__ . '/service_subscription_ui.php';
+// Delta app checkout and receipts must run before the ordinary VPN handlers.
+require_once __DIR__.'/delta_app_admin.php';
+if(daRealReceiptHandle()) exit;
+if(deltaAppAdminHandle()) exit;
+
 if(deltaSvcHandleRequest() || dsHandleCustomer()) exit;
 
 // Superseded invoices still exist for SMS evidence. Treat stale payment
@@ -860,11 +865,6 @@ if(isset($data) && preg_match('/^(approveUserAccess|rejectUserAccess)_(\d+)$/', 
 }
 
 GOTOSTART:
-
-// Delta app checkout and receipts must run before the ordinary VPN handlers.
-require_once __DIR__.'/delta_app_admin.php';
-if(daRealReceiptHandle()) exit;
-if(deltaAppAdminHandle()) exit;
 
 // Card pool administration and receipt cancellation are handled before legacy payment flows.
 if(deltaCardHandle()) exit;
