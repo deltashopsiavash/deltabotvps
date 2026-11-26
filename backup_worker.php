@@ -14,6 +14,11 @@ $chatId = $argv[3] ?? '';
 $arg4 = $argv[4] ?? '';
 $arg5 = $argv[5] ?? '';
 
+if($mode==='scheduled'){
+    require_once __DIR__.'/baseInfo.php';
+    $mode='backup';$token=(string)($botToken??'');$chatId=(string)($admin??'');
+    $arg4='deltabotvps_scheduled_backup';$arg5=(string)($dbName??'');
+}
 if (!$mode || !$token || !$chatId) {
     fwrite(STDERR, "Invalid args\n");
     exit(1);
