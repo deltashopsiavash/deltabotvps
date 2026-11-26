@@ -242,6 +242,7 @@ if($mode === 'restore'){
         exit(1);
     }
     if(!$unified){
+        if(!deltaLegacyBackupLooksComplete($sqlPath)){sendMsg($chatId,'❌ ساختار یا پایان فایل SQL معتبر نیست؛ هیچ تغییری اعمال نشد.');exit(1);}
         $hasApp=daRow($connection,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts'");
         if($hasApp&&daRow($connection,'SELECT id FROM delta_app_accounts LIMIT 1')&&!deltaUnifiedBackupHasTable($sqlPath,'delta_app_accounts')){
             sendMsg($chatId,'❌ این بکاپ قدیمی اطلاعات برنامه را ندارد. برای جلوگیری از بازیابی ناقص، بکاپ کامل را انتخاب کنید.');
@@ -256,9 +257,9 @@ if($mode === 'restore'){
     sendMsg($chatId,"⏳ در حال بازگردانی بکاپ...");
     $err=null;
     $ok=restoreWithMysqlCli($sqlPath,$err);
-    if($ok&&$unified){
+    if($ok&&($unified||deltaUnifiedBackupHasTable($sqlPath,'delta_app_accounts'))){
         try{
-            if(!daRecoveryTableExists($connection))throw new RuntimeException('missing recovery table');
+            if($unified&&!daRecoveryTableExists($connection))throw new RuntimeException('missing recovery table');
             daVerifyRecoverySecrets($connection);
         }catch(Throwable $e){$ok=false;error_log('Unified restore verification failed: '.get_class($e));}
     }
