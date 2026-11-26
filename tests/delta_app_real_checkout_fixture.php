@@ -13,7 +13,7 @@ function deltaMarkReceiptSubmitted($hash,$at=null): bool {return upsertSettingVa
 function deltaReceiptHasSubmissionMarker($hash): bool {global $db;return (bool)daRow($db,'SELECT value FROM setting WHERE type=?','s','RECEIPT_AT_'.sha1($hash));}
 foreach([
 "CREATE TABLE pays(id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,hash_id VARCHAR(9) NOT NULL UNIQUE,description TEXT,user_id BIGINT NOT NULL,type VARCHAR(64) NOT NULL,plan_id INT NOT NULL,volume INT NOT NULL,day INT NOT NULL,price BIGINT NOT NULL,request_date BIGINT NOT NULL,state VARCHAR(32) NOT NULL) ENGINE=InnoDB",
-"CREATE TABLE users(userid BIGINT PRIMARY KEY,wallet BIGINT NOT NULL) ENGINE=InnoDB",
+"CREATE TABLE users(userid BIGINT PRIMARY KEY,wallet BIGINT NOT NULL) ENGINE=MyISAM",
 "CREATE TABLE setting(type VARCHAR(190) PRIMARY KEY,value TEXT NOT NULL) ENGINE=InnoDB",
 "CREATE TABLE payment_card_displays(id BIGINT AUTO_INCREMENT PRIMARY KEY,hash_id VARCHAR(9) NOT NULL) ENGINE=InnoDB"
 ] as $sql)$db->query($sql);
@@ -29,11 +29,10 @@ check(daRealPayByHash($db,$h)['type']==='DELTA_APP_BUY','isolated payment type')
 rejected(fn()=>daRealOrder($db,1002,$id),'cross-owner invoice blocked');
 rejected(fn()=>daRealDeliver($db,1001,$id),'unpaid provisioning blocked');
 check(!daRow($db,'SELECT id FROM delta_app_accounts LIMIT 1'),'unpaid order creates no account');
-daRealWallet($db,1001,$id);daRealWallet($db,1001,$id);
-check((int)daRow($db,'SELECT wallet FROM users WHERE userid=1001')['wallet']===70000,'wallet charged exactly once');
-check(daRealPayByHash($db,$h)['state']==='paid_with_wallet','wallet financial state');
-check(daRealSyncPaid($db,$h)['state']==='paid','settled order recovery');
-$id2=daRealInvoice($db,1001,1);$o2=daRealOrder($db,1001,$id2);
+rejected(fn()=>daRealWallet($db,1001,$id),'wallet disabled before any debit on MyISAM');
+check((int)daRow($db,'SELECT wallet FROM users WHERE userid=1001')['wallet']===100000,'existing wallet unchanged');
+check(daRealPayByHash($db,$h)['state']==='pending','disabled wallet leaves invoice pending');
+$id2=$id;$o2=$o;
 $p=daRealPrepareCard($db,1001,$id2);
 check((int)$p['price']===30000,'exact card amount');
 rejected(fn()=>daRealWallet($db,1001,$id2),'wallet blocked after card selection');
@@ -43,8 +42,14 @@ check(daRealRegisterReceipt($db,$o2['pay_hash'],1001,'photo',time()),'photo rece
 check(!daRealRegisterReceipt($db,$o2['pay_hash'],1001,'text',time()),'duplicate receipt rejected');
 check(daRealPayByHash($db,$o2['pay_hash'])['state']==='have_sent','receipt does not equal payment');
 rejected(fn()=>daRealDeliver($db,1001,$id2),'unverified receipt cannot provision');
+// Simulate the result of a trusted payment claim in the disposable fixture only.
+daExec($db,"UPDATE pays SET state='paid' WHERE hash_id=? AND state='have_sent'",'s',$o2['pay_hash']);
+check(daRealSyncPaid($db,$o2['pay_hash'])['state']==='paid','card payment synchronizes with order');
+check(daRealSyncPaid($db,$o2['pay_hash'])['state']==='paid','repeat sync is idempotent');
+check((int)daRow($db,'SELECT wallet FROM users WHERE userid=1001')['wallet']===100000,'card payment leaves wallet unchanged');
+check(daRow($db,"SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='users'")['ENGINE']==='MyISAM','existing users engine unchanged');
 $id3=daRealInvoice($db,1002,1);
-rejected(fn()=>daRealWallet($db,1002,$id3),'insufficient balance blocked');
+rejected(fn()=>daRealWallet($db,1002,$id3),'wallet blocked for all buyers');
 check((int)daRow($db,'SELECT wallet FROM users WHERE userid=1002')['wallet']===1,'failed debit leaves balance untouched');
 daRealCancel($db,1002,$id3);
 check(daRealPayByHash($db,daRealOrder($db,1002,$id3)['pay_hash'])['state']==='cancelled_by_user','unpaid invoice cancellation');
