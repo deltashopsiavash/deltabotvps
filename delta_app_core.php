@@ -182,22 +182,71 @@ function daPgBase(string $url): string {
     if(!$p||($p['scheme']??'')!=='https'||empty($p['host'])||isset($p['user'],$p['pass'])||isset($p['user'])||isset($p['pass'])||isset($p['query'])||isset($p['fragment'])||!empty($p['path']))throw new InvalidArgumentException('آدرس پنل باید HTTPS معتبر و بدون مسیر اضافی باشد.');
     return $base;
 }
-// Independent app credentials. A DB-only dump does not contain the encryption key.
-function daPanelKey(): string {
+// Preserve the existing panel key across database password changes.
+// The recovery envelope is encrypted by the mother bot token, not by the DB password.
+function daLegacyPanelKey(): string {
     global $dbPassword;
     if(!is_string($dbPassword??null)||$dbPassword==='')throw new RuntimeException('panel encryption unavailable');
     return hash_hkdf('sha256',$dbPassword,32,'delta-app-panel-v1');
 }
+function daRecoveryWrappingKey(string $token): string {
+    if($token==='')throw new RuntimeException('recovery token unavailable');
+    return hash_hkdf('sha256',$token,32,'delta-app-backup-wrap-v1');
+}
+function daRecoveryWrap(string $key,string $token): string {
+    if(strlen($key)!==32)throw new RuntimeException('invalid panel key');
+    $iv=random_bytes(12);$tag='';
+    $encrypted=openssl_encrypt($key,'aes-256-gcm',daRecoveryWrappingKey($token),OPENSSL_RAW_DATA,$iv,$tag,'delta-app-backup-v1',16);
+    if($encrypted===false)throw new RuntimeException('recovery encryption');
+    return base64_encode($iv.$tag.$encrypted);
+}
+function daRecoveryUnwrap(string $value,string $token): string {
+    $raw=base64_decode($value,true);
+    if($raw===false||strlen($raw)!==60)throw new RuntimeException('invalid recovery envelope');
+    $key=openssl_decrypt(substr($raw,28),'aes-256-gcm',daRecoveryWrappingKey($token),OPENSSL_RAW_DATA,substr($raw,0,12),substr($raw,12,16),'delta-app-backup-v1');
+    if($key===false||strlen($key)!==32)throw new RuntimeException('recovery token mismatch');
+    return $key;
+}
+function daRecoveryTableExists(mysqli $db): bool {
+    return (bool)daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_backup_key'");
+}
+function daPanelKey(?mysqli $db=null): string {
+    global $botToken;
+    if($db!==null&&daRecoveryTableExists($db)){
+        $row=daRow($db,'SELECT envelope FROM delta_app_backup_key WHERE id=1');
+        if($row)return daRecoveryUnwrap($row['envelope'],(string)($botToken??''));
+    }
+    return daLegacyPanelKey();
+}
+// Called outside financial transactions, before a full SQL dump. Never replaces an existing envelope.
+function daPrepareRecoveryKey(mysqli $db): void {
+    global $botToken;
+    $db->query("CREATE TABLE IF NOT EXISTS delta_app_backup_key (id TINYINT PRIMARY KEY,envelope VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL) ENGINE=InnoDB");
+    $key=daPanelKey($db);
+    daVerifyRecoverySecrets($db,$key);
+    $envelope=daRecoveryWrap($key,(string)($botToken??''));
+    daExec($db,'INSERT INTO delta_app_backup_key(id,envelope) VALUES(1,?) ON DUPLICATE KEY UPDATE id=id','s',$envelope);
+    daVerifyRecoverySecrets($db,daPanelKey($db));
+}
+function daVerifyRecoverySecrets(mysqli $db,?string $key=null): void {
+    $key=$key??daPanelKey($db);
+    foreach(['delta_app_panels','delta_app_panel_drafts'] as $table){
+        if(!daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?",'s',$table))continue;
+        foreach(daRows($db,"SELECT secret,panel_url,username FROM ".$table) as $r){
+            daPanelDecrypt($r['secret'],$r['panel_url'],$r['username'],$key);
+        }
+    }
+}
 function daPanelEncrypt(string $password,string $base,string $name,?string $key=null): string {
     $iv=random_bytes(12);$tag='';
-    $encrypted=openssl_encrypt($password,'aes-256-gcm',$key??daPanelKey(),OPENSSL_RAW_DATA,$iv,$tag,$base."\0".$name,16);
+    $encrypted=openssl_encrypt($password,'aes-256-gcm',$key??daLegacyPanelKey(),OPENSSL_RAW_DATA,$iv,$tag,$base."\0".$name,16);
     if($encrypted===false)throw new RuntimeException('panel encryption');
     return base64_encode($iv.$tag.$encrypted);
 }
 function daPanelDecrypt(string $value,string $base,string $name,?string $key=null): string {
     $raw=base64_decode($value,true);
     if($raw===false||strlen($raw)<=28)throw new RuntimeException('panel secret invalid');
-    $plain=openssl_decrypt(substr($raw,28),'aes-256-gcm',$key??daPanelKey(),OPENSSL_RAW_DATA,substr($raw,0,12),substr($raw,12,16),$base."\0".$name);
+    $plain=openssl_decrypt(substr($raw,28),'aes-256-gcm',$key??daLegacyPanelKey(),OPENSSL_RAW_DATA,substr($raw,0,12),substr($raw,12,16),$base."\0".$name);
     if($plain===false)throw new RuntimeException('panel secret decrypt');
     return $plain;
 }
@@ -207,7 +256,7 @@ function daPgServer(mysqli $db,int $id,?string $expected=null,string $kind='app'
         $s=daRow($db,"SELECT * FROM server_config WHERE id=? AND type='pasarguard'",'i',$id);
     }elseif($kind==='app'){
         $s=daRow($db,'SELECT * FROM delta_app_panels WHERE id=?','i',$id);
-        if($s)$s['password']=daPanelDecrypt($s['secret'],$s['panel_url'],$s['username']);
+        if($s)$s['password']=daPanelDecrypt($s['secret'],$s['panel_url'],$s['username'],daPanelKey($db));
     }else throw new RuntimeException('panel kind');
     if(!$s)throw new InvalidArgumentException('پنل پسارگارد مربوط به حساب پیدا نشد.');
     $s['base']=daPgBase($s['panel_url']);
@@ -266,7 +315,7 @@ function daPanelDraft(mysqli $db,array $s,?int $panelId=null): array {
     if($panelId===null&&daRow($db,'SELECT id FROM delta_app_panels WHERE panel_url=? AND username=?','ss',$s['base'],$s['username']))throw new InvalidArgumentException('این پنل قبلاً ثبت شده؛ از انتخاب پنل و گروه استفاده کنید.');
     $groups=daPgGroups($s);
     if(!$groups)throw new InvalidArgumentException('ورود موفق بود ولی هیچ گروه قابل انتخابی پیدا نشد.');
-    $ticket=bin2hex(random_bytes(12));$secret=daPanelEncrypt($s['password'],$s['base'],$s['username']);
+    $ticket=bin2hex(random_bytes(12));$secret=daPanelEncrypt($s['password'],$s['base'],$s['username'],daPanelKey($db));
     daExec($db,'DELETE FROM delta_app_panel_drafts WHERE expires<=?','i',time());
     daExec($db,'INSERT INTO delta_app_panel_drafts(ticket,panel_id,panel_url,username,secret,sub_base_url,groups_json,expires) VALUES(?,?,?,?,?,?,?,?)','sisssssi',$ticket,$panelId,$s['base'],$s['username'],$secret,$s['sub_base_url'],json_encode($groups,JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR),time()+600);
     return ['ticket'=>$ticket,'groups'=>$groups];
@@ -281,7 +330,7 @@ function daPanelDraftFinish(mysqli $db,string $ticket,int $gid): array {
     $d=daPanelDraftGet($db,$ticket);
     $groups=json_decode($d['groups_json'],true,512,JSON_THROW_ON_ERROR);
     if(!in_array($gid,array_column($groups,'id'),true))throw new InvalidArgumentException('گروه را از دکمه‌های همین فهرست انتخاب کنید.');
-    $s=$d['panel_id']===null?['base'=>$d['panel_url'],'sub_base_url'=>$d['sub_base_url'],'username'=>$d['username'],'password'=>daPanelDecrypt($d['secret'],$d['panel_url'],$d['username'])]:daPgServer($db,(int)$d['panel_id'],$d['panel_url']);
+    $s=$d['panel_id']===null?['base'=>$d['panel_url'],'sub_base_url'=>$d['sub_base_url'],'username'=>$d['username'],'password'=>daPanelDecrypt($d['secret'],$d['panel_url'],$d['username'],daPanelKey($db))]:daPgServer($db,(int)$d['panel_id'],$d['panel_url']);
     $g=daPgCheckGroup($s,$gid);
     $db->begin_transaction();
     try{
@@ -536,7 +585,7 @@ function daEditPanel(mysqli $db,int $id,array $s): void {
     foreach($maps as $m){
         if($m['state']!=='ready'||!in_array((int)$m['group_id'],$gids,true)||!daPgGet($s,$token,$m))throw new InvalidArgumentException('هویت حساب‌های قبلی در پنل جدید تأیید نشد.');
     }
-    $secret=daPanelEncrypt($s['password'],$s['base'],$s['username']);
+    $secret=daPanelEncrypt($s['password'],$s['base'],$s['username'],daPanelKey($db));
     $db->begin_transaction();
     try{
         daRow($db,'SELECT id FROM delta_app_panels WHERE id=? FOR UPDATE','i',$id);
