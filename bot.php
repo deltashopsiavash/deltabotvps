@@ -1098,10 +1098,12 @@ if(($userInfo['step'] ?? '') == 'awaiting_backup_sql' && ($from_id == $admin || 
 
             // Download SQL to backups dir (streaming - memory safe)
             $dir = ensureBackupDir();
-            $path = $dir . '/restore_' . date('Ymd_His') . '.sql';
+            $path = $dir . '/restore_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.sql';
 
             $in = @fopen($url, 'r');
-            $out = @fopen($path, 'w');
+            $oldBackupUmask=umask(0077);
+            $out = @fopen($path, 'xb');
+            umask($oldBackupUmask);
             if($in && $out){
                 @stream_copy_to_stream($in, $out);
                 @fclose($in);
@@ -1118,8 +1120,8 @@ if(($userInfo['step'] ?? '') == 'awaiting_backup_sql' && ($from_id == $admin || 
                     @shell_exec($cmd);
                 }else{
                     // Fallback (sync) - may take time on large DB
-                    $sql = @file_get_contents($path);
-                    $ok = $sql !== false ? dbRestoreFromSql($sql) : false;
+                    // Never bypass the worker's authenticated backup validation.
+                    $ok = false;
                     if($ok){
                         sendMessage("✅ بکاپ با موفقیت بازگردانی شد.");
                         @unlink($path);
@@ -2239,8 +2241,8 @@ if(preg_match('/^adminBackupRestoreFromFile_(\d+)_(\d+)/',$data,$m) && ($from_id
             @shell_exec($cmd);
         }else{
             // Fallback (sync) - may take time on large DB
-            $sql = @file_get_contents($full);
-            $ok = $sql !== false ? dbRestoreFromSql($sql) : false;
+            // Never bypass the worker's authenticated backup validation.
+            $ok = false;
             if($ok){
                 sendMessage("✅ بکاپ با موفقیت بازگردانی شد.");
             }else{
