@@ -24,7 +24,7 @@ function daSend(string $txt,array $rows=[]): void {
         $r=bot('editMessageText',$payload+['message_id'=>$target]);
         $desc=strtolower((string)daBotValue($r,'description'));
         if(daBotValue($r,'ok')||str_contains($desc,'message is not modified'))return;
-        if(!str_contains($desc,'message to edit not found')&&!str_contains($desc,"message can't be edited")&&!str_contains($desc,'message_id_invalid'))return;
+        if(!str_contains($desc,'message to edit not found')&&!str_contains($desc,"message can't be edited")&&!str_contains($desc,'message_id_invalid')&&!str_contains($desc,'there is no text in the message to edit')&&!str_contains($desc,'message text is empty'))return;
     }
     $r=bot('sendMessage',$payload);
     $msg=daBotValue(daBotValue($r,'result'),'message_id');
@@ -394,8 +394,8 @@ function deltaAppAdminHandle(): bool {
             if(!daName($input))throw new InvalidArgumentException('نام کاربری نامعتبر است.');
             $id=(int)$m[1];if(daPgMap($connection,$id))throw new InvalidArgumentException('تغییر نام حساب اختصاصی فعلاً غیرفعال است.');$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET username=? WHERE id=?','si',$input,$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}setUser();daUser($connection,$id);
         }
-    }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
-    catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ اگر آدرس پنل IP است، دامنه معتبر SSL را در خط پنجم بفرستید. اطلاعات مدیر و دسترسی گروه را هم بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
+    }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('بازگشت',$buyPreview?'dar_orders':'da_home')]);}
+    catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ اگر آدرس پنل IP است، دامنه معتبر SSL را در خط پنجم بفرستید. اطلاعات مدیر و دسترسی گروه را هم بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}if($buyPreview){error_log('Delta checkout: '.get_class($e).' code='.(int)$e->getCode());daSend('عملیات خرید کامل نشد؛ وضعیت فاکتور را بررسی کنید و در صورت پرداخت دوباره واریز نکنید.',[daBtn('فاکتورهای من','dar_orders'),daBtn('بازگشت','dar_home')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
     return true;
 }
 
@@ -405,7 +405,9 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $txt="🧾 <b>فاکتور خرید دلتا</b>\n".daEsc($o['name'])."\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\nمبلغ: ".number_format((int)$o['price'])." تومان\nکد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\nوضعیت: ".($status[$o['state']]??'نامشخص');
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
     if(!$p)throw new RuntimeException('payment missing');
-    if($p['state']==='have_sent'){
+    if(in_array($p['state'],['declined','rejected','cancelled_by_user'],true)){
+        $txt.="\nوضعیت پرداخت: ".daEsc(deltaOrderStateLabel($p['state']));
+    }elseif($p['state']==='have_sent'){
         $txt.="\n📨 رسید ثبت شده؛ در انتظار بررسی بانک یا مدیریت. دوباره واریز نکنید.";
         $rows[]=daBtn('🔎 بررسی و تأیید واریزی','dar_bankask_'.$id);
     }elseif($o['state']==='pending'&&$p['state']==='pending'&&(int)$o['created']>=time()-3600){
@@ -414,7 +416,8 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
             $rows[]=daBtn('❌ لغو فاکتور','dar_cancel_'.$id);
         }
     }
-    if(in_array($p['state'],['paid','approved','paid_with_wallet'],true)&&$o['state']==='pending'){
+    if($p['state']==='pending'&&(int)$o['created']<time()-3600)$txt.="\nمهلت پرداخت تمام شده؛ اگر واریز کرده‌اید فاکتور را به مدیریت اطلاع دهید.";
+    if(in_array($p['state'],['paid','approved'],true)&&$o['state']==='pending'){
         $txt.="\n✅ پرداخت ثبت شده؛ تحویل در انتظار تکمیل است.";
         $rows[]=daBtn('🔄 ادامه تحویل','dar_deliver_'.$id);
     }
