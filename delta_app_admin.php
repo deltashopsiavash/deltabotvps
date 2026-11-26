@@ -408,7 +408,7 @@ function deltaAppAdminHandle(): bool {
 function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$rows=[];
     $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده'];
-    $txt="🧾 <b>فاکتور خرید دلتا</b>\n".daEsc($o['name'])."\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\nمبلغ: ".number_format((int)$o['price'])." تومان\nکد فاکتور: <code>".daEsc($o['pay_hash'])."</code>\nوضعیت: ".($status[$o['state']]??'نامشخص');
+    $txt="🧾 <b>فاکتور خرید دلتا</b>\n".daEsc($o['name'])."\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\nمبلغ: ".number_format((int)$o['price'])." تومان\nکد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\nوضعیت: ".($status[$o['state']]??'نامشخص');
     $p=daRealPayByHash($db,(string)$o['pay_hash']);
     if(!$p)throw new RuntimeException('payment missing');
     if($p['state']==='have_sent'){
@@ -456,9 +456,9 @@ function daRealReceiptHandle(): bool {
         $ref=deltaCardParseReceiptRef($m[2]);$hash=(string)$ref['hash'];$display=(int)$ref['id'];$kind=strtolower($m[1]);$action='prompt';
     }elseif(preg_match('/^deltaCardSwitch(.+)~([0-9]+)$/D',$cb,$m)){
         $hash=$m[1];$action='switch';
-    }elseif(preg_match('/^(?:accept|accCustom|approvePayment|payWithWallet|payCustomWithWallet|payWithCartToCart|payCustomWithCartToCart|payWithTronWallet|payWithWeSwap|payWithUsdt|havePaiedWeSwap|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew)([a-f0-9]{18})$/D',$cb,$m)){
+    }elseif(preg_match('/^(?:accept|accCustom|approvePayment|payWithWallet|payCustomWithWallet|payWithCartToCart|payCustomWithCartToCart|payWithTronWallet|payWithWeSwap|payWithUsdt|havePaiedWeSwap|approveRenewAcc|approveIncreaseDay|approveIncreaseVolume|approvePgRenew)(DA[A-Za-z0-9]{7})$/D',$cb,$m)){
         $hash=$m[1];$action='legacy';
-    }elseif(preg_match('/^dar_receipt_(photo|text)_([a-f0-9]{18})$/D',$step,$m)){
+    }elseif(preg_match('/^dar_receipt_(photo|text)_(DA[A-Za-z0-9]{7})$/D',$step,$m)){
         if($cb!==''||trim((string)$text)==='/start'||trim((string)$text)==='/buy'||(string)$text===(string)($buttonValues['cancel']??'انصراف')){
             setUser();return false;
         }
