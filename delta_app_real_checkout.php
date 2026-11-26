@@ -222,17 +222,30 @@ function daRealManualClaim(mysqli $db,string $hash): void {
     $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=?','si',$hash,(int)$p['user_id']);
     if(!$o||$o['method']!=='card'||(int)$o['price']!==(int)$p['price'])throw new RuntimeException('order payment mismatch');
     if(in_array($p['state'],['paid','approved'],true))return;
-    if($p['state']!=='have_sent'||!deltaReceiptHasSubmissionMarker($hash))throw new InvalidArgumentException('ابتدا رسید معتبر ثبت شود.');
-    // In SMS mode never bypass the shared bank-event claim; ambiguous transfers
-    // must first be resolved in the existing SMS review workflow.
+    if(!in_array($p['state'],['have_sent','need_admin'],true)||!deltaReceiptHasSubmissionMarker($hash))throw new InvalidArgumentException('ابتدا رسید معتبر ثبت شود.');
+    // The same single-click manual approval as BUY_SUB; the administrator
+    // is responsible for verifying the actual bank transfer before clicking.
+    // Prefer an atomic SMS event claim whenever one is uniquely available.
     if(deltaReceiptApprovalMode($botState)==='sms'){
         $binding=deltaSmsReviewQueuedBinding($p)??deltaSmsFindBinding($p,deltaReceiptSubmittedAt($hash,0));
-        if(!$binding||!deltaSmsClaimInvoice($p,$binding,'sms'))throw new InvalidArgumentException('واریز بانکی هنوز تأیید نشده یا نیاز به بررسی تطبیق پیامک دارد.');
-        return;
+        if($binding&&deltaSmsClaimInvoice($p,$binding,'sms'))return;
     }
-    // Legacy mode: explicit owner confirmation after checking bank statement.
-    $s=daQuery($db,"UPDATE pays SET state='approved' WHERE hash_id=? AND type='DELTA_APP_BUY' AND state='have_sent'",'s',$hash);
-    $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new RuntimeException('payment already processed');
+    // Serialize with the shared SMS claim. A manually approved but unbound
+    // invoice remains a competitor in the exact-price matching algorithm.
+    $db->begin_transaction();
+    try{
+        daRow($db,"SELECT id FROM setting WHERE type='BOT_STATES' LIMIT 1 FOR UPDATE");
+        $s=daQuery($db,"UPDATE pays SET state='approved' WHERE id=? AND BINARY hash_id=BINARY ? AND type='DELTA_APP_BUY' AND state IN ('have_sent','need_admin')",'is',(int)$p['id'],$hash);
+        $ok=$s->affected_rows===1;$s->close();
+        if(!$ok){
+            $fresh=daRealPayByHash($db,$hash);
+            if(!$fresh||!in_array($fresh['state'],['paid','approved'],true))throw new InvalidArgumentException('رسید قبلاً بررسی شده است.');
+        }
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+    if(function_exists('deltaSmsReconcileSettled')){
+        try{deltaSmsReconcileSettled();}catch(Throwable $e){error_log('Delta manual SMS reconciliation pending');}
+    }
 }
 
 /** Fail closed before any financial write on a nontransactional or incompatible schema. */
