@@ -2322,7 +2322,8 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
                 if($appBackup){
                     // A successful dump alone is not enough: verify required app tables,
                     // the encrypted recovery key and the final completion marker.
-                    if(!deltaUnifiedBackupCheck($path,$connection,true)){@unlink($path);return null;}
+                    require_once __DIR__.'/delta_backup_integrity.php';
+                    if(!deltaUnifiedBackupCheck($path,$connection,true,true)||!deltaUnifiedBackupSign($path)||!deltaUnifiedBackupCheck($path,$connection,true)){@unlink($path);return null;}
                 }
                 $real = realpath($path);
                 return $real ? $real : $path;
@@ -2400,31 +2401,6 @@ function dbCreateSqlBackupFile($prefix = 'deltabotvps_backup'){
     @unlink($path);
     return null;
     }finally{umask($oldUmask);}
-}
-
-// Validate a combined SQL file without executing it or exposing credentials.
-// Every app table currently in the database must be present in a new dump.
-function deltaUnifiedBackupCheck(string $path, mysqli $db, bool $compareLive=false): bool {
-    $fh=@fopen($path,'rb');if(!$fh)return false;
-    $tables=[];$complete=false;$envelope=null;
-    try{
-        while(($line=fgets($fh))!==false){
-            if(preg_match('/^CREATE TABLE `([A-Za-z0-9_]+)`/D',$line,$m))$tables[$m[1]]=true;
-            if(preg_match('/^INSERT INTO `delta_app_backup_key` VALUES \(1,\x27([A-Za-z0-9+\/=]+)\x27\);/D',$line,$m))$envelope=$m[1];
-            if(str_starts_with($line,'-- Dump completed on '))$complete=true;
-        }
-    }finally{fclose($fh);}
-    if(!$complete||!isset($tables['users'],$tables['pays'],$tables['setting'],$tables['delta_app_accounts'],$tables['delta_app_real_orders'],$tables['delta_app_pg_users'],$tables['delta_app_devices'],$tables['delta_app_sessions'],$tables['delta_app_panels'],$tables['delta_app_backup_key'])||$envelope===null)return false;
-    if($compareLive){
-        $q=$db->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE'");
-        while($r=$q->fetch_assoc()){if(!isset($tables[$r['TABLE_NAME']])){$q->close();return false;}}
-        $q->close();
-    }
-    try{
-        require_once __DIR__.'/delta_app_core.php';
-        daRecoveryUnwrap($envelope,(string)($GLOBALS['botToken']??''));
-        return true;
-    }catch(Throwable $e){return false;}
 }
 
 // Create SQL dump of the current database (structure + data)
