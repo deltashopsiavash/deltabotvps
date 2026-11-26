@@ -14,7 +14,7 @@ function daList(mysqli $db,string $kind,int $page): void {
     if($kind==='plans'){
         $txt="📦 پلن‌ها\n";
         $items=daRows($db,'SELECT * FROM delta_app_plans ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
-        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n#$id | ".daEsc($p['name'])." | ".$p['gb']." GB | ".$p['days']." روز | ".number_format((int)$p['price'])." تومان";$rows[]=daBtn($p['name'].' | '.$p['gb'].' GB','da_plan_'.$id);}
+        foreach(array_slice($items,0,8) as $p){$id=(int)$p['id'];$txt.="\n".daEsc($p['name'])." — ".number_format((int)$p['price'])." تومان";$rows[]=daBtn($p['name'],'da_plan_'.$id);}
         $rows[]=daBtn('➕ ساخت پلن','da_addplan');
     }elseif($kind==='stock'){
         $txt="🔗 ساب‌های مشترک (حداکثر ۲۰ لینک)\n";
@@ -36,7 +36,7 @@ function daList(mysqli $db,string $kind,int $page): void {
 function daChoosePlan(mysqli $db,int $page=0): void {
     $off=$page*8;$items=daRows($db,'SELECT id,name,gb,days FROM delta_app_plans WHERE active=1 ORDER BY id DESC LIMIT 9 OFFSET ?','i',$off);
     $rows=[];
-    foreach(array_slice($items,0,8) as $p)$rows[]=daBtn($p['name'].' | '.$p['gb'].' GB | '.$p['days'].' روز','da_make_'.$p['id']);
+    foreach(array_slice($items,0,8) as $p)$rows[]=daBtn($p['name'],'da_make_'.$p['id']);
     if($page>0)$rows[]=daBtn('قبلی','da_choose_'.($page-1));
     if(count($items)>8)$rows[]=daBtn('بعدی','da_choose_'.($page+1));
     $rows[]=daBtn('بازگشت','da_home');
@@ -76,7 +76,8 @@ function deltaAppAdminHandle(): bool {
     global $connection,$from_id,$admin,$chat_id,$isChildBot,$update,$data,$text,$userInfo,$botToken,$message_id;
     $cb=(string)($data??'');$input=trim((string)($text??''));$step=(string)($userInfo['step']??'');
     $command=$cb===''&&$input==='/delta';
-    if(!$command&&!str_starts_with($cb,'da_')&&!str_starts_with($step,'da_'))return false;
+    $buyPreview=($cb===''&&$input==='/buy')||str_starts_with($cb,'dab_');
+    if(!$command&&!$buyPreview&&!str_starts_with($cb,'da_')&&!str_starts_with($step,'da_'))return false;
     if(!empty($isChildBot)||(string)$from_id!==(string)$admin||(string)$chat_id!==(string)$admin)return false;
     // A hidden command alone is not authentication. Require the actual Telegram webhook secret.
     if(!is_string($botToken??null)||!hash_equals(hash('sha256',$botToken),(string)($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??''))){
@@ -85,6 +86,15 @@ function deltaAppAdminHandle(): bool {
     if($cb!==''&&isset($update->callback_query->id))answerQuery();
     try{
         daSchema($connection);
+        if($buyPreview){
+            setUser();
+            if($input==='/buy'||$cb==='dab_home'){daSend('اشتراک اختصاصی برنامه دلتا — پیش‌نمایش مدیریت',[daBtn('خرید سرویس','dab_categories'),daBtn('سرویس‌های من','dab_mine')]);return true;}
+            if($cb==='dab_categories'){$rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dab_cat_'.$r['id']);$rows[]=daBtn('بازگشت','dab_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;}
+            if(preg_match('/^dab_cat_(\d+)$/D',$cb,$m)){$rows=[];foreach(daRows($connection,'SELECT id,name FROM delta_app_plans WHERE active=1 AND category_id=? ORDER BY id','i',(int)$m[1]) as $r)$rows[]=daBtn($r['name'],'dab_plan_'.$r['id']);$rows[]=daBtn('بازگشت','dab_categories');daSend('پلن را انتخاب کنید.',$rows);return true;}
+            if(preg_match('/^dab_plan_(\d+)$/D',$cb,$m)){$p=daRow($connection,'SELECT * FROM delta_app_plans WHERE active=1 AND category_id IS NOT NULL AND id=?','i',(int)$m[1]);if(!$p)throw new InvalidArgumentException('پلن فعال یافت نشد.');daSend(daEsc($p['name'])."\nحجم: ".$p['gb']." گیگ\nاعتبار: ".$p['days']." روز\nدستگاه: ".$p['device_limit']."\nقیمت: ".number_format((int)$p['price'])." تومان\nپرداخت در این پیش‌نمایش غیرفعال است.",[daBtn('بازگشت','dab_cat_'.$p['category_id'])]);return true;}
+            if($cb==='dab_mine'){daSend('بخش سرویس‌های خریداری‌شده هنوز فعال نشده است.',[daBtn('بازگشت','dab_home')]);return true;}
+            return true;
+        }
         daExec($connection,'DELETE FROM delta_app_panel_drafts WHERE expires<=?','i',time());
         if(str_starts_with($step,'da_pgpick_')&&($command||in_array($cb,['da_home','da_pg','da_pgadd','da_pgset'],true)||($cb===''&&$input==='/start'))){daExec($connection,'DELETE FROM delta_app_panel_drafts WHERE ticket=?','s',substr($step,10));}
         if($command||$cb==='da_home'){setUser();daHome();return true;}
@@ -109,7 +119,7 @@ function deltaAppAdminHandle(): bool {
             if(!daRow($connection,'SELECT id FROM delta_app_categories LIMIT 1'))throw new InvalidArgumentException('ابتدا دسته‌بندی بسازید.');
             $id=$cb==='da_addplan'?0:(int)$m[1];
             if($id&&!daRow($connection,'SELECT id FROM delta_app_plans WHERE id=?','i',$id))throw new InvalidArgumentException('پلن یافت نشد.');
-            daExec($connection,'REPLACE INTO delta_app_admin_draft(id,plan_id) VALUES(1,?)','i',$id);setUser('da_wgb');daSend('حجم چند گیگابایت باشد؟',[daBtn('انصراف','da_menuplans')]);return true;
+            daExec($connection,'REPLACE INTO delta_app_admin_draft(id,plan_id) VALUES(1,?)','i',$id);setUser('da_wname');daSend('اسم پلن چی باشه؟ مثلاً 🔱10 گیگ دو کاربر🔱',[daBtn('انصراف','da_menuplans')]);return true;
         }
         if(preg_match('/^da_plan_(\d+)$/D',$cb,$m)){$p=daRow($connection,'SELECT * FROM delta_app_plans WHERE id=?','i',(int)$m[1]);if(!$p)throw new InvalidArgumentException('پلن یافت نشد.');setUser();daSend(daEsc($p['name'])."\n".$p['gb']." GB | ".$p['days']." روز | ".$p['price']." تومان | ".$p['device_limit']." دستگاه",[daBtn('ویرایش پلن','da_planedit_'.$m[1]),daBtn($p['active']?'غیرفعال':'فعال','da_pt_'.$m[1]),daBtn('حذف پلن','da_planask_'.$m[1]),daBtn('بازگشت','da_plans_0')]);return true;}
         if(preg_match('/^da_planask_(\d+)$/D',$cb,$m)){setUser();daSend('پلن حذف شود؟ حساب‌های قبلی تغییر نمی‌کنند.',[daBtn('تأیید حذف','da_plandel_'.$m[1]),daBtn('انصراف','da_plan_'.$m[1])]);return true;}
@@ -117,7 +127,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_wcat_(\d+)$/D',$cb,$m)&&$step==='da_wcat'){
             $d=daRow($connection,'SELECT * FROM delta_app_admin_draft WHERE id=1');$cat=daRow($connection,'SELECT id FROM delta_app_categories WHERE id=?','i',(int)$m[1]);
             if(!$d||!$cat||!$d['gb']||!$d['days'])throw new InvalidArgumentException('مراحل ساخت ناقص است.');
-            $name=$d['gb'].' GB | '.$d['days'].' روز | '.$d['devices'].' کاربر';
+            $name=$d['name'];if($name==='')throw new InvalidArgumentException('نام پلن وارد نشده است.');
             $args=[$name,(int)$d['gb'],(int)$d['days'],(int)$d['price'],(int)$d['devices'],(int)$cat['id']];
             if($d['plan_id'])daExec($connection,'UPDATE delta_app_plans SET name=?,gb=?,days=?,price=?,device_limit=?,category_id=? WHERE id=?','siiiiii',...array_merge($args,[(int)$d['plan_id']]));
             else daExec($connection,'INSERT INTO delta_app_plans(name,gb,days,price,device_limit,category_id) VALUES(?,?,?,?,?,?)','siiiii',...$args);
@@ -233,6 +243,9 @@ function deltaAppAdminHandle(): bool {
         }elseif(preg_match('/^da_limit_(\d+)$/D',$step,$m)){
             if(!ctype_digit($input))throw new InvalidArgumentException('عدد وارد کنید.');
             daSetDeviceLimit($connection,(int)$m[1],(int)$input);setUser();daUser($connection,(int)$m[1]);
+        }elseif($step==='da_wname'){
+            if($input===''||mb_strlen($input)>80||preg_match('/[\x00-\x1f\x7f]/u',$input))throw new InvalidArgumentException('نام پلن باید یک خط و حداکثر ۸۰ کاراکتر باشد.');
+            daExec($connection,'UPDATE delta_app_admin_draft SET name=? WHERE id=1','s',$input);setUser('da_wgb');daSend('حجم چند گیگابایت باشد؟',[daBtn('انصراف','da_menuplans')]);
         }elseif(in_array($step,['da_wgb','da_wdays','da_wprice','da_wdevices'],true)){
             $fields=['da_wgb'=>['gb',1,100000,'da_wdays','چند روز؟'],'da_wdays'=>['days',1,3650,'da_wprice','قیمت به تومان؟'],'da_wprice'=>['price',1,1000000000,'da_wdevices','چند کاربر؟'],'da_wdevices'=>['devices',1,20,'da_wcat','دسته‌بندی را انتخاب کنید.']];
             [$field,$min,$max,$next,$hint]=$fields[$step];

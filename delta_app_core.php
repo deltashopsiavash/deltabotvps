@@ -22,6 +22,7 @@ function daSchema(mysqli $db): void {
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
     if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_plans' AND COLUMN_NAME='category_id'"))$db->query("ALTER TABLE delta_app_plans ADD COLUMN category_id INT UNSIGNED NULL");
+    if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_admin_draft' AND COLUMN_NAME='name'"))$db->query("ALTER TABLE delta_app_admin_draft ADD COLUMN name VARCHAR(80) CHARACTER SET utf8mb4 NOT NULL DEFAULT ''");
     foreach(['delta_app_plans','delta_app_accounts'] as $table){
         if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='device_limit'",'s',$table))$db->query("ALTER TABLE `$table` ADD COLUMN device_limit INT UNSIGNED NOT NULL DEFAULT 1");
     }
