@@ -119,4 +119,78 @@ check(daRealOrder($db,1001,$id4)['state']==='deleted','completed deletion retain
 check(daRealPayByHash($db,$o4['pay_hash'])['state']==='paid_with_wallet','deletion retains payment record');
 check(daRealWalletPreview($db,1001,0)['balance']===70000,'deletion does not refund or debit wallet');
 rejected(fn()=>daRealDeliver($db,1001,$id4),'deleted paid service cannot reprovision');
+// Simulate previous production integer schemas, keeping existing paid orders.
+$db->query('ALTER TABLE delta_app_accounts MODIFY gb INT UNSIGNED NOT NULL');
+$db->query('ALTER TABLE delta_app_real_orders MODIFY gb INT UNSIGNED NOT NULL');
+$oldPaid=daRealOrder($db,1001,$id4);
+daSchema($db);daRealSchema($db);
+check(daQuotaLabel(daRealOrder($db,1001,$id4)['gb'])===daQuotaLabel($oldPaid['gb']),'integer paid order quota preserved by decimal schema migration');
+check(daQuotaBytes('0.1')===107374182&&daQuotaBytes('0.2')===214748364&&daQuotaBytes('0.5')===536870912,'fractional quotas converted to exact whole panel bytes');
+check(daQuotaBytes('10.000')===10737418240,'whole paid quota byte conversion unchanged');
+check(daQuotaLabel('0.100')==='0.1'&&daQuotaLabel('10.000')==='10','clean quota display');
+// Free trial: separate reservation ledger, not a zero-value payment.
+$s=daTrialSettings($db);
+check((int)$s['enabled']===0&&(int)$s['gb']===1&&(int)$s['days']===1&&(int)$s['devices']===1&&(int)$s['daily_cap']===30,'trial defaults disabled, 1 GB, 1 day, 1 device, 30 daily');
+rejected(fn()=>daTrialReserve($db,1001,true),'disabled trial cannot reserve');
+daTrialSet($db,'enabled',1);
+rejected(fn()=>daTrialSet($db,'gb','0'),'zero trial quota rejected');
+rejected(fn()=>daTrialSet($db,'gb','0.0001'),'unsupported precision rejected');
+rejected(fn()=>daTrialSet($db,'gb','-0.1'),'negative quota rejected');
+daTrialSet($db,'gb','0.1');
+check(daQuotaLabel(daTrialSettings($db)['gb'])==='0.1','fractional trial setting persisted');
+daTrialSet($db,'require_phone',1);
+rejected(fn()=>daTrialReserve($db,1001,false),'phone requirement enforced');
+daTrialSet($db,'daily_cap',1);
+$np=(int)daRow($db,'SELECT COUNT(*) AS n FROM pays')['n'];
+$t=daTrialReserve($db,1001,true);
+$tr=daRealOrder($db,1001,$t);
+check($tr['method']==='trial'&&(int)$tr['price']===0&&daQuotaLabel($tr['gb'])==='0.1'&&daTrialAuthorized($db,$tr),'trial ledger authorizes free account only');
+check(daTrialReserve($db,1001,true)===$t,'repeat request reuses same trial');
+check((int)daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims')['n']===1,'one claim row per ordinary buyer');
+rejected(fn()=>daTrialReserve($db,1002,true),'daily cap enforced');
+rejected(fn()=>daRealDeliver($db,1002,$t),'cross-owner trial delivery rejected');
+rejected(fn()=>daRealWallet($db,1001,$t),'trial cannot use wallet');
+rejected(fn()=>daRealPrepareCard($db,1001,$t),'trial cannot use card');
+rejected(fn()=>daTrialRelease($db,1001),'pending claim not released by admin');
+check((int)daRow($db,'SELECT COUNT(*) AS n FROM pays')['n']===$np,'trial creates no financial payment');
+check(daRealWalletPreview($db,1001,0)['balance']===70000,'trial leaves wallet unchanged');
+daExec($db,"UPDATE delta_app_real_orders SET state='deleted' WHERE id=?",'i',$t);
+check(daTrialReserve($db,1001,true)===$t,'deleted trial cannot be claimed again');
+rejected(fn()=>daTrialDeliver($db,1001,$t),'deleted trial cannot reprovision');
+daTrialRelease($db,1001);
+check(daTrialCurrent($db,1001)===null&&!daTrialAuthorized($db,$tr),'explicit release preserves old claim but removes authorization');
+rejected(fn()=>daTrialReserve($db,1001,true),'released claims still count toward daily cap');
+daTrialSet($db,'daily_cap',2);
+daTrialSet($db,'gb','0.2');
+$t2=daTrialReserve($db,1001,true);
+check(daQuotaLabel(daRealOrder($db,1001,$t2)['gb'])==='0.2'&&daQuotaLabel(daRealOrder($db,1001,$t)['gb'])==='0.1','changed setting affects only future claims');
+check($t2!==$t&&(int)daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims')['n']===2,'admin exception keeps full trial history');
+daTrialSet($db,'enabled',0);
+check(daTrialReserve($db,1001,true)===$t2,'disabled new claims still allow recovery of existing reservation');
+// Simulate a confirmed remote account in the disposable DB only. Exercise
+// shared completion and notification without calling an actual VPN panel.
+$pg=daRow($db,'SELECT * FROM delta_app_pg_settings WHERE id=1');
+$trialAid=daRealReserveAccount($db,1001,$t2,$pg);
+$ta=daAccount($db,$trialAid);$trialUser=$ta['username'];
+check(preg_match('/^testdelta[1-9][0-9]{4}$/D',$trialUser)===1,'generated trial username is testdelta plus five digits');
+check(preg_match('/^delta[1-9][0-9]{4}$/D',daRealAccountName($db,false))===1,'paid username prefix unchanged');
+check(daQuotaLabel($ta['gb'])==='0.2'&&daPgMap($db,$trialAid)['pg_name']===$trialUser,'fractional quota and username persisted in actual account reservation');
+$metrics=daPgMetrics(array_replace($ta,['active'=>1]),['data_limit'=>daQuotaBytes('0.2'),'used_traffic'=>0,'expire'=>gmdate('c',(int)$ta['expires']),'status'=>'active','data_limit_reset_strategy'=>'no_reset']);
+check($metrics['can_connect']&&$metrics['limit_bytes']===214748364,'strict panel metric validation accepts fractional quota');
+// Simulate confirmed remote provisioning only; no actual panel is contacted.
+daExec($db,"UPDATE delta_app_pg_users SET state='ready' WHERE account_id=?",'i',$trialAid);
+daExec($db,'UPDATE delta_app_accounts SET active=1 WHERE id=?','i',$trialAid);
+$messages=[];
+function sendMessage($txt,$key=null,$parse=null,$buyer=null){$GLOBALS['messages'][]=[$txt,$buyer];return (object)['ok'=>true];}
+$nReports=count($reports);
+$res=daTrialDeliver($db,1001,$t2);
+check($res['order']['state']==='delivered'&&password_verify($res['password'],daAccount($db,$trialAid)['password_hash']),'trial completes existing reserved account with usable local password');
+check(count($messages)===1&&$messages[0][1]===1001&&str_contains($messages[0][0],$trialUser)&&str_contains($messages[0][0],'0.2'),'trial credentials sent only to owner');
+check(count($reports)===$nReports+1&&str_contains(end($reports),$trialUser),'trial delivery admin report includes username');
+daTrialDeliver($db,1001,$t2);
+check(count($messages)===1&&count($reports)===$nReports+1,'repeat completion does not resend credentials or reports');
+check(daTrialReserve($db,1001,true)===$t2,'delivered trial remains one-time');
+rejected(fn()=>daTrialRelease($db,1001),'active delivered trial cannot be released');
+
+rejected(fn()=>daTrialReserve($db,1002,true),'disabled trial blocks new users');
 echo "All isolated checkout fixture checks passed.\n";

@@ -9,7 +9,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_categories (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,name VARCHAR(80) NOT NULL UNIQUE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_admin_draft (id TINYINT PRIMARY KEY,gb INT UNSIGNED NOT NULL DEFAULT 0,days INT UNSIGNED NOT NULL DEFAULT 0,price BIGINT UNSIGNED NOT NULL DEFAULT 0,devices INT UNSIGNED NOT NULL DEFAULT 1,plan_id INT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_stock (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, plan_id INT UNSIGNED NOT NULL, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, active TINYINT NOT NULL DEFAULT 1, INDEX(plan_id,active)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-        "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_accounts (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, username VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, stock_id INT UNSIGNED NULL UNIQUE, plan_id INT UNSIGNED NOT NULL, gb DECIMAL(13,3) UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, created BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_devices (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, account_id INT UNSIGNED NOT NULL, device_hash CHAR(64) CHARACTER SET ascii NOT NULL, token_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, model VARCHAR(100) NOT NULL, created BIGINT UNSIGNED NOT NULL, last_seen BIGINT UNSIGNED NOT NULL, UNIQUE KEY account_device(account_id,device_hash)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
@@ -21,6 +21,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
     ] as $sql) { if (!$db->query($sql)) throw new RuntimeException('schema'); }
+    daEnsureDecimalQuota($db,'delta_app_accounts');
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
     if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_plans' AND COLUMN_NAME='category_id'"))$db->query("ALTER TABLE delta_app_plans ADD COLUMN category_id INT UNSIGNED NULL");
@@ -32,6 +33,29 @@ function daSchema(mysqli $db): void {
         $col=daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='panel_kind'",'s',$table);
         if(!$col)$db->query("ALTER TABLE `$table` ADD COLUMN panel_kind VARCHAR(8) NOT NULL DEFAULT 'legacy'");
     }
+}
+// Preserve every existing whole-GB value while accepting exact decimal GB.
+function daEnsureDecimalQuota(mysqli $db,string $table): void {
+    if(!in_array($table,['delta_app_accounts','delta_app_real_orders','delta_app_trial_settings'],true))throw new RuntimeException('quota table');
+    $r=daRow($db,"SELECT DATA_TYPE,NUMERIC_PRECISION,NUMERIC_SCALE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='gb'",'s',$table);
+    if(!$r)throw new RuntimeException('quota column unavailable');
+    if($r['DATA_TYPE']==='decimal'&&(int)$r['NUMERIC_PRECISION']>=13&&(int)$r['NUMERIC_SCALE']===3)return;
+    if(!in_array($r['DATA_TYPE'],['int','decimal'],true))throw new RuntimeException('unexpected quota column');
+    $default=$table==='delta_app_trial_settings'?' DEFAULT 1':'';
+    if(!$db->query("ALTER TABLE ".$table." MODIFY gb DECIMAL(13,3) UNSIGNED NOT NULL".$default))throw new RuntimeException('quota migration failed');
+}
+function daQuotaLabel(int|float|string $gb): string {
+    $s=(string)$gb;
+    return str_contains($s,'.')?rtrim(rtrim($s,'0'),'.'):$s;
+}
+function daQuotaBytes(int|float|string $gb): int {
+    $s=(string)$gb;
+    if(!preg_match('/^(\d{1,10})(?:\.(\d{1,3}))?$/D',$s,$m))throw new InvalidArgumentException('حجم معتبر نیست.');
+    $whole=(int)$m[1];$frac=(int)str_pad($m[2]??'',3,'0');
+    if($whole>4294967295||($whole===4294967295&&$frac>0))throw new InvalidArgumentException('حجم خارج از محدوده است.');
+    $bytes=$whole*1073741824+intdiv($frac*1073741824,1000);
+    if($bytes<1)throw new InvalidArgumentException('حجم باید بیشتر از صفر باشد.');
+    return $bytes;
 }
 function daQuery(mysqli $db,string $sql,string $types='',...$args): mysqli_stmt {
     $s=$db->prepare($sql); if(!$s)throw new RuntimeException('query');
@@ -404,7 +428,7 @@ function daPgGet(array $s,string $token,array $m): ?array {
     return $j;
 }
 function daPgMetrics(array $a,array $j,bool $strict=true): array {
-    $limit=(int)$a['gb']*1073741824;
+    $limit=daQuotaBytes($a['gb']);
     $used=$j['used_traffic']??null;$actual=$j['data_limit']??null;$raw=$j['expire']??null;
     $expires=is_int($raw)?$raw:(is_string($raw)&&preg_match('/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/D',$raw)?strtotime($raw):false);
     if(!is_int($used)||$used<0||!is_int($actual)||$actual<1||($strict&&$actual!==$limit)||$expires===false||$expires<=0||($strict&&$expires!==(int)$a['expires'])||($j['data_limit_reset_strategy']??null)!=='no_reset')throw new RuntimeException('panel quota or expiry mismatch');
@@ -444,7 +468,7 @@ function daPgProvisionLocked(mysqli $db,int $id): void {
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);
     $j=daPgGet($s,$token,$m);
     if($j===null){
-        [$code,$raw]=daPgApi($s,'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>(int)$a['gb']*1073741824,'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
+        [$code,$raw]=daPgApi($s,'/api/user','POST',$token,['username'=>$m['pg_name'],'status'=>'active','expire'=>gmdate('c',(int)$a['expires']),'data_limit'=>daQuotaBytes($a['gb']),'data_limit_reset_strategy'=>'no_reset','group_ids'=>[(int)$m['group_id']],'proxy_settings'=>new stdClass(),'note'=>$m['marker']]);
         if(!in_array($code,[200,201,204],true))throw new RuntimeException('panel create');
         $j=daPgGet($s,$token,$m);
     }
