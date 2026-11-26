@@ -21,6 +21,9 @@ function daRealSchema(mysqli $db): void {
       stage TINYINT UNSIGNED NOT NULL,expires BIGINT UNSIGNED NOT NULL
     ) ENGINE=InnoDB"))throw new RuntimeException('delete request schema');
 
+    $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_settings (id TINYINT PRIMARY KEY,enabled TINYINT NOT NULL DEFAULT 0,gb INT UNSIGNED NOT NULL DEFAULT 1,days INT UNSIGNED NOT NULL DEFAULT 1,devices INT UNSIGNED NOT NULL DEFAULT 1,daily_cap INT UNSIGNED NOT NULL DEFAULT 30,require_phone TINYINT NOT NULL DEFAULT 0) ENGINE=InnoDB");
+    $db->query("INSERT IGNORE INTO delta_app_trial_settings(id) VALUES(1)");
+    $db->query("CREATE TABLE IF NOT EXISTS delta_app_trial_claims (order_id BIGINT UNSIGNED PRIMARY KEY,buyer BIGINT NOT NULL,claimed BIGINT UNSIGNED NOT NULL,released_at BIGINT UNSIGNED NULL,INDEX(buyer,released_at),INDEX(claimed)) ENGINE=InnoDB");
 }
 function daRealOrder(mysqli $db,int $buyer,int $id): array {
     $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=?','ii',$buyer,$id);
@@ -93,13 +96,89 @@ function daRealCancel(mysqli $db,int $buyer,int $id): void {
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
 
+function daTrialSettings(mysqli $db): array {
+    $s=daRow($db,'SELECT * FROM delta_app_trial_settings WHERE id=1');
+    if(!$s)throw new RuntimeException('trial settings unavailable');
+    return $s;
+}
+function daTrialDayStart(): int {
+    return (new DateTimeImmutable('today',new DateTimeZone('Asia/Tehran')))->getTimestamp();
+}
+function daTrialSet(mysqli $db,string $field,int $value): void {
+    $ranges=['enabled'=>[0,1],'gb'=>[1,100],'days'=>[1,30],'devices'=>[1,10],'daily_cap'=>[1,1000],'require_phone'=>[0,1]];
+    if(!isset($ranges[$field])||$value<$ranges[$field][0]||$value>$ranges[$field][1])throw new InvalidArgumentException('مقدار نامعتبر است.');
+    daExec($db,'UPDATE delta_app_trial_settings SET '.$field.'=? WHERE id=1','i',$value);
+}
+function daTrialCurrent(mysqli $db,int $buyer): ?array {
+    return daRow($db,"SELECT o.* FROM delta_app_trial_claims c JOIN delta_app_real_orders o ON o.id=c.order_id AND o.buyer=c.buyer WHERE c.buyer=? AND c.released_at IS NULL AND o.method='trial' ORDER BY c.order_id DESC LIMIT 1",'i',$buyer);
+}
+function daTrialReserve(mysqli $db,int $buyer,bool $phone): int {
+    daRealSchema($db);
+    foreach(['delta_app_trial_settings','delta_app_trial_claims','delta_app_real_orders'] as $table){
+        $r=daRow($db,"SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?",'s',$table);
+        if(strtolower((string)($r['ENGINE']??''))!=='innodb')throw new RuntimeException('trial storage unavailable');
+    }
+    $db->begin_transaction();
+    try{
+        // Single settings-row lock serializes new reservations and admin release.
+        $s=daRow($db,'SELECT * FROM delta_app_trial_settings WHERE id=1 FOR UPDATE');
+        if(!$s)throw new RuntimeException('trial settings unavailable');
+        $old=daTrialCurrent($db,$buyer);
+        if($old){$db->commit();return (int)$old['id'];}
+        if(!(int)$s['enabled'])throw new InvalidArgumentException('دریافت اشتراک تست غیرفعال است.');
+        if((int)$s['require_phone']&&!$phone)throw new InvalidArgumentException('برای دریافت تست ابتدا شماره تلفن خود را در ربات ثبت کنید.');
+        $count=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims WHERE claimed>=?','i',daTrialDayStart());
+        if((int)$count['n']>=(int)$s['daily_cap'])throw new InvalidArgumentException('ظرفیت امروز تکمیل شده است.');
+        $pg=daRow($db,"SELECT * FROM delta_app_pg_settings WHERE id=1 AND panel_kind='app'");
+        if(!$pg)throw new InvalidArgumentException('پنل اختصاصی برنامه تنظیم نشده است.');
+        $now=time();$hash='TR'.bin2hex(random_bytes(12));
+        daExec($db,"INSERT INTO delta_app_real_orders(buyer,plan_id,name,gb,days,price,device_limit,pay_hash,state,method,created,approved_at) VALUES(?,0,'اشتراک تست رایگان',?,?,0,?,?,'paid','trial',?,?)",'iiiisii',$buyer,(int)$s['gb'],(int)$s['days'],(int)$s['devices'],$hash,$now,$now);
+        $id=(int)$db->insert_id;
+        daExec($db,'INSERT INTO delta_app_trial_claims(order_id,buyer,claimed) VALUES(?,?,?)','iii',$id,$buyer,$now);
+        $db->commit();return $id;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daTrialRelease(mysqli $db,int $buyer): void {
+    $db->begin_transaction();
+    try{
+        daRow($db,'SELECT id FROM delta_app_trial_settings WHERE id=1 FOR UPDATE');
+        $o=daTrialCurrent($db,$buyer);
+        if(!$o)throw new InvalidArgumentException('سابقه تست فعال برای این کاربر پیدا نشد.');
+        $a=$o['account_id']===null?null:daAccount($db,(int)$o['account_id']);
+        // Explicit admin exception only after the previous service has ended.
+        if(!($o['state']==='deleted'||($o['state']==='delivered'&&$a&&(int)$a['expires']<=time())))throw new InvalidArgumentException('ابتدا سرویس قبلی باید حذف یا منقضی شود.');
+        daExec($db,'UPDATE delta_app_trial_claims SET released_at=? WHERE order_id=? AND released_at IS NULL','ii',time(),(int)$o['id']);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daTrialAuthorized(mysqli $db,array $o): bool {
+    return $o['method']==='trial'&&(int)$o['price']===0&&(int)$o['plan_id']===0&&
+        (bool)daRow($db,'SELECT order_id FROM delta_app_trial_claims WHERE order_id=? AND buyer=? AND released_at IS NULL','ii',(int)$o['id'],(int)$o['buyer']);
+}
+function daTrialDeliver(mysqli $db,int $buyer,int $id): array {
+    $o=daRealOrder($db,$buyer,$id);
+    if(!daTrialAuthorized($db,$o))throw new InvalidArgumentException('درخواست تست معتبر نیست.');
+    $r=daRealDeliver($db,$buyer,$id);
+    $a=daAccount($db,(int)$r['order']['account_id']);
+    if(!$a||$r['order']['state']!=='delivered')throw new RuntimeException('trial delivery pending');
+    if($r['password']!==null){
+        $name=htmlspecialchars($a['username'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        $pass=htmlspecialchars($r['password'],ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        $o=$r['order'];
+        sendMessage("🎁 اشتراک تست دلتا فعال شد\nنام کاربری: <code>".$name."</code>\nرمز: <code>".$pass."</code>\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit'],null,'HTML',$buyer);
+        try{sendToAdmins("🎁 دریافت اشتراک تست برنامه دلتا\n".deltaUserShortInfo($buyer)."\n👤 نام کاربری برنامه: <code>".$name."</code>\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\n📅 ".daIranDate(time())." (ایران)",null,'HTML');}catch(Throwable $e){error_log('Delta trial report failed');}
+    }
+    return $r;
+}
 function daRealDeliver(mysqli $db,int $buyer,int $id): array {
     $lock='delta-real-order-'.$id;$l=daRow($db,'SELECT GET_LOCK(?,0) AS acquired','s',$lock);
     if((int)($l['acquired']??0)!==1)throw new InvalidArgumentException('فاکتور در حال پردازش است.');
     try{
         $o=daRealOrder($db,$buyer,$id);
         $pay=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY'",'si',$o['pay_hash'],$buyer);
-        if(!$pay || (int)$pay['price']!==(int)$o['price'] || !daRealPaymentSettled($o,$pay))throw new InvalidArgumentException('پرداخت واقعی تأیید نشده است.');
+        if($o['method']==='trial'){
+            if(!daTrialAuthorized($db,$o))throw new InvalidArgumentException('درخواست تست معتبر نیست.');
+        }elseif(!$pay || (int)$pay['price']!==(int)$o['price'] || !daRealPaymentSettled($o,$pay))throw new InvalidArgumentException('پرداخت واقعی تأیید نشده است.');
         if($o['state']==='delivered')return ['order'=>$o,'password'=>null];
         if(!in_array($o['state'],['paid','provisioning'],true))throw new InvalidArgumentException('فاکتور قابل تأیید نیست.');
         if($o['account_id']===null){
