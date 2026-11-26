@@ -187,6 +187,29 @@ function daTrialDeliver(mysqli $db,int $buyer,int $id): array {
     }
     return $r;
 }
+// Reserve once in the local database before any remote provisioning attempt.
+function daRealReserveAccount(mysqli $db,int $buyer,int $id,array $setting): int {
+    $db->begin_transaction();
+    try{
+        $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$id,$buyer);
+        if(!$o||$o['state']!=='paid'||$o['account_id']!==null)throw new InvalidArgumentException('فاکتور تغییر کرده است.');
+        if($o['method']==='trial'){
+            if(!daTrialAuthorized($db,$o))throw new InvalidArgumentException('درخواست تست معتبر نیست.');
+        }else{
+            $p=daRow($db,"SELECT * FROM pays WHERE BINARY hash_id=BINARY ? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$o['pay_hash'],$buyer);
+            if(!$p||(int)$p['price']!==(int)$o['price']||!daRealPaymentSettled($o,$p))throw new InvalidArgumentException('پرداخت واقعی تأیید نشده است.');
+        }
+        if(($setting['panel_kind']??null)!=='app')throw new InvalidArgumentException('پنل اختصاصی برنامه تنظیم نشده است.');
+        $name=daRealAccountName($db,$o['method']==='trial');
+        $pass=daPassword();$now=time();$expires=$now+(int)$o['days']*86400;
+        daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssisiii',$name,password_hash($pass,PASSWORD_DEFAULT),(int)$o['plan_id'],(string)$o['gb'],$expires,$now,(int)$o['device_limit']);
+        $aid=(int)$db->insert_id;
+        daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,'app')",'iiisss',$aid,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$name,'delta-app:'.bin2hex(random_bytes(16)));
+        daExec($db,"UPDATE delta_app_real_orders SET account_id=?,state='provisioning',approved_at=? WHERE id=?",'iii',$aid,$now,$id);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+    return $aid;
+}
 function daRealDeliver(mysqli $db,int $buyer,int $id): array {
     $lock='delta-real-order-'.$id;$l=daRow($db,'SELECT GET_LOCK(?,0) AS acquired','s',$lock);
     if((int)($l['acquired']??0)!==1)throw new InvalidArgumentException('فاکتور در حال پردازش است.');
@@ -202,18 +225,7 @@ function daRealDeliver(mysqli $db,int $buyer,int $id): array {
             $setting=daRow($db,'SELECT * FROM delta_app_pg_settings WHERE id=1');
             if(!$setting||$setting['panel_kind']!=='app')throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
             daPgServer($db,(int)$setting['server_id'],$setting['panel_base']);
-            $db->begin_transaction();
-            try{
-                $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$id,$buyer);
-                if(!$o||$o['state']!=='paid'||$o['account_id']!==null)throw new InvalidArgumentException('فاکتور تغییر کرده است.');
-                $name=daRealAccountName($db,$o['method']==='trial');
-                $pass=daPassword();$now=time();$expires=$now+(int)$o['days']*86400;
-                daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssisiii',$name,password_hash($pass,PASSWORD_DEFAULT),(int)$o['plan_id'],(string)$o['gb'],$expires,$now,(int)$o['device_limit']);
-                $aid=(int)$db->insert_id;
-                daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,'app')",'iiisss',$aid,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$name,'delta-app:'.bin2hex(random_bytes(16)));
-                daExec($db,"UPDATE delta_app_real_orders SET account_id=?,state='provisioning',approved_at=? WHERE id=?",'iii',$aid,$now,$id);
-                $db->commit();
-            }catch(Throwable $e){$db->rollback();throw $e;}
+            daRealReserveAccount($db,$buyer,$id,$setting);
         }
         $o=daRealOrder($db,$buyer,$id);$aid=(int)$o['account_id'];$map=daPgMap($db,$aid);
         if(!$map||!daAccount($db,$aid))throw new RuntimeException('account missing');
