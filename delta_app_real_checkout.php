@@ -48,6 +48,7 @@ function daRealWallet(mysqli $db,int $buyer,int $id): void {
         if(!$p || (int)$p['price']!==(int)$o['price'])throw new RuntimeException('payment mismatch');
         if(in_array($o['state'],['paid','provisioning','delivered'],true)&&$p['state']==='paid_with_wallet'){$db->commit();return;}
         if($o['state']!=='pending'||$p['state']!=='pending'||(int)$o['created']<time()-3600||(int)$o['price']<=0)throw new InvalidArgumentException('فاکتور قابل پرداخت نیست.');
+        if(daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
         $price=(int)$o['price'];
         $s=daQuery($db,'UPDATE users SET wallet=wallet-? WHERE userid=? AND wallet>=?','iii',$price,$buyer,$price);
         $ok=$s->affected_rows===1;$s->close();
@@ -63,6 +64,7 @@ function daRealCancel(mysqli $db,int $buyer,int $id): void {
     try{
         $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE buyer=? AND id=? FOR UPDATE','ii',$buyer,$id);
         if(!$o||$o['state']!=='pending')throw new InvalidArgumentException('فاکتور قابل لغو نیست.');
+        if(daRealHasCard($db,(string)$o['pay_hash']))throw new InvalidArgumentException('شماره کارت صادر شده؛ ابتدا وضعیت واریز توسط مدیریت بررسی شود.');
         $s=daQuery($db,"UPDATE pays SET state='cancelled_by_user' WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' AND state='pending'",'si',$o['pay_hash'],$buyer);
         $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new InvalidArgumentException('وضعیت پرداخت تغییر کرده است.');
         daExec($db,"UPDATE delta_app_real_orders SET state='cancelled' WHERE id=?",'i',$id);$db->commit();
@@ -126,4 +128,55 @@ function daRealResetPassword(mysqli $db,int $buyer,int $order): string {
         daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
         $db->commit();return $p;
     }catch(Throwable $e){$db->rollback();throw $e;}
+}
+
+function daRealHasCard(mysqli $db,string $hash): bool {
+    if(!daRow($db,"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='payment_card_displays'"))return false;
+    return (bool)daRow($db,'SELECT id FROM payment_card_displays WHERE hash_id=? LIMIT 1','s',$hash);
+}
+function daRealPayByHash(mysqli $db,string $hash): ?array {
+    return daRow($db,"SELECT * FROM pays WHERE BINARY hash_id=BINARY ? AND type='DELTA_APP_BUY' LIMIT 1",'s',$hash);
+}
+/** Mark the independently claimed financial payment on the corresponding order. */
+function daRealSyncPaid(mysqli $db,string $hash): array {
+    $db->begin_transaction();
+    try{
+        $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? FOR UPDATE','s',$hash);
+        if(!$o)throw new RuntimeException('order missing');
+        $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'s',$hash);
+        if(!$p || (int)$p['user_id']!==(int)$o['buyer'] || (int)$p['price']!==(int)$o['price'] || !in_array($p['state'],['paid','approved','paid_with_wallet'],true))throw new RuntimeException('payment not settled');
+        if($o['state']==='pending'){
+            daExec($db,"UPDATE delta_app_real_orders SET state='paid',method=?,approved_at=? WHERE id=? AND state='pending'",'sii',$p['state']==='paid_with_wallet'?'wallet':'card',time(),(int)$o['id']);
+        }elseif(!in_array($o['state'],['paid','provisioning','delivered'],true))throw new RuntimeException('order state mismatch');
+        $db->commit();return daRealOrder($db,(int)$o['buyer'],(int)$o['id']);
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daRealRegisterReceipt(mysqli $db,string $hash,int $buyer,string $kind,int $at): bool {
+    if(!in_array($kind,['photo','text'],true)||$at<=0||$at>time())return false;
+    $db->begin_transaction();
+    try{
+        $o=daRow($db,'SELECT * FROM delta_app_real_orders WHERE pay_hash=? AND buyer=? FOR UPDATE','si',$hash,$buyer);
+        $p=daRow($db,"SELECT * FROM pays WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' FOR UPDATE",'si',$hash,$buyer);
+        if(!$o||!$p||$o['state']!=='pending'||$p['state']!=='pending'||(int)$p['price']!==(int)$o['price'])throw new RuntimeException('receipt state');
+        if(!daRealHasCard($db,$hash))throw new RuntimeException('no card');
+        if(!upsertSettingValue('RECEIPT_KIND_'.sha1($hash),$kind)||!deltaMarkReceiptSubmitted($hash,$at))throw new RuntimeException('receipt metadata');
+        $s=daQuery($db,"UPDATE pays SET state='have_sent' WHERE hash_id=? AND user_id=? AND type='DELTA_APP_BUY' AND state='pending'",'si',$hash,$buyer);
+        $ok=$s->affected_rows===1;$s->close();if(!$ok)throw new RuntimeException('receipt claim');
+        $db->commit();return true;
+    }catch(Throwable $e){$db->rollback();return false;}
+}
+/** Recoverable delivery: password may be reset in the owner menu if Telegram fails. */
+function daRealDeliverPaidHash(mysqli $db,string $hash): array {
+    $o=daRealSyncPaid($db,$hash);
+    $r=daRealDeliver($db,(int)$o['buyer'],(int)$o['id']);
+    $o=$r['order'];$a=daAccount($db,(int)$o['account_id']);
+    if(!$a||$o['state']!=='delivered')throw new RuntimeException('delivery not ready');
+    $esc=fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    $msg="✅ اشتراک دلتا تحویل شد\nپلن: ".$esc($o['name'])."\nکد فاکتور: <code>".$esc($hash)."</code>\nنام کاربری: <code>".$esc($a['username'])."</code>";
+    if($r['password']!==null)$msg.="\nرمز: <code>".$esc($r['password'])."</code>";
+    else $msg.="\nدر صورت نیاز، رمز را از سرویس‌های من تغییر دهید.";
+    $msg.="\nمبلغ: ".number_format((int)$o['price'])." تومان";
+    $keys=json_encode(['inline_keyboard'=>[[['text'=>'👤 سرویس من','callback_data'=>'dar_service_'.$o['id']]]]],JSON_UNESCAPED_UNICODE);
+    $sent=sendMessage($msg,$keys,'HTML',(int)$o['buyer']);
+    return ['order'=>$o,'notified'=>is_object($sent)&&!empty($sent->ok)];
 }
