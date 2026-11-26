@@ -160,14 +160,21 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_pgpanel_(\d{1,10})$/D',$cb,$m)){
             $id=(int)$m[1];$d=daPanelDraft($connection,daPgServer($connection,$id),$id);setUser('da_pgpick_'.$d['ticket']);daPgGroupButtons($d['ticket'],$d['groups']);return true;
         }
+        if(preg_match('/^da_panelview_(\d+)$/D',$cb,$m)){
+            $id=(int)$m[1];$p=daPgServer($connection,$id);setUser();
+            daSend("پنل #".$id."\nآدرس: ".daEsc($p['base'])."\nدامنه: ".daEsc($p['sub_base_url'])."\nنام مدیر: ".daEsc($p['username'])."\nرمز نمایش داده نمی‌شود.",[daBtn('ویرایش اطلاعات پنل','da_paneledit_'.$id),daBtn('انتخاب گروه','da_pgpanel_'.$id),daBtn('حذف پنل','da_panelask_'.$id),daBtn('بازگشت','da_pg')]);return true;
+        }
+        if(preg_match('/^da_paneledit_(\d+)$/D',$cb,$m)){setUser($cb);daSend("چهار خط وارد کنید:\nآدرس HTTPS پنل\nنام کاربری مدیر\nرمز جدید (برای حفظ رمز قبلی -)\nدامنه HTTPS ساب",[daBtn('انصراف','da_panelview_'.$m[1])]);return true;}
+        if(preg_match('/^da_panelask_(\d+)$/D',$cb,$m)){setUser();daSend('پنل حذف شود؟ فقط پنل بدون حساب قابل حذف است.',[daBtn('تأیید حذف','da_paneldel_'.$m[1]),daBtn('انصراف','da_panelview_'.$m[1])]);return true;}
+        if(preg_match('/^da_paneldel_(\d+)$/D',$cb,$m)){daDeletePanel($connection,(int)$m[1]);setUser();daSend('پنل حذف شد.',[daBtn('بازگشت','da_pg')]);return true;}
         if($cb==='da_pg'||$cb==='da_pgset'){
             $setting=daRow($connection,'SELECT * FROM delta_app_pg_settings WHERE id=1');
             $txt="🖥 پنل‌های مستقل برنامه:\n".($setting&&$setting['panel_kind']==='app'?'انتخاب فعلی #'.$setting['server_id'].' | گروه #'.$setting['group_id']:'پنل مستقل انتخاب نشده');
             $items=daRows($connection,'SELECT id,panel_url,username,group_id FROM delta_app_panels ORDER BY id LIMIT 20');
             $rows=[];
-            foreach($items as $r){$txt.="\n#".$r['id']." | ".daEsc($r['username']);$rows[]=daBtn('#'.$r['id'].' | '.$r['username'],'da_pgpanel_'.$r['id']);}
+            foreach($items as $r){$txt.="\n#".$r['id']." | ".daEsc($r['username']);$rows[]=daBtn('#'.$r['id'].' | '.$r['username'],($cb==='da_pgset'?'da_pgpanel_':'da_panelview_').$r['id']);}
             if(!$items)$txt.="\nهنوز پنلی ثبت نشده است.";
-            else $txt.="\nبرای انتخاب گروه، روی نام پنل بزنید.";
+            else $txt.="\nروی نام پنل بزنید.";
             setUser();$rows[]=daBtn('➕ افزودن پنل برنامه','da_pgadd');$rows[]=daBtn('بازگشت','da_home');daSend($txt,$rows);return true;
         }
         if($cb==='da_addstock'||str_starts_with($cb,'da_stock_')||preg_match('/^da_(st|sf|sdask|sd)_/',$cb)||$step==='da_addstock'){setUser();daHome();return true;}
@@ -211,7 +218,7 @@ function deltaAppAdminHandle(): bool {
                 case 'resetask':daSend('رمز قبلی نامعتبر و نشست‌ها حذف شوند؟',[daBtn('تأیید','da_reset_'.$id),daBtn('انصراف','da_u_'.$id)]);break;
                 case 'reset':
                     if(!daAccount($connection,$id))throw new InvalidArgumentException('کاربر یافت نشد.');
-                    $p=daPassword();$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}
+                    $p=daPassword();$connection->begin_transaction();try{daExec($connection,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);daExec($connection,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);daExec($connection,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);$connection->commit();}catch(Throwable $e){$connection->rollback();throw $e;}
                     daSend("رمز تازه (فقط این بار): <code>".$p."</code>",[daBtn('بازگشت','da_u_'.$id)]);break;
                 default:daUser($connection,$id);
             }return true;
@@ -238,6 +245,12 @@ function deltaAppAdminHandle(): bool {
             daRefreshInterval($connection,(int)$input);setUser();daSend('✅ فاصله به‌روزرسانی ذخیره شد.',[daBtn('بازگشت','da_refresh')]);
         }elseif(in_array($step,['da_contact_purchase','da_contact_support'],true)){
             daContactSet($connection,substr($step,11),$input);setUser();daSend('✅ آیدی ذخیره شد.',[daBtn('آیدی‌های برنامه','da_contacts'),daBtn('بازگشت','da_home')]);
+        }elseif(preg_match('/^da_paneledit_(\d+)$/D',$step,$m)){
+            bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
+            $id=(int)$m[1];$lines=preg_split('/\r\n|\r|\n/',(string)$text);
+            if(count($lines)!==4)throw new InvalidArgumentException('چهار خط وارد کنید.');
+            $old=daPgServer($connection,$id);$s=daPanelInput(trim($lines[0]),trim($lines[1]),$lines[2]==='-'?$old['password']:$lines[2],trim($lines[3]));
+            daEditPanel($connection,$id,$s);setUser();daSend('✅ پنل و هویت حساب‌های قبلی بررسی و ذخیره شد.',[daBtn('بازگشت','da_panelview_'.$id)]);
         }elseif($step==='da_pgadd'){
             bot('deleteMessage',['chat_id'=>$chat_id,'message_id'=>$message_id]);
             $lines=preg_split('/\r\n|\r|\n/',(string)$text);

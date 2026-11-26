@@ -522,3 +522,36 @@ function daSetDeviceLimit(mysqli $db,int $id,int $limit): void {
         $db->commit();
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
+
+function daEditPanel(mysqli $db,int $id,array $s): void {
+    $old=daPgServer($db,$id);
+    $token=daPgToken($s);
+    $maps=daRows($db,"SELECT * FROM delta_app_pg_users WHERE panel_kind='app' AND server_id=?",'i',$id);
+    // Never redirect existing accounts to an unverified panel.
+    $groups=daPgGroups($s,$token);$gids=array_column($groups,'id');
+    if(!in_array((int)$old['group_id'],$gids,true))throw new InvalidArgumentException('گروه قبلی در پنل جدید در دسترس نیست.');
+    foreach($maps as $m){
+        if($m['state']!=='ready'||!in_array((int)$m['group_id'],$gids,true)||!daPgGet($s,$token,$m))throw new InvalidArgumentException('هویت حساب‌های قبلی در پنل جدید تأیید نشد.');
+    }
+    $secret=daPanelEncrypt($s['password'],$s['base'],$s['username']);
+    $db->begin_transaction();
+    try{
+        daRow($db,'SELECT id FROM delta_app_panels WHERE id=? FOR UPDATE','i',$id);
+        $fresh=daRows($db,"SELECT * FROM delta_app_pg_users WHERE panel_kind='app' AND server_id=?",'i',$id);
+        if($fresh!==$maps)throw new InvalidArgumentException('حساب‌های پنل تغییر کرده‌اند؛ دوباره تلاش کنید.');
+        daExec($db,'UPDATE delta_app_panels SET panel_url=?,username=?,secret=?,sub_base_url=? WHERE id=?','ssssi',$s['base'],$s['username'],$secret,$s['sub_base_url'],$id);
+        daExec($db,"UPDATE delta_app_pg_users SET panel_base=? WHERE panel_kind='app' AND server_id=?",'si',$s['base'],$id);
+        daExec($db,"UPDATE delta_app_pg_settings SET panel_base=? WHERE panel_kind='app' AND server_id=?",'si',$s['base'],$id);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daDeletePanel(mysqli $db,int $id): void {
+    $db->begin_transaction();
+    try{
+        daRow($db,'SELECT id FROM delta_app_panels WHERE id=? FOR UPDATE','i',$id);
+        if(daRow($db,"SELECT account_id FROM delta_app_pg_users WHERE panel_kind='app' AND server_id=? LIMIT 1",'i',$id))throw new InvalidArgumentException('پنل دارای حساب است؛ حذف مجاز نیست.');
+        daExec($db,"DELETE FROM delta_app_pg_settings WHERE panel_kind='app' AND server_id=?",'i',$id);
+        daExec($db,'DELETE FROM delta_app_panels WHERE id=?','i',$id);
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
