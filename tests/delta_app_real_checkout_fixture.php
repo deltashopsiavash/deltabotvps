@@ -80,4 +80,43 @@ check(daRealPayByHash($db,$o5['pay_hash'])['state']==='declined','admin rejectio
 check(daRealOrder($db,1002,$id5)['state']==='cancelled','rejection closes app order');
 rejected(fn()=>daRealReject($db,$o5['pay_hash']),'duplicate rejection blocked');
 rejected(fn()=>daRealDeliver($db,1002,$id5),'rejected order cannot provision');
+// Isolated customer service operations. No network call to a production panel.
+check(daRealWalletPreview($db,1001,30000)===['balance'=>70000,'after'=>40000],'live wallet preview');
+check(daRealWalletPreview($db,1002,30000)['after']===-29999,'wallet preview exposes shortfall');
+$reports=[];
+function deltaUserShortInfo($uid){return 'buyer '.$uid;}
+function deltaTrackingLine($hash){return 'tracking '.$hash;}
+function sendToAdmins($txt,$key=null,$parse=null){$GLOBALS['reports'][]=$txt;}
+$aid=90;$uname='fixture_delete_user';$old=password_hash('old-password',PASSWORD_DEFAULT);
+daExec($db,'INSERT INTO delta_app_accounts(id,username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,1,10,?,1,?,1)','issii',$aid,$uname,$old,time()+86400,time());
+daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,999,1,'https://fixture.invalid',?,'fixture-marker','app')",'is',$aid,$uname);
+daExec($db,"UPDATE delta_app_real_orders SET state='delivered',account_id=? WHERE id=?",'ii',$aid,$id4);
+rejected(fn()=>daRealResetPassword($db,1002,$id4),'cross-owner password reset blocked');
+$pin=daRealResetPassword($db,1001,$id4);
+check(password_verify($pin,daAccount($db,$aid)['password_hash']),'password reset persisted');
+check(count($reports)===1&&str_contains($reports[0],$uname)&&str_contains($reports[0],'1001')&&str_contains($reports[0],'تاریخ و ساعت'),'password reset report includes username buyer and timestamp');
+rejected(fn()=>daRealDeleteChallenge($db,1002,$id4),'cross-owner deletion blocked');
+$del=daRealDeleteChallenge($db,1001,$id4);
+rejected(fn()=>daRealDeleteService($db,1001,$id4,$del),'cannot skip first confirmation');
+daRealDeleteAdvance($db,1001,$id4,$del);
+rejected(fn()=>daRealDeleteService($db,1002,$id4,$del),'cannot delete another buyer service with token');
+daRealDeleteCancel($db,1001,$id4,$del);
+rejected(fn()=>daRealDeleteService($db,1001,$id4,$del),'cancel invalidates final confirmation');
+$del=daRealDeleteChallenge($db,1001,$id4);daRealDeleteAdvance($db,1001,$id4,$del);
+daExec($db,'UPDATE delta_app_delete_requests SET expires=? WHERE order_id=?','ii',time()-1,$id4);
+rejected(fn()=>daRealDeleteService($db,1001,$id4,$del),'expired final confirmation blocked');
+$del=daRealDeleteChallenge($db,1001,$id4);daRealDeleteAdvance($db,1001,$id4,$del);
+rejected(fn()=>daRealDeleteService($db,1001,$id4,$del),'unavailable panel not reported as deleted');
+check(daRealOrder($db,1001,$id4)['state']==='deleting'&&daAccount($db,$aid)!==null,'incomplete deletion remains recoverable');
+rejected(fn()=>daRealResetPassword($db,1001,$id4),'deleting account cannot reset password');
+rejected(fn()=>daRealDeleteService($db,1001,$id4,$del),'used final token cannot replay');
+// Simulate local result of a verified remote deletion in this disposable fixture only.
+daExec($db,'DELETE FROM delta_app_pg_users WHERE account_id=?','i',$aid);
+daExec($db,'DELETE FROM delta_app_accounts WHERE id=?','i',$aid);
+$del=daRealDeleteChallenge($db,1001,$id4);daRealDeleteAdvance($db,1001,$id4,$del);
+daRealDeleteService($db,1001,$id4,$del);
+check(daRealOrder($db,1001,$id4)['state']==='deleted','completed deletion retains order');
+check(daRealPayByHash($db,$o4['pay_hash'])['state']==='paid_with_wallet','deletion retains payment record');
+check(daRealWalletPreview($db,1001,0)['balance']===70000,'deletion does not refund or debit wallet');
+rejected(fn()=>daRealDeliver($db,1001,$id4),'deleted paid service cannot reprovision');
 echo "All isolated checkout fixture checks passed.\n";
