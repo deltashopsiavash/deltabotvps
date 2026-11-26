@@ -133,7 +133,27 @@ function deltaAppAdminHandle(): bool {
             setUser();
             daRealSchema($connection);
             if(str_starts_with($cb,'dab_')){daSend('این منوی قدیمی دیگر معتبر نیست.',[daBtn('خرید سرویس','dar_home')]);return true;}
-            if($input==='/buy'||$cb==='dar_home'){daSend('اشتراک اختصاصی برنامه دلتا',[daBtn('خرید سرویس','dar_categories'),daBtn('سرویس‌های من','dar_mine')]);return true;}
+            if($input==='/buy'||$cb==='dar_home'){daTrialCustomerHome($connection);return true;}
+            if($cb==='dar_trial'){
+                $s=daTrialSettings($connection);$o=daTrialCurrent($connection,(int)$from_id);
+                if($o){
+                    if(in_array($o['state'],['paid','provisioning'],true)){
+                        daSend('درخواست تست قبلی شما ثبت شده؛ برای تکمیل همان سرویس اقدام کنید.',[daBtn('ادامه دریافت','dar_trialgo'),daBtn('بازگشت','dar_home')]);return true;
+                    }
+                    daSend('شما قبلاً اشتراک تست دریافت کرده‌اید. هر کاربر فقط یک بار مجاز است.',[daBtn('سرویس‌های من','dar_mine'),daBtn('بازگشت','dar_home')]);return true;
+                }
+                if(!(int)$s['enabled'])throw new InvalidArgumentException('اشتراک تست فعلاً غیرفعال است.');
+                daSend("🎁 اشتراک تست رایگان دلتا\nحجم: ".$s['gb']." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nقیمت: رایگان\nهر کاربر فقط یک بار.",[daBtn('✅ دریافت اشتراک تست','dar_trialgo'),daBtn('بازگشت','dar_home')]);return true;
+            }
+            if($cb==='dar_trialgo'){
+                $buyer=(int)$from_id;
+                $id=daTrialReserve($connection,$buyer,!empty($userInfo['phone']));
+                $o=daRealOrder($connection,$buyer,$id);
+                if(!in_array($o['state'],['paid','provisioning'],true)){daSend('شما قبلاً تست دریافت کرده‌اید.',[daBtn('سرویس‌های من','dar_mine')]);return true;}
+                try{daTrialDeliver($connection,$buyer,$id);daRealServiceView($connection,$buyer,$id);}
+                catch(Throwable $e){error_log('Delta trial delivery pending: '.get_class($e));daSend('درخواست شما ثبت شده است؛ تحویل هنوز تکمیل نشده. دوباره همین درخواست را ادامه دهید.',[daBtn('ادامه دریافت','dar_trialgo'),daBtn('بازگشت','dar_home')]);}
+                return true;
+            }
             if($cb==='dar_categories'){$rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dar_cat_'.$r['id']);$rows[]=daBtn('بازگشت','dar_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_cat_(\d+)$/D',$cb,$m)){$rows=[];foreach(daRows($connection,'SELECT id,name,price FROM delta_app_plans WHERE active=1 AND category_id=? ORDER BY id','i',(int)$m[1]) as $r)$rows[]=daBtn($r['name'].' - '.number_format((int)$r['price']).' تومان','dar_plan_'.$r['id']);$rows[]=daBtn('بازگشت','dar_categories');daSend('پلن را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dar_plan_(\d+)$/D',$cb,$m)){
@@ -174,10 +194,10 @@ function deltaAppAdminHandle(): bool {
                 catch(Throwable $e){daSend('تحویل هنوز کامل نشده است؛ وضعیت فاکتور را بررسی کنید و دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
                 return true;
             }
-            if($cb==='dar_orders'){daSend('اشتراک اختصاصی برنامه دلتا',[daBtn('خرید سرویس','dar_categories'),daBtn('سرویس‌های من','dar_mine')]);return true;}
+            if($cb==='dar_orders'){daTrialCustomerHome($connection);return true;}
             if($cb==='dar_mine'){
-                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning','paid','deleting') AND (o.state<>'delivered' OR a.id IS NOT NULL) ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
-                foreach($orders as $o)$rows[]=daBtn(($o['state']==='deleting'?'🗑 در انتظار حذف: ':($o['state']==='delivered'?'👤 ':'⏳ ')).($o['username']??'DELTA-'.$o['id']),(in_array($o['state'],['delivered','deleting'],true)?'dar_service_':'dar_invoice_').$o['id']);
+                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,o.method,a.username FROM delta_app_real_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning','paid','deleting') AND (o.state<>'delivered' OR a.id IS NOT NULL) ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
+                foreach($orders as $o)$rows[]=daBtn(($o['state']==='deleting'?'🗑 در انتظار حذف: ':($o['state']==='delivered'?'👤 ':'⏳ ')).($o['method']==='trial'?'🎁 تست - ':'').($o['username']??'DELTA-'.$o['id']),($o['method']==='trial'&&in_array($o['state'],['paid','provisioning'],true)?'dar_trial':(in_array($o['state'],['delivered','deleting'],true)?'dar_service_':'dar_invoice_').$o['id']));
                 $rows[]=daBtn('بازگشت','dar_home');daSend($orders?'سرویس‌های من':'هنوز سرویس خریداری‌شده ندارید.',$rows);return true;
             }
             if(preg_match('/^dar_service_(\d+)$/D',$cb,$m)){daRealServiceView($connection,(int)$from_id,(int)$m[1]);return true;}
@@ -229,7 +249,39 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_dkick_(\d+)_(\d+)$/D',$cb,$m)){daDeviceRevoke($connection,(int)$m[1],(int)$m[2]);daSend('نشست دستگاه لغو شد.',[daBtn('دستگاه‌ها','da_devices_'.$m[1])]);return true;}
         if($cb==='da_menuplans'){setUser();daSend('📦 پلن‌ها',[daBtn('ساخت دسته‌بندی','da_catadd'),daBtn('دسته‌بندی‌ها','da_cats'),daBtn('ساخت پلن','da_addplan'),daBtn('پلن‌ها','da_plans_0'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_menupanels'){setUser();daSend('🖥 پنل‌ها',[daBtn('پنل‌های اختصاصی برنامه','da_pg'),daBtn('افزودن پنل برنامه','da_pgadd'),daBtn('انتخاب پنل و گروه','da_pgset'),daBtn('بازگشت','da_home')]);return true;}
-        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
+        if($cb==='da_trial'){
+            setUser();daRealSchema($connection);daTrialAdminView($connection);return true;
+        }
+        if(preg_match('/^da_trialtoggle_(enabled|require_phone)$/D',$cb,$m)){
+            daRealSchema($connection);$s=daTrialSettings($connection);daTrialSet($connection,$m[1],1-(int)$s[$m[1]]);daTrialAdminView($connection);return true;
+        }
+        if(preg_match('/^da_trialset_(gb|days|devices|daily_cap)$/D',$cb,$m)){
+            setUser('da_trialvalue_'.$m[1]);daSend('مقدار جدید را به عدد انگلیسی وارد کنید (اعتبار به روز).',[daBtn('انصراف','da_trial')]);return true;
+        }
+        if($cb===''&&preg_match('/^da_trialvalue_(gb|days|devices|daily_cap)$/D',$step,$m)){
+            if(!preg_match('/^\d{1,4}$/D',$input))throw new InvalidArgumentException('عدد معتبر وارد کنید.');
+            daRealSchema($connection);daTrialSet($connection,$m[1],(int)$input);setUser();daTrialAdminView($connection);return true;
+        }
+        if(preg_match('/^da_triallist_(\d{1,6})$/D',$cb,$m)){
+            daRealSchema($connection);$page=(int)$m[1];$rows=[];
+            $items=daRows($connection,"SELECT c.buyer,c.claimed,c.released_at,o.state,a.username FROM delta_app_trial_claims c JOIN delta_app_real_orders o ON o.id=c.order_id LEFT JOIN delta_app_accounts a ON a.id=o.account_id ORDER BY c.order_id DESC LIMIT 9 OFFSET ?",'i',$page*8);
+            $msg="📋 دریافت‌کنندگان تست";
+            foreach(array_slice($items,0,8) as $r)$msg.="\n".daEsc($r['buyer'])." | ".daEsc($r['username']??'—')." | ".daEsc($r['state'])." | ".daIranDate((int)$r['claimed']).($r['released_at']?' (آزاد شده)':'');
+            if($page>0)$rows[]=daBtn('قبلی','da_triallist_'.($page-1));
+            if(count($items)>8)$rows[]=daBtn('بعدی','da_triallist_'.($page+1));
+            $rows[]=daBtn('بازگشت','da_trial');daSend($msg,$rows);return true;
+        }
+        if($cb==='da_trialrelease'){
+            setUser('da_trialrelease_id');daSend('آیدی عددی تلگرام کاربر را وارد کنید. فقط پس از انقضا یا حذف تست قبلی امکان آزادسازی وجود دارد.',[daBtn('انصراف','da_trial')]);return true;
+        }
+        if($cb===''&&$step==='da_trialrelease_id'){
+            if(!preg_match('/^[1-9]\d{0,15}$/D',$input))throw new InvalidArgumentException('آیدی معتبر وارد کنید.');
+            setUser();daSend('اجازه دریافت مجدد تست برای کاربر '.daEsc($input).' صادر شود؟',[daBtn('✅ تأیید','da_trialreleaseok_'.$input),daBtn('انصراف','da_trial')]);return true;
+        }
+        if(preg_match('/^da_trialreleaseok_([1-9]\d{0,15})$/D',$cb,$m)){
+            daRealSchema($connection);daTrialRelease($connection,(int)$m[1]);daSend('✅ اجازه دریافت مجدد ثبت شد.',[daBtn('بازگشت','da_trial')]);return true;
+        }
+        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_cats'){setUser();$rows=[];foreach(daRows($connection,'SELECT * FROM delta_app_categories ORDER BY id') as $r)$rows[]=daBtn($r['name'],'da_cat_'.$r['id']);$rows[]=daBtn('ساخت دسته‌بندی','da_catadd');$rows[]=daBtn('بازگشت','da_menuplans');daSend('دسته‌بندی‌ها',$rows);return true;}
         if($cb==='da_catadd'||preg_match('/^da_catedit_(\d+)$/D',$cb)){setUser($cb);daSend('نام دسته‌بندی را وارد کنید.',[daBtn('انصراف','da_cats')]);return true;}
         if(preg_match('/^da_cat_(\d+)$/D',$cb,$m)){setUser();$r=daRow($connection,'SELECT * FROM delta_app_categories WHERE id=?','i',(int)$m[1]);if(!$r)throw new InvalidArgumentException('دسته یافت نشد.');daSend(daEsc($r['name']),[daBtn('تغییر نام','da_catedit_'.$m[1]),daBtn('حذف دسته','da_catask_'.$m[1]),daBtn('بازگشت','da_cats')]);return true;}
@@ -574,4 +626,18 @@ function daRealCustomerAllowed(): bool {
     if(($botState['requirePhone']??'off')==='on'&&empty($userInfo['isAdmin'])&&empty($userInfo['phone']))return false;
     if(($botState['forceJoinState']??'on')==='on'&&!empty($channelLock)&&in_array($joniedState??'', ['kicked','left'],true))return false;
     return true;
+}
+
+function daTrialCustomerHome(mysqli $db): void {
+    $s=daTrialSettings($db);$rows=[daBtn('خرید سرویس','dar_categories')];
+    if((int)$s['enabled']||daTrialCurrent($db,(int)$GLOBALS['from_id']))$rows[]=daBtn('🎁 دریافت اشتراک تست رایگان','dar_trial');
+    $rows[]=daBtn('سرویس‌های من','dar_mine');daSend('اشتراک اختصاصی برنامه دلتا',$rows);
+}
+function daTrialAdminView(mysqli $db): void {
+    $s=daTrialSettings($db);
+    $n=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims');
+    $today=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_trial_claims WHERE claimed>=?','i',daTrialDayStart());
+    $ready=daRow($db,"SELECT COUNT(*) AS n FROM delta_app_real_orders WHERE method='trial' AND state='delivered'");
+    $txt="🎁 مدیریت اشتراک تست\nوضعیت: ".($s['enabled']?'فعال':'غیرفعال')."\nحجم: ".$s['gb']." گیگ\nاعتبار: ".$s['days']." روز\nدستگاه: ".$s['devices']."\nظرفیت امروز: ".$today['n']." / ".$s['daily_cap']."\nکل درخواست‌ها: ".$n['n']."\nتحویل‌شده (حذف‌نشده): ".$ready['n']."\nالزام شماره ثبت‌شده: ".($s['require_phone']?'فعال':'غیرفعال')."\nهر آیدی تلگرام یک بار؛ آزادسازی فقط توسط مدیر.";
+    daSend($txt,[daBtn($s['enabled']?'🔴 غیرفعال کردن':'🟢 فعال کردن','da_trialtoggle_enabled'),daBtn('🔋 تنظیم حجم','da_trialset_gb'),daBtn('⏰ تنظیم اعتبار','da_trialset_days'),daBtn('📱 تعداد دستگاه','da_trialset_devices'),daBtn('👥 ظرفیت روزانه','da_trialset_daily_cap'),daBtn('📞 الزام شماره ثبت‌شده','da_trialtoggle_require_phone'),daBtn('📋 لیست دریافت‌کنندگان','da_triallist_0'),daBtn('🔄 آزادسازی دریافت مجدد','da_trialrelease'),daBtn('بازگشت','da_menumanage')]);
 }
