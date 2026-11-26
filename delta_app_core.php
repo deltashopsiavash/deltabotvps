@@ -4,6 +4,7 @@ declare(strict_types=1);
 function daSchema(mysqli $db): void {
     foreach ([
         "CREATE TABLE IF NOT EXISTS delta_app_plans (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL, gb INT UNSIGNED NOT NULL, days INT UNSIGNED NOT NULL, price BIGINT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_test_orders (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, buyer BIGINT NOT NULL, plan_id INT UNSIGNED NOT NULL, name VARCHAR(80) NOT NULL, gb INT UNSIGNED NOT NULL, days INT UNSIGNED NOT NULL, price BIGINT UNSIGNED NOT NULL, device_limit INT UNSIGNED NOT NULL, state VARCHAR(20) NOT NULL DEFAULT 'pending', account_id INT UNSIGNED NULL UNIQUE, created BIGINT UNSIGNED NOT NULL, approved_at BIGINT UNSIGNED NULL, delivered_at BIGINT UNSIGNED NULL, UNIQUE KEY account_ref(account_id), INDEX(buyer,id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_ui (id TINYINT PRIMARY KEY,message_id BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_categories (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,name VARCHAR(80) NOT NULL UNIQUE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_admin_draft (id TINYINT PRIMARY KEY,gb INT UNSIGNED NOT NULL DEFAULT 0,days INT UNSIGNED NOT NULL DEFAULT 0,price BIGINT UNSIGNED NOT NULL DEFAULT 0,devices INT UNSIGNED NOT NULL DEFAULT 1,plan_id INT UNSIGNED NOT NULL DEFAULT 0) ENGINE=InnoDB",
@@ -555,5 +556,82 @@ function daDeletePanel(mysqli $db,int $id): void {
         daExec($db,"DELETE FROM delta_app_pg_settings WHERE panel_kind='app' AND server_id=?",'i',$id);
         daExec($db,'DELETE FROM delta_app_panels WHERE id=?','i',$id);
         $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+
+/** Owner-only test invoices; intentionally never modify pays or wallet. */
+function daTestInvoice(mysqli $db,int $buyer,int $plan): int {
+    $db->begin_transaction();
+    try {
+        $p=daRow($db,'SELECT * FROM delta_app_plans WHERE id=? AND active=1 AND category_id IS NOT NULL FOR UPDATE','i',$plan);
+        if(!$p)throw new InvalidArgumentException('پلن فعال یافت نشد.');
+        $old=daRow($db,"SELECT id FROM delta_app_test_orders WHERE buyer=? AND plan_id=? AND state='pending' AND created>? ORDER BY id DESC LIMIT 1",'iii',$buyer,$plan,time()-900);
+        if($old){$db->commit();return (int)$old['id'];}
+        daExec($db,'INSERT INTO delta_app_test_orders(buyer,plan_id,name,gb,days,price,device_limit,created) VALUES(?,?,?,?,?,?,?,?)','iisiiiii',$buyer,$plan,$p['name'],(int)$p['gb'],(int)$p['days'],(int)$p['price'],(int)$p['device_limit'],time());
+        $id=(int)$db->insert_id;$db->commit();return $id;
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daTestOrder(mysqli $db,int $buyer,int $id): array {
+    $o=daRow($db,'SELECT * FROM delta_app_test_orders WHERE id=? AND buyer=?','ii',$id,$buyer);
+    if(!$o)throw new InvalidArgumentException('فاکتور پیدا نشد.');
+    return $o;
+}
+function daTestCancel(mysqli $db,int $buyer,int $id): void {
+    daExec($db,"UPDATE delta_app_test_orders SET state='cancelled' WHERE id=? AND buyer=? AND state='pending'",'ii',$id,$buyer);
+}
+function daTestApprove(mysqli $db,int $buyer,int $id): array {
+    $lock='delta-test-order-'.$id;$l=daRow($db,'SELECT GET_LOCK(?,0) AS acquired','s',$lock);
+    if((int)($l['acquired']??0)!==1)throw new InvalidArgumentException('فاکتور در حال پردازش است.');
+    try{
+        $o=daTestOrder($db,$buyer,$id);
+        if($o['state']==='delivered')return ['order'=>$o,'password'=>null];
+        if(!in_array($o['state'],['pending','provisioning'],true))throw new InvalidArgumentException('فاکتور قابل تأیید نیست.');
+        if($o['state']==='pending'&&(int)$o['created']<time()-900)throw new InvalidArgumentException('فاکتور منقضی شده؛ دوباره پلن را انتخاب کنید.');
+        if($o['account_id']===null){
+            $setting=daRow($db,'SELECT * FROM delta_app_pg_settings WHERE id=1');
+            if(!$setting||$setting['panel_kind']!=='app')throw new InvalidArgumentException('ابتدا پنل برنامه را انتخاب کنید.');
+            daPgServer($db,(int)$setting['server_id'],$setting['panel_base']);
+            $db->begin_transaction();
+            try{
+                $o=daRow($db,'SELECT * FROM delta_app_test_orders WHERE id=? AND buyer=? FOR UPDATE','ii',$id,$buyer);
+                if(!$o||$o['state']!=='pending'||$o['account_id']!==null)throw new InvalidArgumentException('فاکتور تغییر کرده است.');
+                $name=null;
+                for($i=0;$i<40;$i++){
+                    $n='delta'.random_int(10000,99999);
+                    if(!daRow($db,'SELECT id FROM delta_app_accounts WHERE username=?','s',$n)&&!daRow($db,'SELECT account_id FROM delta_app_pg_users WHERE pg_name=?','s',$n)){$name=$n;break;}
+                }
+                if($name===null)throw new RuntimeException('name');
+                $pass=daPassword();$now=time();$expires=$now+(int)$o['days']*86400;
+                daExec($db,'INSERT INTO delta_app_accounts(username,password_hash,plan_id,gb,expires,active,created,device_limit) VALUES(?,?,?,?,?,0,?,?)','ssiiiii',$name,password_hash($pass,PASSWORD_DEFAULT),(int)$o['plan_id'],(int)$o['gb'],$expires,$now,(int)$o['device_limit']);
+                $aid=(int)$db->insert_id;
+                daExec($db,"INSERT INTO delta_app_pg_users(account_id,server_id,group_id,panel_base,pg_name,marker,panel_kind) VALUES(?,?,?,?,?,?,'app')",'iiisss',$aid,(int)$setting['server_id'],(int)$setting['group_id'],$setting['panel_base'],$name,'delta-app:'.bin2hex(random_bytes(16)));
+                daExec($db,"UPDATE delta_app_test_orders SET account_id=?,state='provisioning',approved_at=? WHERE id=?",'iii',$aid,$now,$id);
+                $db->commit();
+            }catch(Throwable $e){$db->rollback();throw $e;}
+        }
+        $o=daTestOrder($db,$buyer,$id);$aid=(int)$o['account_id'];$map=daPgMap($db,$aid);
+        if(!$map||!daAccount($db,$aid))throw new RuntimeException('account missing');
+        if($map['state']!=='ready')daPgProvision($db,$aid);
+        // Retry safely reuses the reserved account; fresh PIN only before completion.
+        $pass=daPassword();
+        $db->begin_transaction();
+        try{
+            daExec($db,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($pass,PASSWORD_DEFAULT),$aid);
+            daExec($db,"UPDATE delta_app_test_orders SET state='delivered',delivered_at=? WHERE id=? AND state='provisioning'",'ii',time(),$id);
+            $db->commit();
+        }catch(Throwable $e){$db->rollback();throw $e;}
+        return ['order'=>daTestOrder($db,$buyer,$id),'password'=>$pass];
+    }finally{daRow($db,'SELECT RELEASE_LOCK(?) AS released','s',$lock);}
+}
+function daTestResetPassword(mysqli $db,int $buyer,int $order): string {
+    $o=daTestOrder($db,$buyer,$order);
+    if($o['state']!=='delivered'||!daAccount($db,(int)$o['account_id']))throw new InvalidArgumentException('حساب آماده نیست.');
+    $id=(int)$o['account_id'];$p=daPassword();$db->begin_transaction();
+    try{
+        daRow($db,'SELECT id FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$id);
+        daExec($db,'UPDATE delta_app_accounts SET password_hash=? WHERE id=?','si',password_hash($p,PASSWORD_DEFAULT),$id);
+        daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$id);
+        daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$id);
+        $db->commit();return $p;
     }catch(Throwable $e){$db->rollback();throw $e;}
 }

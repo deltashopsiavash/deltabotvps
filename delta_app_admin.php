@@ -128,11 +128,48 @@ function deltaAppAdminHandle(): bool {
         }
         if($buyPreview){
             setUser();
-            if($input==='/buy'||$cb==='dab_home'){daSend('اشتراک اختصاصی برنامه دلتا — پیش‌نمایش مدیریت',[daBtn('خرید سرویس','dab_categories'),daBtn('سرویس‌های من','dab_mine')]);return true;}
+            if($input==='/buy'||$cb==='dab_home'){daSend('اشتراک اختصاصی برنامه دلتا — خرید آزمایشی مدیر',[daBtn('خرید سرویس','dab_categories'),daBtn('سرویس‌های من','dab_mine')]);return true;}
             if($cb==='dab_categories'){$rows=[];foreach(daRows($connection,'SELECT DISTINCT c.id,c.name FROM delta_app_categories c JOIN delta_app_plans p ON p.category_id=c.id WHERE p.active=1 ORDER BY c.id') as $r)$rows[]=daBtn($r['name'],'dab_cat_'.$r['id']);$rows[]=daBtn('بازگشت','dab_home');daSend('دسته‌بندی را انتخاب کنید.',$rows);return true;}
             if(preg_match('/^dab_cat_(\d+)$/D',$cb,$m)){$rows=[];foreach(daRows($connection,'SELECT id,name,price FROM delta_app_plans WHERE active=1 AND category_id=? ORDER BY id','i',(int)$m[1]) as $r)$rows[]=daBtn($r['name'].' - '.number_format((int)$r['price']).' تومان','dab_plan_'.$r['id']);$rows[]=daBtn('بازگشت','dab_categories');daSend('پلن را انتخاب کنید.',$rows);return true;}
-            if(preg_match('/^dab_plan_(\d+)$/D',$cb,$m)){$p=daRow($connection,'SELECT * FROM delta_app_plans WHERE active=1 AND category_id IS NOT NULL AND id=?','i',(int)$m[1]);if(!$p)throw new InvalidArgumentException('پلن فعال یافت نشد.');daSend(daEsc($p['name'])."\nحجم: ".$p['gb']." گیگ\nاعتبار: ".$p['days']." روز\nدستگاه: ".$p['device_limit']."\nقیمت: ".number_format((int)$p['price'])." تومان\nپرداخت در این پیش‌نمایش غیرفعال است.",[daBtn('بازگشت','dab_cat_'.$p['category_id'])]);return true;}
-            if($cb==='dab_mine'){daSend('بخش سرویس‌های خریداری‌شده هنوز فعال نشده است.',[daBtn('بازگشت','dab_home')]);return true;}
+            if(preg_match('/^dab_plan_(\d+)$/D',$cb,$m)){
+                $id=daTestInvoice($connection,(int)$from_id,(int)$m[1]);daTestInvoiceView($connection,(int)$from_id,$id);return true;
+            }
+            if(preg_match('/^dab_invoice_(\d+)$/D',$cb,$m)){daTestInvoiceView($connection,(int)$from_id,(int)$m[1]);return true;}
+            if(preg_match('/^dab_cancel_(\d+)$/D',$cb,$m)){daTestCancel($connection,(int)$from_id,(int)$m[1]);daTestInvoiceView($connection,(int)$from_id,(int)$m[1]);return true;}
+            if(preg_match('/^dab_approve_(\d+)$/D',$cb,$m)){
+                $id=(int)$m[1];$o=daTestOrder($connection,(int)$from_id,$id);
+                if($o['state']==='delivered'){daTestServiceView($connection,(int)$from_id,$id);return true;}
+                daSend('⚠️ تأیید دستی آزمایشی؛ هیچ مبلغی کسر نمی‌شود. حساب واقعی در پنل ساخته خواهد شد.',[daBtn('✅ تأیید و ساخت حساب','dab_confirm_'.$id),daBtn('بازگشت','dab_invoice_'.$id)]);return true;
+            }
+            if(preg_match('/^dab_confirm_(\d+)$/D',$cb,$m)){
+                $id=(int)$m[1];
+                try{$result=daTestApprove($connection,(int)$from_id,$id);}
+                catch(Throwable $e){daSend('ساخت یا تأیید حساب کامل نشد؛ فاکتور را بررسی کنید. دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dab_invoice_'.$id),daBtn('بازگشت','dab_home')]);return true;}
+                $o=$result['order'];$a=daAccount($connection,(int)$o['account_id']);
+                if($result['password']!==null&&$a){
+                    $msg="✅ <b>تحویل آزمایشی اشتراک دلتا</b>\nشماره سفارش: TEST-".$id."\nخریدار: ".$from_id."\nپلن: ".daEsc($o['name'])."\nنام کاربری: <code>".daEsc($a['username'])."</code>\nرمز: <code>".daEsc($result['password'])."</code>\nحجم: ".$a['gb']." گیگ\nدستگاه: ".$a['device_limit']."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nپایان: ".daIranDate((int)$a['expires'])."\nمبلغ اسمی: ".number_format((int)$o['price'])." تومان\nپرداخت واقعی: صفر";
+                    daSend($msg,[daBtn('👤 سرویس من','dab_service_'.$id),daBtn('بازگشت','dab_home')]);
+                }else daTestServiceView($connection,(int)$from_id,$id);
+                return true;
+            }
+            if($cb==='dab_mine'){
+                $rows=[];$orders=daRows($connection,"SELECT o.id,o.state,a.username FROM delta_app_test_orders o LEFT JOIN delta_app_accounts a ON a.id=o.account_id WHERE o.buyer=? AND o.state IN ('delivered','provisioning') ORDER BY o.id DESC LIMIT 30",'i',(int)$from_id);
+                foreach($orders as $o)$rows[]=daBtn(($o['state']==='delivered'?'👤 ':'⏳ ').($o['username']??'TEST-'.$o['id']),($o['state']==='delivered'?'dab_service_':'dab_invoice_').$o['id']);
+                $rows[]=daBtn('بازگشت','dab_home');daSend($orders?'سرویس‌های آزمایشی من':'هنوز سرویس آزمایشی ندارید.',$rows);return true;
+            }
+            if(preg_match('/^dab_service_(\d+)$/D',$cb,$m)){daTestServiceView($connection,(int)$from_id,(int)$m[1]);return true;}
+            if(preg_match('/^dab_devices_(\d+)$/D',$cb,$m)){
+                daTestDevicesView($connection,(int)$from_id,(int)$m[1]);return true;
+            }
+            if(preg_match('/^dab_kickask_(\d+)_(\d+)$/D',$cb,$m)){daTestOrder($connection,(int)$from_id,(int)$m[1]);daSend('نشست این دستگاه لغو شود؟',[daBtn('✅ تأیید','dab_kick_'.$m[1].'_'.$m[2]),daBtn('بازگشت','dab_devices_'.$m[1])]);return true;}
+            if(preg_match('/^dab_kick_(\d+)_(\d+)$/D',$cb,$m)){
+                $o=daTestOrder($connection,(int)$from_id,(int)$m[1]);if($o['state']!=='delivered')throw new InvalidArgumentException('سرویس آماده نیست.');
+                daDeviceRevoke($connection,(int)$o['account_id'],(int)$m[2]);daTestDevicesView($connection,(int)$from_id,(int)$m[1]);return true;
+            }
+            if(preg_match('/^dab_resetask_(\d+)$/D',$cb,$m)){daTestOrder($connection,(int)$from_id,(int)$m[1]);daSend('رمز جدید ساخته و همه نشست‌ها لغو شوند؟',[daBtn('✅ تأیید','dab_reset_'.$m[1]),daBtn('بازگشت','dab_service_'.$m[1])]);return true;}
+            if(preg_match('/^dab_reset_(\d+)$/D',$cb,$m)){
+                $p=daTestResetPassword($connection,(int)$from_id,(int)$m[1]);daSend('رمز تازه (فقط این بار): <code>'.daEsc($p).'</code>',[daBtn('بازگشت','dab_service_'.$m[1])]);return true;
+            }
             return true;
         }
         daExec($connection,'DELETE FROM delta_app_panel_drafts WHERE expires<=?','i',time());
@@ -337,4 +374,28 @@ function deltaAppAdminHandle(): bool {
     }catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_home')]);}
     catch(Throwable $e){if($step==='da_pgadd'||$step==='da_pgset'){daSend('اتصال یا ثبت پنل ناموفق بود؛ اگر آدرس پنل IP است، دامنه معتبر SSL را در خط پنجم بفرستید. اطلاعات مدیر و دسترسی گروه را هم بررسی کنید.',[daBtn('افزودن دوباره','da_pgadd'),daBtn('بازگشت','da_pg')]);return true;}daSend('عملیات انجام نشد. احتمال تکراری بودن نام یا لینک، یا خطای دیتابیس وجود دارد.',[daBtn('بازگشت','da_home')]);}
     return true;
+}
+
+function daTestInvoiceView(mysqli $db,int $buyer,int $id): void {
+    $o=daTestOrder($db,$buyer,$id);$rows=[];
+    $txt="🧾 <b>فاکتور آزمایشی TEST-".$id."</b>\n".daEsc($o['name'])."\nحجم: ".$o['gb']." گیگ\nاعتبار: ".$o['days']." روز\nدستگاه: ".$o['device_limit']."\nمبلغ اسمی: ".number_format((int)$o['price'])." تومان\nپرداخت واقعی: صفر\nوضعیت: ".daEsc($o['state']);
+    if($o['state']==='pending'&&(int)$o['created']>=time()-900){$rows[]=daBtn('✅ تأیید دستی آزمایشی','dab_approve_'.$id);$rows[]=daBtn('❌ لغو فاکتور','dab_cancel_'.$id);}
+    if($o['state']==='provisioning')$rows[]=daBtn('🔄 بازیابی تحویل','dab_approve_'.$id);
+    if($o['state']==='delivered')$rows[]=daBtn('👤 مشاهده سرویس','dab_service_'.$id);
+    $rows[]=daBtn('بازگشت','dab_home');daSend($txt,$rows);
+}
+function daTestServiceView(mysqli $db,int $buyer,int $id): void {
+    $o=daTestOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
+    if($o['state']!=='delivered'||!$a){daSend('حساب آماده یا موجود نیست.',[daBtn('بازگشت','dab_mine')]);return;}
+    $status='نامشخص';$usage='نامشخص';$limit=(int)$a['gb']*1073741824;$expiry=(int)$a['expires'];
+    try{$v=daPgLive($db,$a);$status=$v['can_connect']?'فعال':'غیرفعال';$usage=number_format($v['used_bytes']/1073741824,3).' GB';$limit=$v['limit_bytes'];$expiry=$v['expires'];}catch(Throwable $e){}
+    $txt="👤 <code>".daEsc($a['username'])."</code>\nاشتراک: ".daEsc($o['name'])."\nشماره سفارش: TEST-".$id."\nوضعیت: ".$status."\nحجم: ".number_format($limit/1073741824,3)." GB\nمصرف: ".$usage."\nتاریخ خرید: ".daIranDate((int)$o['approved_at'])."\nانقضا: ".daIranDate($expiry)."\nدستگاه: ".count(daDeviceList($db,(int)$a['id']))." / ".$a['device_limit'];
+    daSend($txt,[daBtn('📱 دستگاه‌های متصل','dab_devices_'.$id),daBtn('🔑 تغییر رمز','dab_resetask_'.$id),daBtn('بازگشت','dab_mine')]);
+}
+function daTestDevicesView(mysqli $db,int $buyer,int $id): void {
+    $o=daTestOrder($db,$buyer,$id);$a=daAccount($db,(int)$o['account_id']);
+    if($o['state']!=='delivered'||!$a)throw new InvalidArgumentException('حساب یافت نشد.');
+    $items=daDeviceList($db,(int)$a['id']);$rows=[];$msg='📱 دستگاه‌ها: '.count($items).' / '.$a['device_limit'];
+    foreach($items as $item){$msg.="\n".daEsc($item['model'])." | ".daIranDate($item['last_seen'])." | مصرف مستقل: نامشخص";$rows[]=daBtn('🚪 خروج '.$item['model'],'dab_kickask_'.$id.'_'.$item['id']);}
+    $rows[]=daBtn('بازگشت','dab_service_'.$id);daSend($msg,$rows);
 }
