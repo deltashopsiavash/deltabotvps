@@ -9,6 +9,7 @@ function daSchema(mysqli $db): void {
         "CREATE TABLE IF NOT EXISTS delta_app_sessions (token_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, account_id INT UNSIGNED NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(account_id), INDEX(expires)) ENGINE=InnoDB",
         "CREATE TABLE IF NOT EXISTS delta_app_sources (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, url TEXT NOT NULL, url_hash CHAR(64) CHARACTER SET ascii NOT NULL UNIQUE, payload MEDIUMTEXT NOT NULL, nodes INT UNSIGNED NOT NULL, active TINYINT NOT NULL DEFAULT 1, updated BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_panels (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, panel_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, username VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, group_id INT UNSIGNED NOT NULL, created BIGINT UNSIGNED NOT NULL, UNIQUE KEY panel_identity(panel_url,username)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+        "CREATE TABLE IF NOT EXISTS delta_app_panel_drafts (ticket CHAR(24) CHARACTER SET ascii PRIMARY KEY, panel_id INT UNSIGNED NULL, panel_url VARCHAR(255) NOT NULL, username VARCHAR(128) NOT NULL, secret TEXT NOT NULL, sub_base_url VARCHAR(255) NOT NULL, groups_json MEDIUMTEXT NOT NULL, expires BIGINT UNSIGNED NOT NULL, INDEX(expires)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_settings (id TINYINT PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_pg_users (account_id INT UNSIGNED PRIMARY KEY, server_id INT UNSIGNED NOT NULL, group_id INT UNSIGNED NOT NULL, panel_base VARCHAR(255) NOT NULL, pg_name VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL UNIQUE, marker VARCHAR(80) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', remote_id BIGINT UNSIGNED NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         "CREATE TABLE IF NOT EXISTS delta_app_limits (key_hash CHAR(64) CHARACTER SET ascii PRIMARY KEY, hits INT UNSIGNED NOT NULL, bucket BIGINT UNSIGNED NOT NULL, INDEX(bucket)) ENGINE=InnoDB"
@@ -201,27 +202,87 @@ function daPgServer(mysqli $db,int $id,?string $expected=null,string $kind='app'
     if($expected!==null&&$s['base']!==$expected)throw new RuntimeException('panel changed');
     return $s;
 }
-function daPgCheckGroup(array $s,int $gid): array {
-    $token=daPgToken($s);
-    [$code,$raw]=daPgApi($s,'/api/group/'.$gid,'GET',$token);
-    if($code!==200)throw new InvalidArgumentException('گروه در پنل پیدا نشد یا دسترسی کافی نیست.');
-    $j=daPgJson($raw);
-    if(($j['id']??null)!==$gid||($j['is_disabled']??false)===true)throw new InvalidArgumentException('گروه معتبر و فعال نیست.');
-    return $j;
+// The same group-list response shapes supported by the sales bot, without using its credentials.
+function daPgParseGroups(array $json): ?array {
+    $items=$json;
+    for($depth=0;$depth<3&&!array_is_list($items);$depth++){
+        $next=null;foreach(['groups','items','results','data','user_groups','userGroups'] as $k)if(isset($items[$k])&&is_array($items[$k])){$next=$items[$k];break;}
+        if($next===null)return null;$items=$next;
+    }
+    if(!array_is_list($items))return null;
+    $groups=[];
+    foreach($items as $g){
+        if(!is_array($g))return null;
+        $raw=$g['id']??$g['group_id']??null;
+        $name=$g['name']??$g['title']??$g['remark']??null;
+        if(!(is_int($raw)||(is_string($raw)&&ctype_digit($raw)))||!is_string($name)||trim($name)===''||(int)$raw<1||(int)$raw>4294967295)return null;
+        $id=(int)$raw;
+        if(in_array($g['is_disabled']??false,[true,1,'1'],true))continue;
+        $groups[$id]=['id'=>$id,'name'=>mb_substr(trim(preg_replace('/[\x00-\x1f\x7f]/u',' ',$name)??''),0,80)];
+    }
+    return array_values($groups);
 }
-function daPanelRegister(mysqli $db,string $url,string $name,string $password,int $gid,string $sub=''): int {
+function daPgGroups(array $s,?string $token=null): array {
+    $token=$token??daPgToken($s);
+    $last=0;
+    // Full list first (can identify disabled groups), then lightweight list for limited admins.
+    foreach(['/api/groups','/api/groups/simple'] as $path){
+        [$code,$raw]=daPgApi($s,$path.'?limit=1000&offset=0','GET',$token);$last=$code;
+        if($code!==200)continue;
+        $json=daPgJson($raw);$out=daPgParseGroups($json);
+        if($out===null)continue;
+        $total=$json['total']??null;
+        // Fail rather than silently showing a truncated list.
+        if(is_numeric($total)&&(int)$total>1000)throw new InvalidArgumentException('تعداد گروه‌ها بیش از ظرفیت این نسخه است.');
+        if(is_numeric($total)&&(int)$total>0&&!$out&&$path==='/api/groups')continue;
+        if($out)return $out;
+        if($path==='/api/groups/simple')return [];
+    }
+    if($last===403||$last===401)throw new InvalidArgumentException('ورود انجام شد ولی مدیر اجازه مشاهده گروه‌ها را ندارد.');
+    throw new InvalidArgumentException('فهرست گروه‌ها از پنل دریافت نشد؛ دسترسی یا نسخه API را بررسی کنید.');
+}
+function daPgCheckGroup(array $s,int $gid): array {
+    foreach(daPgGroups($s) as $g)if($g['id']===$gid)return $g;
+    throw new InvalidArgumentException('گروه در فهرست قابل دسترس مدیر پیدا نشد.');
+}
+function daPanelInput(string $url,string $name,string $password,string $sub=''): array {
     $base=daPgBase($url);$sub=$sub===''?$base:daPgBase($sub);
-    if(strlen($base)>255||strlen($sub)>255||strlen($name)<1||strlen($name)>128||strlen($password)<1||strlen($password)>512||$gid<1||$gid>4294967295||preg_match('/[\x00-\x1f\x7f]/',$name))throw new InvalidArgumentException('مقادیر پنل نامعتبر است.');
-    if(daRow($db,'SELECT id FROM delta_app_panels WHERE panel_url=? AND username=?','ss',$base,$name))throw new InvalidArgumentException('این آدرس با همین نام مدیریتی قبلاً در برنامه ثبت شده است.');
-    $s=['base'=>$base,'sub_base_url'=>$sub,'username'=>$name,'password'=>$password];
-    daPgCheckGroup($s,$gid);
-    $secret=daPanelEncrypt($password,$base,$name);
+    if(strlen($base)>255||strlen($sub)>255||strlen($name)<1||strlen($name)>128||strlen($password)<1||strlen($password)>512||preg_match('/[\x00-\x1f\x7f]/',$name))throw new InvalidArgumentException('مقادیر پنل نامعتبر است.');
+    return ['base'=>$base,'sub_base_url'=>$sub,'username'=>$name,'password'=>$password];
+}
+function daPanelDraft(mysqli $db,array $s,?int $panelId=null): array {
+    if($panelId===null&&daRow($db,'SELECT id FROM delta_app_panels WHERE panel_url=? AND username=?','ss',$s['base'],$s['username']))throw new InvalidArgumentException('این پنل قبلاً ثبت شده؛ از انتخاب پنل و گروه استفاده کنید.');
+    $groups=daPgGroups($s);
+    if(!$groups)throw new InvalidArgumentException('ورود موفق بود ولی هیچ گروه قابل انتخابی پیدا نشد.');
+    $ticket=bin2hex(random_bytes(12));$secret=daPanelEncrypt($s['password'],$s['base'],$s['username']);
+    daExec($db,'DELETE FROM delta_app_panel_drafts WHERE expires<=?','i',time());
+    daExec($db,'INSERT INTO delta_app_panel_drafts(ticket,panel_id,panel_url,username,secret,sub_base_url,groups_json,expires) VALUES(?,?,?,?,?,?,?,?)','sisssssi',$ticket,$panelId,$s['base'],$s['username'],$secret,$s['sub_base_url'],json_encode($groups,JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR),time()+600);
+    return ['ticket'=>$ticket,'groups'=>$groups];
+}
+function daPanelDraftGet(mysqli $db,string $ticket): array {
+    if(!preg_match('/^[a-f0-9]{24}$/D',$ticket))throw new InvalidArgumentException('درخواست نامعتبر است.');
+    $d=daRow($db,'SELECT * FROM delta_app_panel_drafts WHERE ticket=? AND expires>?','si',$ticket,time());
+    if(!$d)throw new InvalidArgumentException('زمان انتخاب گروه تمام شد؛ دوباره شروع کنید.');
+    return $d;
+}
+function daPanelDraftFinish(mysqli $db,string $ticket,int $gid): array {
+    $d=daPanelDraftGet($db,$ticket);
+    $groups=json_decode($d['groups_json'],true,512,JSON_THROW_ON_ERROR);
+    if(!in_array($gid,array_column($groups,'id'),true))throw new InvalidArgumentException('گروه را از دکمه‌های همین فهرست انتخاب کنید.');
+    $s=$d['panel_id']===null?['base'=>$d['panel_url'],'sub_base_url'=>$d['sub_base_url'],'username'=>$d['username'],'password'=>daPanelDecrypt($d['secret'],$d['panel_url'],$d['username'])]:daPgServer($db,(int)$d['panel_id'],$d['panel_url']);
+    $g=daPgCheckGroup($s,$gid);
     $db->begin_transaction();
     try{
-        daExec($db,'INSERT INTO delta_app_panels(panel_url,username,secret,sub_base_url,group_id,created) VALUES(?,?,?,?,?,?)','ssssii',$base,$name,$secret,$sub,$gid,time());
-        $id=(int)$db->insert_id;
-        daExec($db,"INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base,panel_kind) VALUES(1,?,?,?,'app') ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base),panel_kind='app'",'iis',$id,$gid,$base);
-        $db->commit();return $id;
+        $locked=daRow($db,'SELECT ticket FROM delta_app_panel_drafts WHERE ticket=? AND expires>? FOR UPDATE','si',$ticket,time());
+        if(!$locked)throw new InvalidArgumentException('این انتخاب قبلاً انجام شده یا منقضی شده است.');
+        if($d['panel_id']===null){
+            daExec($db,'INSERT INTO delta_app_panels(panel_url,username,secret,sub_base_url,group_id,created) VALUES(?,?,?,?,?,?)','ssssii',$d['panel_url'],$d['username'],$d['secret'],$d['sub_base_url'],$gid,time());$id=(int)$db->insert_id;
+        }else{
+            $id=(int)$d['panel_id'];daExec($db,'UPDATE delta_app_panels SET group_id=? WHERE id=?','ii',$gid,$id);
+        }
+        daExec($db,"INSERT INTO delta_app_pg_settings(id,server_id,group_id,panel_base,panel_kind) VALUES(1,?,?,?,'app') ON DUPLICATE KEY UPDATE server_id=VALUES(server_id),group_id=VALUES(group_id),panel_base=VALUES(panel_base),panel_kind='app'",'iis',$id,$gid,$s['base']);
+        daExec($db,'DELETE FROM delta_app_panel_drafts WHERE ticket=?','s',$ticket);
+        $db->commit();return ['id'=>$id,'group'=>$g['name']];
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
 // When panel_url is an IP and the owner provides a DNS subscription hostname,

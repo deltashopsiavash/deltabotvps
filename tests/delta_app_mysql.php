@@ -70,3 +70,14 @@ $route=daPgRoute(['base'=>'https://panel.example:8000','sub_base_url'=>'https://
 ok($route['api_base']==='https://panel.example:8000'&&$route['api_resolve']===[]);
 $route=daPgRoute(['base'=>'https://192.0.2.1:8000']);
 ok($route['api_base']==='https://192.0.2.1:8000'&&$route['api_resolve']===[]);
+
+$g=daPgParseGroups(['groups'=>[['id'=>42,'name'=>'DeltaApp'],['id'=>7,'name'=>'Disabled','is_disabled'=>true]]]);
+ok($g===[['id'=>42,'name'=>'DeltaApp']]);
+ok(daPgParseGroups(['data'=>['items'=>[['group_id'=>'15','title'=>'Test']]]])===[['id'=>15,'name'=>'Test']]);
+ok(daPgParseGroups(['error'=>'no access'])===null);
+ok(daPgParseGroups(['groups'=>[]])===[]);
+$ticket=bin2hex(random_bytes(12));
+daExec($db,'INSERT INTO delta_app_panel_drafts(ticket,panel_id,panel_url,username,secret,sub_base_url,groups_json,expires) VALUES(?,?,?,?,?,?,?,?)','sisssssi',$ticket,null,'https://example.com','test',$secret,'https://example.com',json_encode($g),time()+600);
+ok(daPanelDraftGet($db,$ticket)['panel_id']===null);
+$bad=false;try{daPanelDraftFinish($db,$ticket,99);}catch(InvalidArgumentException $e){$bad=true;}ok($bad);
+daExec($db,'DELETE FROM delta_app_panel_drafts WHERE ticket=?','s',$ticket);
