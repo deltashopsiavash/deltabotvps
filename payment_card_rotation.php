@@ -353,7 +353,9 @@ function deltaCardShowInvoice($pay) {
         $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
         $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
         $kb=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
+        if(($pay['type']??'')==='DELTA_APP_BUY')$kb=deltaCardAppReturnKeys($kb,$hash);
         $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
+        if(($pay['type']??'')==='DELTA_APP_BUY')$body=deltaCardAppPurchaseText($pay,$card);
         if($smsMode)$body.=deltaSmsPresentationText($binding);
         $sent=sendMessage($body,$kb,'HTML');
         return is_object($sent) && !empty($sent->ok);
@@ -422,8 +424,10 @@ function deltaCardSwitchAction($callback) {
         $smsMode=deltaReceiptApprovalMode($botState,!empty($isChildBot))==='sms';
         $binding=$smsMode?deltaSmsReservePresentation($pay,$card):null;
         $body=deltaCardRenderText($card['number'],$card['holder'],$hash);
+        if(($pay['type']??'')==='DELTA_APP_BUY')$body=deltaCardAppPurchaseText($pay,$card);
         if($smsMode)$body.=deltaSmsPresentationText($binding);
         $keyboard=getCopyPaymentButtons((int)($pay['price']??0),$card['number'],'mainMenu',$hash,(int)$card['id'],$binding['amount_irr']??null);
+        if(($pay['type']??'')==='DELTA_APP_BUY')$keyboard=deltaCardAppReturnKeys($keyboard,$hash);
         $prepared=deltaPrepareEditableTextPayload($body,'HTML');
         $payload=['chat_id'=>$chat_id,'message_id'=>$message_id,
             'text'=>$prepared['text'],'reply_markup'=>$keyboard];
@@ -540,4 +544,22 @@ function deltaCardPhotoPrompt() {
 function deltaCardSmsPrompt() {
     return (string)getSettingValue('MAINVALUE_payment_sms_prompt',
         "📩 لطفاً ساعت و تاریخ دقیق واریزی، شماره کارت مبدأ، شماره کارت مقصد و مبلغ واریزی را در قالب یک پیام ارسال کنید.\n\nجهت لغو روی دکمه زیر بزنید.");
+}
+
+function deltaCardAppPurchaseText(array $pay,array $card): string {
+    $esc=static fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    return "🧾 <b>پرداخت خرید برنامه دلتا</b>\n📦 ".$esc($pay['description']??'')."\n💰 مبلغ: <code>".number_format((int)$pay['price'])."</code> تومان\n\n💳 شماره کارت: <code>".$esc($card['number'])."</code>\n👤 صاحب کارت: ".$esc($card['holder'])."\n🔖 کد پیگیری: <code>".$esc(deltaTrackingCode($pay['hash_id']))."</code>\n\nفقط مبلغ دقیق را به همین کارت واریز کنید. سپس عکس یا پیامک واریزی را بفرستید. اعتبار پرداخت یک ساعت از صدور فاکتور است. پس از پرداخت دوباره واریز نکنید؛ پس از تأیید بانکی حساب برنامه تحویل می‌شود.";
+}
+function deltaCardAppReturnKeys(string $keys,string $hash): string {
+    global $connection;
+    $s=$connection->prepare('SELECT id FROM delta_app_real_orders WHERE pay_hash=? LIMIT 1');
+    $s->bind_param('s',$hash);$s->execute();$o=$s->get_result()->fetch_assoc();$s->close();
+    if(!$o)return $keys;
+    $k=json_decode($keys,true);
+    if(!is_array($k['inline_keyboard']??null))return $keys;
+    foreach($k['inline_keyboard'] as &$row)foreach($row as &$button){
+        if(($button['callback_data']??'')==='mainMenu')$button=['text'=>'↩️ بازگشت به فاکتور','callback_data'=>'dar_invoice_'.$o['id']];
+    }
+    unset($row,$button);
+    return json_encode($k,JSON_UNESCAPED_UNICODE);
 }
