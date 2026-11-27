@@ -170,6 +170,7 @@ do
 			# Restore the one-minute income report and receipt approval worker on
 			# existing installations; old HTTP entries could be missing or overlap.
 			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
+			(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/warnusers.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-warnusers.lock /usr/bin/php /var/www/html/deltabotvps/settings/warnusers.php >/dev/null 2>&1') | crontab -
 			sudo chown -R www-data:www-data /var/www/html/deltabotvps/
 			sudo chmod -R 755 /var/www/html/deltabotvps/
 			sleep 3
@@ -235,12 +236,8 @@ do
 			curl -s -X POST "https://api.telegram.org/bot${bot_token2}/sendMessage" -d chat_id="${bot_value}" -d text="$MESSAGE" -d parse_mode="html"
 			
 			sleep 1
-        
-			url="${bot_url}install/install.php?updateBot"
-			curl $url
+			php /var/www/html/deltabotvps/install/install.php --update || exit 1
 
-   			url3="${bot_url}install/install.php?updateBot"
-			curl $url3
 
 			# Existing mother install ONLY: refresh its private SMS Bridge if it
 			# was previously installed. The bridge remains outside the bot tree.
