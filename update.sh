@@ -140,6 +140,14 @@ do
 				exit $?
 			fi
 
+			# Also repair the private backup directory on the legacy full-update path.
+			for backup_dir in /var/lib/deltabotvps /var/lib/deltabotvps/backups; do
+				[[ ! -L "$backup_dir" && ( ! -e "$backup_dir" || -d "$backup_dir" ) ]] || { echo 'UNSAFE_BACKUP_DIRECTORY'; exit 1; }
+			done
+			install -d -o root -g www-data -m 0750 /var/lib/deltabotvps || exit 1
+			install -d -o www-data -g www-data -m 0700 /var/lib/deltabotvps/backups || exit 1
+			runuser -u www-data -- test -w /var/lib/deltabotvps/backups || exit 1
+
 			# Preserve VPSBot runtime data (if present)
 			VPSBOT_DIR="/opt/vpsbot"
 			VPSBOT_BACKUP_DIR="/root/confdelta/vpsbot_update_backup"
