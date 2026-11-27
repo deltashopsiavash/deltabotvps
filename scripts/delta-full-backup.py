@@ -155,8 +155,9 @@ def create(stage, safety=False):
     with enc.open("rb") as f:
         shutil.copyfileobj(f, sys.stdout.buffer)
 
-def verify(stage, limit=LIMIT):
-    stream = sys.stdin.buffer
+def verify(stage, limit=LIMIT, stream=None):
+    if stream is None:
+        stream = sys.stdin.buffer
     require(stream.read(len(MAGIC)) == MAGIC, "INVALID_HEADER")
     enc = stage / "input.gpg"
     with enc.open("wb") as f:
@@ -203,7 +204,9 @@ def verify(stage, limit=LIMIT):
     # Keep only one pending restore. No unbounded plaintext staging via the web worker.
     ready = ROOT / "verified-pending.tar.gz"
     os.replace(plain, ready)
-    print("VERIFIED_RESTORE_STAGED=" + sha(ready))
+    digest = sha(ready)
+    print("VERIFIED_RESTORE_STAGED=" + digest)
+    return digest
 
 # Restore only explicit paths from the authenticated backup. Never extract an
 # uploaded archive directly onto /. All links are installed after regular files.
@@ -539,6 +542,94 @@ def check_restored_db():
     php = "require '/var/www/html/deltabotvps/baseInfo.php'; mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT); $c=new mysqli('localhost',$dbUserName,$dbPassword,$dbName); require '/var/www/html/deltabotvps/delta_app_core.php'; daVerifyRecoverySecrets($c); $q=$c->query('SELECT db_name FROM reseller_bots WHERE status=1 AND is_deleted=0'); while($r=$q->fetch_assoc()){ $x=new mysqli('localhost',$dbUserName,$dbPassword,$r['db_name']); $x->close(); }"
     run(["runuser", "-u", "www-data", "--", "php", "-r", php], stdout=subprocess.DEVNULL)
 
+# One-time restore: root explicitly approves the exact encrypted file and
+# authorizes a short window. The web worker cannot select arbitrary commands,
+# supply a plaintext digest, change the approval, or run apply directly.
+def arm_restore(expected):
+    import time
+    require(not (ROOT / "queued-restore.gpg").exists(), "RESTORE_ALREADY_QUEUED")
+    approval = ROOT / "restore-approval.json"
+    require(not approval.exists() or json.loads(approval.read_text())["expires"] < time.time(),
+            "RESTORE_ALREADY_ARMED")
+    tmp = ROOT / "restore-approval.new"
+    tmp.write_text(json.dumps({"sha256": expected, "expires": int(time.time()) + 1800}))
+    os.replace(tmp, approval)
+    print("DELTA_RESTORE_ARMED_FOR_30_MINUTES")
+
+def approved_restore():
+    import time
+    approval = ROOT / "restore-approval.json"
+    require(approval.is_file() and not approval.is_symlink(), "RESTORE_NOT_ARMED")
+    data = json.loads(approval.read_text())
+    require(data["expires"] >= time.time(), "RESTORE_APPROVAL_EXPIRED")
+    return data
+
+def queue_restore(stage, stream):
+    approval = approved_restore()
+    queued = ROOT / "queued-restore.gpg"
+    require(not queued.exists(), "RESTORE_ALREADY_QUEUED")
+    candidate = stage / "candidate.gpg"
+    with candidate.open("xb") as out:
+        count = 0
+        while chunk := stream.read(1048576):
+            count += len(chunk)
+            require(count <= LIMIT, "ARCHIVE_TOO_LARGE")
+            out.write(chunk)
+    require(sha(candidate) == approval["sha256"], "APPROVED_FILE_HASH_MISMATCH")
+    with candidate.open("rb") as f:
+        digest = verify(stage, LIMIT, f)
+    # Exercise the actual archive and target identity before any replacement.
+    check = stage / "rehearsal"
+    check.mkdir()
+    rehearsal(check, digest)
+    verify_target(check / "runtime/var/www/html/deltabotvps/baseInfo.php",
+                  pathlib.Path("/var/www/html/deltabotvps/baseInfo.php"))
+    os.replace(candidate, queued)
+    try:
+        run(["systemd-run", "--unit=delta-full-restore-once", "--on-active=8s",
+             "--property=Type=oneshot", "--property=TimeoutStartSec=1800",
+             "/usr/local/sbin/delta-full-backup", "auto-apply"], stdout=subprocess.DEVNULL)
+    except Exception:
+        queued.unlink(missing_ok=True)
+        raise
+    print("DELTA_RESTORE_QUEUED")
+
+def restore_notification(values, message):
+    # Only the locally configured owner's private chat; never include secrets.
+    import urllib.request, urllib.parse
+    try:
+        url = "https://api.telegram.org/bot" + values["botToken"] + "/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": values["admin"], "text": message}).encode()
+        with urllib.request.urlopen(url, data=data, timeout=15) as response:
+            json.load(response)
+    except Exception:
+        print("RESTORE_NOTIFICATION_FAILED", file=sys.stderr)
+
+def auto_apply(stage):
+    values = base_values(pathlib.Path("/var/www/html/deltabotvps/baseInfo.php"))
+    queued = ROOT / "queued-restore.gpg"
+    approval = ROOT / "restore-approval.json"
+    try:
+        data = approved_restore()
+        require(queued.is_file() and not queued.is_symlink() and sha(queued) == data["sha256"],
+                "APPROVED_FILE_HASH_MISMATCH")
+        # Consume authorization before attempting a destructive action. No retry
+        # without a new independent root approval.
+        approval.unlink()
+        with queued.open("rb") as f:
+            digest = verify(stage, LIMIT, f)
+        work = stage / "apply"
+        work.mkdir()
+        apply_verified(work, digest)
+        restore_notification(values, "✅ اطلاعات بکاپ کامل بازگردانی شد. اکنون سلامت ربات، نمایندگی و سرویس‌های خارجی را بررسی کنید.")
+    except Exception as e:
+        reason = str(e) if isinstance(e, RuntimeError) and re.fullmatch(r"[A-Z_]+", str(e)) else type(e).__name__
+        restore_notification(values, "❌ بازیابی کامل متوقف شد. کد بررسی: " + reason + "\nاگر جایگزینی آغاز شده باشد سرویس‌ها برای جلوگیری از خرابی بیشتر متوقف می‌مانند.")
+        raise
+    finally:
+        queued.unlink(missing_ok=True)
+        approval.unlink(missing_ok=True)
+
 def main():
     os.umask(0o077)
     require(os.geteuid() == 0, "ROOT_REQUIRED")
@@ -547,8 +638,8 @@ def main():
     require(KEY.is_file() and not KEY.is_symlink() and KEY.stat().st_uid == 0 and not KEY.stat().st_mode & 0o077, "RECOVERY_KEY_REQUIRED")
     require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety")) or
-            (len(sys.argv) == 3 and mode in ("apply", "prepare-install", "rehearse", "fresh-apply") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
+    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety", "queue-restore", "auto-apply")) or
+            (len(sys.argv) == 3 and mode in ("apply", "prepare-install", "rehearse", "fresh-apply", "arm-restore") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
     (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
     # create-safety runs only as root while its parent holds the lock.
     if mode == "create-safety":
@@ -559,7 +650,13 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="work-", dir=ROOT) as d:
             stage = pathlib.Path(d)
-            if mode == "apply":
+            if mode == "arm-restore":
+                arm_restore(sys.argv[2])
+            elif mode == "queue-restore":
+                queue_restore(stage, sys.stdin.buffer)
+            elif mode == "auto-apply":
+                auto_apply(stage)
+            elif mode == "apply":
                 apply_verified(stage, sys.argv[2])
             elif mode == "prepare-install":
                 prepare_install(stage, sys.argv[2])
