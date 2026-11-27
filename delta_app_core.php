@@ -76,7 +76,8 @@ function daValidUrl(string $url): bool {
     return strlen($url)<=512 && preg_match('~^https://pmainp1\.deltamarket2\.ir:8000/sub/[A-Za-z0-9._\~-]+$~D',$url)===1;
 }
 function daName(string $name): bool {return preg_match('/^[a-z0-9_]{4,48}$/D',$name)===1;}
-function daPassword(): string {return (string)random_int(10000,99999);}
+// 128 bits of randomness; existing passwords remain valid until explicitly reset.
+function daPassword(): string {return rtrim(strtr(base64_encode(random_bytes(16)),'+/','-_'),'=');}
 function daAutoCreate(mysqli $db,int $plan): array {
     for($i=0;$i<40;$i++){
         $name='delta'.random_int(10000,99999);
@@ -589,6 +590,14 @@ function daRefreshBroadcast(mysqli $db,bool $reconnect): array {
 
 // Device IDs are app-scoped, not a hardware attestation. The account row
 // serializes login, migration, and revocation so no extra slot is granted.
+// Absolute lifetime for new sessions; legacy tokens are capped on next use.
+function daSessionTtl(): int {return 90*86400;}
+function daSessionLookup(mysqli $db,string $hash,int $now): ?array {
+    return daRow($db,'SELECT s.account_id,d.id FROM delta_app_sessions s JOIN delta_app_devices d ON d.token_hash=s.token_hash AND d.account_id=s.account_id WHERE s.token_hash=? AND s.expires>?','si',$hash,$now);
+}
+function daSessionCap(mysqli $db,string $hash,int $now): void {
+    daExec($db,'UPDATE delta_app_sessions SET expires=LEAST(expires,?) WHERE token_hash=? AND expires>?','isi',$now+daSessionTtl(),$hash,$now);
+}
 function daDeviceLogin(mysqli $db,string $name,string $password,string $device,string $model,string $legacy=''): array {
     $db->begin_transaction();
     try{
@@ -614,7 +623,7 @@ function daDeviceLogin(mysqli $db,string $name,string $password,string $device,s
             daExec($db,'INSERT INTO delta_app_devices(account_id,device_hash,token_hash,model,created,last_seen) VALUES(?,?,?,?,?,?)','isssii',$id,$dh,$hash,$model,$now,$now);
         }
         daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=? AND token_hash NOT IN (SELECT token_hash FROM delta_app_devices WHERE account_id=?)','ii',$id,$id);
-        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',$hash,$id,$now+315360000);
+        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',$hash,$id,$now+daSessionTtl());
         $db->commit();
         return ['account'=>$a,'token'=>$token];
     }catch(Throwable $e){$db->rollback();throw $e;}

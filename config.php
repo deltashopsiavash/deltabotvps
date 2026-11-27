@@ -2518,26 +2518,10 @@ function get_client_ip(){
 
 
 function check($return = false){
-    global $range;
-    $ip = get_client_ip();
-    // Optional: if you set Telegram webhook secret_token, verify it here
-    if(isset($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']) && isset($GLOBALS['botToken'])){
-        $expected = hash('sha256', $GLOBALS['botToken']);
-        if(hash_equals($expected, $_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'])){
-            return true;
-        }
-    }
-    foreach ($range as $rg) {
-        if (ip_in_range($ip, $rg)) {
-            return true;
-        }
-    }
-    if ($return == true) {
-        return false;
-    }
-
-    die('You do not have access');
-
+    if(deltaWebhookAuthorized($_SERVER,(string)($GLOBALS['botToken']??'')))return true;
+    if($return == true)return false;
+    http_response_code(403);
+    exit('Forbidden');
 }
 function curl_get_file_contents($URL){
     $c = curl_init();
@@ -2563,6 +2547,12 @@ function ip_in_range($ip, $range){
     return (($ip_decimal & $netmask_decimal) == ($range_decimal & $netmask_decimal));
 }
 
+// Authenticate bot requests before processing untrusted update data.
+if(PHP_SAPI!=='cli'&&basename((string)($_SERVER['SCRIPT_FILENAME']??''))==='bot.php'){
+    if(($_SERVER['REQUEST_METHOD']??'')!=='POST'){http_response_code(405);exit;}
+    if(isset($_GET['bid'])&&empty($isChildBot)){http_response_code(403);exit;}
+    check();
+}
 $time = time();
 $rawUpdate = file_get_contents("php://input");
 $update = json_decode($rawUpdate);

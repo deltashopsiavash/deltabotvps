@@ -14,4 +14,11 @@ $nonStandard=deltaResellerWebhookCandidates(9,'https://working.example.org/teleg
 assertCandidate($nonStandard[0],'https://working.example.org/telegram/bot.php?bid=9','mother hook path may be differently named');
 assertCandidate(deltaResellerWebhookCandidates(0,'https://working.example.org/bot.php','https://x.example.org/'),[],'invalid instance id');
 assertCandidate(deltaResellerWebhookCandidates(2,'http://insecure.example.org/bot.php','http://old.example.org/'),[],'never register HTTP');
-echo "Reseller webhook URL selection: PASS\n";
+$token='fixture-only-token';
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'203.0.113.10','HTTP_X_FORWARDED_FOR'=>'149.154.167.1','HTTP_CF_CONNECTING_IP'=>'149.154.167.1','HTTP_X_REAL_IP'=>'149.154.167.1'],$token),false,'spoofed forwarding headers rejected');
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'203.0.113.10','HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'=>hash('sha256',$token)],$token),true,'correct secret works behind proxy');
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'149.154.167.1','HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'=>'wrong'],$token),false,'invalid supplied secret never falls back');
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'149.154.167.1'],$token),false,'missing secret rejected even from Telegram range');
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'2001:db8::1'],$token),false,'untrusted IPv6 denied');
+assertCandidate(deltaWebhookAuthorized(['REMOTE_ADDR'=>'149.154.167.1'],''),false,'empty token rejected');
+echo "Reseller webhook URL and authentication: PASS\n";

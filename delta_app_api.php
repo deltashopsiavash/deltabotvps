@@ -34,9 +34,10 @@ try{
     }elseif($action==='session'||$action==='status'||$action==='logout'||$action==='devices'||$action==='revoke_device'||$action==='news'||$action==='news_read'||$action==='news_dismiss'){
         $token=$j['token']??'';
         if(!is_string($token)||!preg_match('/^[a-f0-9]{64}$/D',$token))daRespond(401,['error'=>'session']);
-        $h=hash('sha256',$token);$s=daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND expires>? AND token_hash IN (SELECT token_hash FROM delta_app_devices)','si',$h,time());
+        $h=hash('sha256',$token);$s=daSessionLookup($db,$h,time());
         if(!$s)daRespond(401,['error'=>'session']);
-        $dev=daRow($db,'SELECT id FROM delta_app_devices WHERE token_hash=?','s',$h);if(!$dev)daRespond(401,['error'=>'session']);
+        $dev=['id'=>$s['id']];
+        daSessionCap($db,$h,time());
         if($action==='logout'){daDeviceRevoke($db,(int)$s['account_id'],(int)$dev['id']);daRespond(200,['ok'=>true]);}
         $a=daAccount($db,(int)$s['account_id']);if(!$a||(int)$a['active']!==1)daRespond(401,['error'=>'session']);
         if($action==='session'&&array_key_exists('stable_device_id',$j)){
@@ -66,6 +67,6 @@ try{
     $v=daPgLive($db,$a,$action!=='status');
     // Recheck after network I/O; revoked sessions never receive configs.
     $fresh=daAccount($db,(int)$a['id']);
-    if(!$fresh||(int)$fresh['active']!==1||!daRow($db,'SELECT account_id FROM delta_app_sessions WHERE token_hash=? AND account_id=? AND expires>?','sii',hash('sha256',$token),(int)$a['id'],time()))daRespond(401,['error'=>'session']);
+    if(!$fresh||(int)$fresh['active']!==1||(int)(daSessionLookup($db,hash('sha256',$token),time())['account_id']??0)!==(int)$a['id'])daRespond(401,['error'=>'session']);
     daRespond(200,['token'=>$token,'username'=>$a['username'],'configs'=>$v['configs'],'quota_enforced'=>true,'gb'=>$v['limit_bytes']/1073741824,'expires'=>$v['expires'],'server_now'=>time(),'created'=>(int)$a['created'],'used_bytes'=>$v['used_bytes'],'remaining_bytes'=>$v['remaining_bytes'],'limit_bytes'=>$v['limit_bytes'],'can_connect'=>$v['can_connect'],'panel_status'=>$v['panel_status']]+daRefreshSettings($db));
 }catch(Throwable $e){daRespond(503,['error'=>'unavailable']);}

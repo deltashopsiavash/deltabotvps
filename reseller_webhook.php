@@ -4,6 +4,11 @@
  * No CLI/background worker dependency and no optimistic success messages.
  * This file is intentionally usable from pure PHP tests without loading config.php.
  */
+// Telegram's configured secret is mandatory, including through reverse proxies.
+function deltaWebhookAuthorized(array $server,string $botToken): bool {
+    $provided=$server['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??'';
+    return $botToken!==''&&is_string($provided)&&preg_match('/^[a-f0-9]{64}$/D',$provided)===1&&hash_equals(hash('sha256',$botToken),$provided);
+}
 function deltaResellerWebhookCandidates($rid,$motherWebhook,$configuredBase,$requestHost='',$requestScript='',$https=false){
     $rid=(int)$rid;
     if($rid<=0)return [];
@@ -95,7 +100,7 @@ function deltaResellerWebhookSetup($rid){
     $last='آدرس وب‌هوک قابل ثبت نیست';
     foreach($candidates as $url){
         $res=botWithToken((string)$row['bot_token'],'setWebhook',
-            ['url'=>$url,'drop_pending_updates'=>'false']);
+            ['url'=>$url,'drop_pending_updates'=>'false','secret_token'=>hash('sha256',(string)$row['bot_token'])]);
         if(!is_array($res)||empty($res['ok'])){
             $last=(string)($res['description']??'درخواست تلگرام پاسخ موفق نداشت');
             continue;

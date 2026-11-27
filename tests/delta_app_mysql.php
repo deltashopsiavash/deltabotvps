@@ -13,7 +13,8 @@ $tag=bin2hex(random_bytes(6));
 daExec($db,'INSERT INTO delta_app_plans(name,gb,days,price) VALUES(?,?,?,?)','siii',$tag,10,30,100000);
 $p=$db->insert_id;
 $secret=daCreate($db,$p,'test_'.$tag);daCreate($db,$p,'other_'.$tag);
-$auto=daAutoCreate($db,$p);ok(preg_match('/^delta[0-9]{5}$/D',$auto['username'])===1);ok(preg_match('/^[0-9]{5}$/D',$auto['password'])===1);$autoRow=daRow($db,'SELECT password_hash FROM delta_app_accounts WHERE username=?','s',$auto['username']);ok(password_verify($auto['password'],$autoRow['password_hash']));
+$generated=[];for($i=0;$i<100;$i++){$password=daPassword();ok(preg_match('/^[A-Za-z0-9_-]{22}$/D',$password)===1);ok(!isset($generated[$password]));$generated[$password]=true;}
+$auto=daAutoCreate($db,$p);ok(preg_match('/^delta[0-9]{5}$/D',$auto['username'])===1);ok(preg_match('/^[A-Za-z0-9_-]{22}$/D',$auto['password'])===1);$autoRow=daRow($db,'SELECT password_hash FROM delta_app_accounts WHERE username=?','s',$auto['username']);ok(password_verify($auto['password'],$autoRow['password_hash']));
 $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE username=?','s','test_'.$tag);
 ok($a&&password_verify($secret,$a['password_hash'])&&$a['stock_id']===null);
 ok(daAllowed(daAccount($db,(int)$a['id'])));
