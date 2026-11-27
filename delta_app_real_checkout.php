@@ -489,23 +489,59 @@ function daRealRegisterReceipt(mysqli $db,string $hash,int $buyer,string $kind,i
         $db->commit();return true;
     }catch(Throwable $e){$db->rollback();return false;}
 }
+// Only the mother bot's own Telegram file_id is stored; no APK is downloaded by PHP.
+function daDownloadSettings(mysqli $db): array {
+    if(!$db->query("CREATE TABLE IF NOT EXISTS delta_app_download_settings (id TINYINT PRIMARY KEY, url VARCHAR(2048) NOT NULL, file_id VARCHAR(512) NOT NULL DEFAULT '', file_name VARCHAR(255) NOT NULL DEFAULT '') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"))throw new RuntimeException('download settings schema');
+    daExec($db,'INSERT IGNORE INTO delta_app_download_settings(id,url) VALUES(1,?)','s','https://github.com/deltacoms/deltavpn/releases/download/v1.7.5/DeltaVPN-1.7.5-arm64.apk');
+    return daRow($db,'SELECT url,file_id,file_name FROM delta_app_download_settings WHERE id=1');
+}
+function daDownloadSetUrl(mysqli $db,string $url): void {
+    $p=parse_url($url);
+    if(strlen($url)>2048||!filter_var($url,FILTER_VALIDATE_URL)||!is_array($p)||strtolower($p['scheme']??'')!=='https'||empty($p['host'])||isset($p['user'])||isset($p['pass']))throw new InvalidArgumentException('لینک مستقیم HTTPS معتبر بفرستید.');
+    daDownloadSettings($db);
+    daExec($db,'UPDATE delta_app_download_settings SET url=? WHERE id=1','s',$url);
+}
+function daDownloadSetFile(mysqli $db,string $id,string $name,int $size): void {
+    if(!preg_match('/^[A-Za-z0-9_-]{10,512}$/D',$id)||strlen($name)>255||!preg_match('/\.apk$/iD',$name)||$size<=0||$size>50*1024*1024)throw new InvalidArgumentException('فایل APK حداکثر ۵۰ مگابایت را به‌صورت فایل ارسال کنید.');
+    daDownloadSettings($db);
+    daExec($db,'UPDATE delta_app_download_settings SET file_id=?,file_name=? WHERE id=1','ss',$id,$name);
+}
+function daDownloadCaption(array $o,string $hash,string $username,string $password,bool $document): string {
+    $esc=fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+    $msg="✅ اشتراک دلتا تحویل شد\n~~~~~~~~~~~~~~~\nپلن: ".$esc($o['name'])."\n~~~~~~~~~~~~~~~\n📋کد فاکتور: <code>".$esc($hash)."</code>\n•••••••••••••••••••••••••••••\n👤نام کاربری: <code>".$esc($username)."</code>\n🔑رمز: <code>".$esc($password)."</code>\n◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇\n💵مبلغ: ".number_format((int)$o['price'])." تومان";
+    return $msg.($document?"\n\n📎لطفا فایل رو دانلود نمایید و نام کاربری و رمز عبور رو در برنامه بالا وارد نمایید. درصورتی که نتوانستید فایل را از اینجا دانلود کنید از طریق لینک پایین مستقیم دانلود کنید🏷":"\n\n📎 برنامه را از دکمه دانلود مستقیم دریافت کنید و نام کاربری و رمز عبور را در برنامه وارد نمایید.");
+}
+function daDownloadOk($response): bool {
+    return is_object($response)?!empty($response->ok):(is_array($response)&&!empty($response['ok']));
+}
+function daSendPurchasedApp(array $settings,array $o,string $hash,string $username,string $password): bool {
+    $keys=json_encode(['inline_keyboard'=>[[['text'=>'📎دانلود مستقیم','url'=>$settings['url']]]]],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+    $buyer=(int)$o['buyer'];
+    if($settings['file_id']!==''){
+        try{
+            $response=bot('sendDocument',['chat_id'=>$buyer,'document'=>$settings['file_id'],'caption'=>daDownloadCaption($o,$hash,$username,$password,true),'parse_mode'=>'HTML','reply_markup'=>$keys]);
+            if(daDownloadOk($response))return true;
+        }catch(Throwable $e){error_log('Delta APK delivery transport failed');}
+    }
+    // Preserve delivery credentials even when a saved file_id is absent or invalid.
+    try{return daDownloadOk(sendMessage(daDownloadCaption($o,$hash,$username,$password,false),$keys,'HTML',$buyer));}
+    catch(Throwable $e){error_log('Delta subscription delivery notification failed');return false;}
+}
 /** Recoverable delivery: password may be reset in the owner menu if Telegram fails. */
 function daRealDeliverPaidHash(mysqli $db,string $hash): array {
     $o=daRealSyncPaid($db,$hash);
     $renew=daRenewLink($db,(int)$o['id']);if($renew)return daRenewApply($db,$o,$renew);
+    // Load delivery settings before provisioning so a settings error cannot lose a new password.
+    $settings=daDownloadSettings($db);
     $r=daRealDeliver($db,(int)$o['buyer'],(int)$o['id']);
     $o=$r['order'];$a=daAccount($db,(int)$o['account_id']);
     if(!$a||$o['state']!=='delivered')throw new RuntimeException('delivery not ready');
+    if($r['password']===null)return ['order'=>$o,'notified'=>false,'already_delivered'=>true];
+    $notified=daSendPurchasedApp($settings,$o,$hash,$a['username'],$r['password']);
     $esc=fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
-    $msg="✅ اشتراک دلتا تحویل شد\nپلن: ".$esc($o['name'])."\nکد فاکتور: <code>".$esc($hash)."</code>\nنام کاربری: <code>".$esc($a['username'])."</code>";
-    if($r['password']!==null)$msg.="\nرمز: <code>".$esc($r['password'])."</code>";
-    else $msg.="\nدر صورت نیاز، رمز را از سرویس‌های من تغییر دهید.";
-    $msg.="\nمبلغ: ".number_format((int)$o['price'])." تومان";
-    $sent=sendMessage($msg,null,'HTML',(int)$o['buyer']);
-    if($r['password']!==null){
-        sendToAdmins('✅ خرید موفق برنامه دلتا'."\n".deltaUserShortInfo((int)$o['buyer'])."\n👤 نام کاربری برنامه: <code>".$esc($a['username'])."</code>\n📦 پلن: ".$esc($o['name'])."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n💳 روش پرداخت: ".($o['method']==='wallet'?'موجودی':'کارت به کارت')."\n".deltaTrackingLine($hash),null,'HTML');
-    }
-    return ['order'=>$o,'notified'=>is_object($sent)&&!empty($sent->ok)];
+    try{sendToAdmins('✅ خرید موفق برنامه دلتا'."\n".deltaUserShortInfo((int)$o['buyer'])."\n👤 نام کاربری برنامه: <code>".$esc($a['username'])."</code>\n📦 پلن: ".$esc($o['name'])."\n💰 مبلغ: ".number_format((int)$o['price'])." تومان\n💳 روش پرداخت: ".($o['method']==='wallet'?'موجودی':'کارت به کارت')."\n".deltaTrackingLine($hash),null,'HTML');}
+    catch(Throwable $e){error_log('Delta purchase admin report failed');}
+    return ['order'=>$o,'notified'=>$notified];
 }
 
 function daRealPrepareCard(mysqli $db,int $buyer,int $id): array {

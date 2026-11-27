@@ -45,7 +45,7 @@ update_delta_app_only() (
     trap cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    files=(delta_app_core.php delta_app_admin.php delta_app_api.php admin_service_manager.php)
+    files=(delta_app_core.php delta_app_real_checkout.php delta_app_admin.php delta_app_api.php admin_service_manager.php)
     for f in "${files[@]}"; do
         if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
             echo "Unexpected file type: $f" >&2
@@ -55,7 +55,10 @@ update_delta_app_only() (
     done
     git -c safe.directory="$local_dir" fetch --no-tags https://github.com/deltashopsiavash/deltabotvps.git refs/heads/main
     rev=$(git -c safe.directory="$local_dir" rev-parse FETCH_HEAD)
-    for f in delta_app_core.php delta_app_admin.php delta_app_api.php; do
+    command -v gh >/dev/null || { echo "GITHUB_CLI_REQUIRED_FOR_CI_CHECK"; exit 1; }
+    passed=$(gh run list -R deltashopsiavash/deltabotvps --commit "$rev" --limit 40 --json workflowName,status,conclusion --jq 'any(.[]; .workflowName=="PHP Lint" and .status=="completed" and .conclusion=="success")')
+    [[ "$passed" == true ]] || { echo "DELTA_APP_CI_NOT_PASSED"; exit 1; }
+    for f in delta_app_core.php delta_app_real_checkout.php delta_app_admin.php delta_app_api.php; do
         git -c safe.directory="$local_dir" show "$rev:$f" > "$stage/$f"
     done
     python3 - "$stage" <<'PY'

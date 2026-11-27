@@ -295,4 +295,33 @@ check(count(daDeviceList($db,$aidDevice))===2&&(bool)daRow($db,'SELECT token_has
 daDeviceRevoke($db,$aidDevice,$firstId);
 check(count(daDeviceList($db,$aidDevice))===1&&(bool)daRow($db,'SELECT token_hash FROM delta_app_sessions WHERE token_hash=?','s',hash('sha256',$other['token'])),'owner recovery removes only selected device');
 daExec($db,'UPDATE delta_app_accounts SET password_hash=?,device_limit=? WHERE id=?','sii',$accountDevice['password_hash'],(int)$accountDevice['device_limit'],$aidDevice);
+// APK delivery uses a Telegram file_id and an owner-configured HTTPS link.
+function bot($method,$payload=[]){
+    $GLOBALS['delivery_calls'][]=[$method,$payload];
+    return (object)['ok'=>!empty($GLOBALS['fixture_document_ok'])];
+}
+$settings=daDownloadSettings($db);
+check(str_contains($settings['url'],'deltacoms/deltavpn'),'default download uses customer repository');
+rejected(fn()=>daDownloadSetUrl($db,'http://example.invalid/app.apk'),'insecure download rejected');
+rejected(fn()=>daDownloadSetUrl($db,'https://user:pass@example.invalid/app.apk'),'embedded URL credentials rejected');
+daDownloadSetUrl($db,'https://example.invalid/DeltaVPN.apk');
+rejected(fn()=>daDownloadSetFile($db,'fixture_file_id_123','test.zip',32),'non-APK rejected');
+rejected(fn()=>daDownloadSetFile($db,'fixture_file_id_123','test.apk',51*1024*1024),'oversized APK rejected');
+daDownloadSetFile($db,'fixture_file_id_123','DeltaVPN.apk',32562167);
+$settings=daDownloadSettings($db);
+check($settings['file_id']==='fixture_file_id_123'&&$settings['file_name']==='DeltaVPN.apk','document metadata persisted');
+$order=['buyer'=>123456,'name'=>'Plan <test>','price'=>30000];
+$GLOBALS['fixture_document_ok']=true;
+$GLOBALS['delivery_calls']=[];$before=count($GLOBALS['messages']??[]);
+check(daSendPurchasedApp($settings,$order,'invoice123','fixture_user','pw<&'),'APK delivery succeeds');
+[$method,$payload]=$GLOBALS['delivery_calls'][0];
+check($method==='sendDocument'&&$payload['chat_id']===123456&&$payload['document']===$settings['file_id'],'APK sent to correct customer using file id');
+check(str_contains($payload['caption'],'Plan &lt;test&gt;')&&str_contains($payload['caption'],'pw&lt;&amp;')&&str_contains($payload['caption'],'30,000'),'caption escapes values and preserves amount');
+check(json_decode($payload['reply_markup'],true)['inline_keyboard'][0][0]['url']===$settings['url'],'download button uses saved URL');
+check(count($GLOBALS['messages']??[])===$before,'successful document has no separate credentials message');
+$GLOBALS['fixture_document_ok']=false;
+check(daSendPurchasedApp($settings,$order,'invoice123','fixture_user','pw<&'),'failed document falls back to credentials text');
+check(count($GLOBALS['messages']??[])===$before+1,'fallback sends exactly one text message');
+$settings['file_id']='';$n=count($GLOBALS['delivery_calls']);
+check(daSendPurchasedApp($settings,$order,'invoice123','fixture_user','pw<&')&&count($GLOBALS['delivery_calls'])===$n,'unconfigured file uses text without attempting document');
 echo "All isolated checkout fixture checks passed.\n";
