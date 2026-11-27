@@ -1,4 +1,5 @@
 <?php
+if(PHP_SAPI!=='cli'){http_response_code(404);exit;}
 require_once __DIR__ . "/../baseInfo.php";
 $connection = new mysqli('localhost',$dbUserName,$dbPassword,$dbName);
 $arrays = [
