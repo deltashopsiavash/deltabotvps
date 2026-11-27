@@ -4,6 +4,25 @@
  * No CLI/background worker dependency and no optimistic success messages.
  * This file is intentionally usable from pure PHP tests without loading config.php.
  */
+// Never use client-supplied forwarding headers as proof of Telegram origin.
+function deltaWebhookAuthorized(array $server,string $botToken,array $ranges): bool {
+    if($botToken==='')return false;
+    if(array_key_exists('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN',$server)){
+        $provided=$server['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'];
+        return is_string($provided)&&hash_equals(hash('sha256',$botToken),$provided);
+    }
+    $ip=$server['REMOTE_ADDR']??'';
+    if(!is_string($ip)||!filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4))return false;
+    $address=ip2long($ip);
+    foreach($ranges as $cidr){
+        [$network,$prefix]=explode('/',$cidr,2);
+        $bits=(int)$prefix;
+        if($bits<1||$bits>32||!filter_var($network,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4))continue;
+        $mask=(-1)<<(32-$bits);
+        if(($address&$mask)===(ip2long($network)&$mask))return true;
+    }
+    return false;
+}
 function deltaResellerWebhookCandidates($rid,$motherWebhook,$configuredBase,$requestHost='',$requestScript='',$https=false){
     $rid=(int)$rid;
     if($rid<=0)return [];
@@ -95,7 +114,7 @@ function deltaResellerWebhookSetup($rid){
     $last='آدرس وب‌هوک قابل ثبت نیست';
     foreach($candidates as $url){
         $res=botWithToken((string)$row['bot_token'],'setWebhook',
-            ['url'=>$url,'drop_pending_updates'=>'false']);
+            ['url'=>$url,'drop_pending_updates'=>'false','secret_token'=>hash('sha256',(string)$row['bot_token'])]);
         if(!is_array($res)||empty($res['ok'])){
             $last=(string)($res['description']??'درخواست تلگرام پاسخ موفق نداشت');
             continue;
