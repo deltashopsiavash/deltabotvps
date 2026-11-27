@@ -76,7 +76,8 @@ function daValidUrl(string $url): bool {
     return strlen($url)<=512 && preg_match('~^https://pmainp1\.deltamarket2\.ir:8000/sub/[A-Za-z0-9._\~-]+$~D',$url)===1;
 }
 function daName(string $name): bool {return preg_match('/^[a-z0-9_]{4,48}$/D',$name)===1;}
-function daPassword(): string {return (string)random_int(10000,99999);}
+// 128 bits of randomness; existing passwords remain valid until explicitly reset.
+function daPassword(): string {return rtrim(strtr(base64_encode(random_bytes(16)),'+/','-_'),'=');}
 function daAutoCreate(mysqli $db,int $plan): array {
     for($i=0;$i<40;$i++){
         $name='delta'.random_int(10000,99999);
