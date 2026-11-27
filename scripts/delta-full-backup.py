@@ -213,7 +213,8 @@ def unpack_runtime(archive, dest, roots):
             if m.issym():
                 target = m.linkname
                 normalized = posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join(posixpath.dirname(name), target))
-                require(safe_name(normalized) and under(normalized, roots), "UNSAFE_RUNTIME_LINK")
+                package_links = ("usr/share/phpmyadmin", "usr/share/javascript", "etc/ssl/certs", "etc/alternatives")
+                require(safe_name(normalized) and (under(normalized, roots) or (target.startswith("/") and under(normalized, package_links))), "UNSAFE_RUNTIME_LINK")
                 links.append((out, m))
             elif m.isdir():
                 out.mkdir(parents=True, exist_ok=True)
@@ -378,6 +379,35 @@ def apply_verified(work, expected_sha):
             print("RESTORE_FAILED_WRITERS_STOPPED; SAFETY_BACKUP=" + str(safety), file=sys.stderr)
         raise
 
+def prepare_install(work, expected_sha):
+    # Before the original bot is installed, recover the exact private install
+    # settings from the verified archive. No Telegram or MySQL changes here.
+    verified = ROOT / "verified-pending.tar.gz"
+    require(verified.is_file() and not verified.is_symlink() and sha(verified) == expected_sha,
+            "APPROVAL_DIGEST_MISMATCH")
+    manifest = unpack_outer(verified, work)
+    runtime = work / "runtime"
+    runtime.mkdir()
+    unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
+    private = pathlib.Path(tempfile.mkdtemp(prefix="delta-install-credentials-", dir="/root"))
+    for rel, name in (
+        ("var/www/html/deltabotvps/baseInfo.php", "baseInfo.php"),
+        ("opt/vpsbot/.env", "vpsbot.env"),
+        ("etc/delta-sms-bridge.php", "sms-bridge.php"),
+        ("root/delta-sms-bridge-pairing.txt", "sms-pairing.txt"),
+    ):
+        src = runtime / rel
+        if not src.exists():
+            continue
+        require(src.is_file() and not src.is_symlink() and not any(p.is_symlink() for p in src.parents), "INVALID_CREDENTIAL_FILE")
+        target = private / name
+        shutil.copyfile(src, target)
+        os.chmod(target, 0o600)
+    require((private / "baseInfo.php").is_file() and (private / "vpsbot.env").is_file(), "INSTALL_SETTINGS_MISSING")
+    base_values(private / "baseInfo.php")
+    print("PRIVATE_INSTALL_CREDENTIALS=" + str(private))
+    print("Use the original domain, bot token, admin ID and DB username/password. Never paste these files into chat.")
+
 def main():
     os.umask(0o077)
     require(os.geteuid() == 0, "ROOT_REQUIRED")
@@ -387,7 +417,7 @@ def main():
     require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety")) or
-            (len(sys.argv) == 3 and mode == "apply" and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
+            (len(sys.argv) == 3 and mode in ("apply", "prepare-install") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
     (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
     # create-safety runs only as root while its parent holds the lock.
     if mode == "create-safety":
@@ -400,6 +430,8 @@ def main():
             stage = pathlib.Path(d)
             if mode == "apply":
                 apply_verified(stage, sys.argv[2])
+            elif mode == "prepare-install":
+                prepare_install(stage, sys.argv[2])
             elif mode == "create":
                 create(stage)
             else:
