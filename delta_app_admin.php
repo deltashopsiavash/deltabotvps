@@ -299,7 +299,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_trialreleaseok_([1-9]\d{0,15})$/D',$cb,$m)){
             daRealSchema($connection);daTrialRelease($connection,(int)$m[1]);daSend('✅ اجازه دریافت مجدد ثبت شد.',[daBtn('بازگشت','da_trial')]);return true;
         }
-        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('🔔 اطلاع‌رسانی','da_news_inbox'),daBtn('📢 خبر شناور','da_news_float'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('📎 تنظیم دانلود','da_download'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
+        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('🔔 اطلاع‌رسانی','da_news_inbox'),daBtn('📢 خبر شناور','da_news_float'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('📎 تنظیم دانلود','da_download'),daBtn('📲 مدیریت نسخه جدید برنامه','da_appupdate'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_cats'){setUser();$rows=[];foreach(daRows($connection,'SELECT * FROM delta_app_categories ORDER BY id') as $r)$rows[]=daBtn($r['name'],'da_cat_'.$r['id']);$rows[]=daBtn('ساخت دسته‌بندی','da_catadd');$rows[]=daBtn('بازگشت','da_menuplans');daSend('دسته‌بندی‌ها',$rows);return true;}
         if($cb==='da_catadd'||preg_match('/^da_catedit_(\d+)$/D',$cb)){setUser($cb);daSend('نام دسته‌بندی را وارد کنید.',[daBtn('انصراف','da_cats')]);return true;}
         if(preg_match('/^da_cat_(\d+)$/D',$cb,$m)){setUser();$r=daRow($connection,'SELECT * FROM delta_app_categories WHERE id=?','i',(int)$m[1]);if(!$r)throw new InvalidArgumentException('دسته یافت نشد.');daSend(daEsc($r['name']),[daBtn('تغییر نام','da_catedit_'.$m[1]),daBtn('حذف دسته','da_catask_'.$m[1]),daBtn('بازگشت','da_cats')]);return true;}
@@ -336,6 +336,13 @@ function deltaAppAdminHandle(): bool {
             if($step!=='da_refconfirm')throw new InvalidArgumentException('دوباره به‌روزرسانی همین الان را انتخاب کنید.');
             $r=daRefreshBroadcast($connection,$cb==='da_refrestart');setUser();
             daSend('✅ فرمان #'.$r['refresh_revision'].' ثبت شد. دریافت و اجرای فرمان به آنلاین بودن و فعالیت برنامه بستگی دارد؛ اجرای همه گوشی‌ها هنوز تأیید نشده.',[daBtn('بازگشت','da_refresh')]);return true;
+        }
+        if($cb==='da_appupdate'){setUser();daUpdateAdminView($connection);return true;}
+        if($cb==='da_appupdate_on'){
+            setUser();daUpdateEnable($connection);daUpdateAdminView($connection,'✅ آخرین نسخه رسمی ثبت و نمایش برای نسخه‌های قدیمی فعال شد.');return true;
+        }
+        if($cb==='da_appupdate_off'){
+            setUser();daUpdateDisable($connection);daUpdateAdminView($connection,'✅ نمایش دکمه غیرفعال شد.');return true;
         }
         if($cb==='da_download'){setUser();daDownloadAdminView($connection);return true;}
         if($cb==='da_download_url'){setUser('da_download_url');daSend('لینک مستقیم HTTPS دانلود APK را ارسال کنید.',[daBtn('انصراف','da_download')]);return true;}
@@ -778,4 +785,11 @@ function daNewsAdminHandle(mysqli $db,int $admin,string $cb,string $step,string 
         daNewsArchive($db,(int)$m[2],$m[1]);daNewsAdminMenu($db,$admin,$m[1]);return true;
     }
     return false;
+}
+
+
+function daUpdateAdminView(mysqli $db,string $notice=''): void {
+    $u=daUpdateConfig($db);
+    $txt=($notice===''?'':$notice."\n\n")."📲 مدیریت نسخه جدید برنامه\nوضعیت نمایش: ".($u['enabled']?'✅ فعال':'⛔ غیرفعال')."\nنسخه ثبت شده: ".($u['version']===''?'ثبت نشده':daEsc($u['version']))."\n\nبا فعال‌سازی، آخرین نسخه پایدار و APK رسمی گیت‌هاب بررسی و ثبت می‌شود. دکمه فقط در نسخه‌های قدیمی دارای قابلیت بررسی نمایش داده می‌شود. برای انتشار بعدی دوباره فعال‌سازی را بزنید.";
+    daSend($txt,[daBtn('✅ دریافت آخرین نسخه رسمی و فعال‌سازی','da_appupdate_on'),daBtn('⛔ غیرفعال کردن نمایش','da_appupdate_off'),daBtn('بازگشت','da_menumanage')]);
 }

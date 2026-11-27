@@ -18,7 +18,7 @@ try{
     $ip=(string)($_SERVER['REMOTE_ADDR']??'unknown');
     if(!daLimit($db,'ip:'.$ip,120))daRespond(429,['error'=>'rate']);
     $action=$j['action']??'';
-    if($action==='public_config'){daRespond(200,daContacts($db));}
+    if($action==='public_config'){daRespond(200,daContacts($db)+['app_update'=>daUpdateConfig($db)]);}
     if($action==='login'){
         $name=$j['username']??'';$password=$j['password']??'';
         $device=$j['device_id']??'';$model=$j['device_model']??'';

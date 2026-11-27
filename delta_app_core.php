@@ -24,6 +24,7 @@ function daSchema(mysqli $db): void {
     daEnsureDecimalQuota($db,'delta_app_accounts');
     if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='quota_baseline_bytes'"))$db->query("ALTER TABLE delta_app_accounts ADD COLUMN quota_baseline_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0");
     daNewsSchema($db);
+    if(!$db->query("CREATE TABLE IF NOT EXISTS delta_app_update (id TINYINT PRIMARY KEY, enabled TINYINT NOT NULL DEFAULT 0, version VARCHAR(32) CHARACTER SET ascii NOT NULL DEFAULT '') ENGINE=InnoDB"))throw new RuntimeException('update schema');
     $col=daRow($db,"SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_accounts' AND COLUMN_NAME='stock_id'");
     if($col && $col['IS_NULLABLE']==='NO' && !$db->query('ALTER TABLE delta_app_accounts MODIFY stock_id INT UNSIGNED NULL'))throw new RuntimeException('migration');
     if(!daRow($db,"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='delta_app_plans' AND COLUMN_NAME='category_id'"))$db->query("ALTER TABLE delta_app_plans ADD COLUMN category_id INT UNSIGNED NULL");
@@ -840,4 +841,37 @@ function daNewsFeed(mysqli $db,int $account,int $before=0): array {
 function daNewsSeen(mysqli $db,int $account,int $id,string $kind): void {
     if(!in_array($kind,['inbox','float'],true)||$id<1)throw new InvalidArgumentException('news id');
     daExec($db,'INSERT IGNORE INTO delta_app_news_seen(account_id,news_id,seen_at) SELECT ?,id,? FROM delta_app_news WHERE id=? AND kind=? AND active=1','iiis',$account,time(),$id,$kind);
+}
+
+
+// APK updates are opt-in and restricted to the official stable public release.
+function daUpdateConfig(mysqli $db): array {
+    $off=['enabled'=>false,'version'=>'','url'=>''];
+    try{$r=daRow($db,'SELECT enabled,version FROM delta_app_update WHERE id=1');}catch(Throwable $e){return $off;}
+    $v=(string)($r['version']??'');
+    if(!preg_match('/^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/D',$v))return $off;
+    return ['enabled'=>(int)$r['enabled']===1,'version'=>$v,'url'=>daUpdateUrl($v)];
+}
+function daUpdateUrl(string $v): string {
+    return 'https://github.com/deltacoms/deltavpn/releases/download/v'.$v.'/DeltaVPN-'.$v.'-arm64.apk';
+}
+function daUpdateLatest(): string {
+    $body='';$c=curl_init('https://api.github.com/repos/deltacoms/deltavpn/releases/latest');
+    curl_setopt_array($c,[CURLOPT_FOLLOWLOCATION=>false,CURLOPT_PROTOCOLS=>CURLPROTO_HTTPS,CURLOPT_SSL_VERIFYPEER=>true,CURLOPT_SSL_VERIFYHOST=>2,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>10,CURLOPT_USERAGENT=>'DeltaVPN-Release-Admin',CURLOPT_HTTPHEADER=>['Accept: application/vnd.github+json'],CURLOPT_WRITEFUNCTION=>function($c,$part)use(&$body){if(strlen($body)+strlen($part)>524288)return 0;$body.=$part;return strlen($part);}]);
+    try{$ok=curl_exec($c);$code=curl_getinfo($c,CURLINFO_HTTP_CODE);}finally{curl_close($c);}
+    if($ok===false||$code!==200)throw new InvalidArgumentException('دریافت نسخه رسمی از گیت‌هاب ناموفق بود؛ تنظیم قبلی تغییر نکرد.');
+    $r=json_decode($body,true);
+    if(!is_array($r)||($r['draft']??true)!==false||($r['prerelease']??true)!==false||!preg_match('/^v((?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3})\.(?:0|[1-9][0-9]{0,3}))$/D',(string)($r['tag_name']??''),$m))throw new InvalidArgumentException('نسخه پایدار معتبر یافت نشد.');
+    $v=$m[1];
+    foreach(($r['assets']??[]) as $asset){
+        if(($asset['browser_download_url']??'')===daUpdateUrl($v)&&($asset['state']??'')==='uploaded'&&(int)($asset['size']??0)>0)return $v;
+    }
+    throw new InvalidArgumentException('فایل APK رسمی نسخه جدید یافت نشد.');
+}
+function daUpdateEnable(mysqli $db): void {
+    $v=daUpdateLatest();
+    daExec($db,'INSERT INTO delta_app_update(id,enabled,version) VALUES(1,1,?) ON DUPLICATE KEY UPDATE enabled=1,version=VALUES(version)','s',$v);
+}
+function daUpdateDisable(mysqli $db): void {
+    daExec($db,"UPDATE delta_app_update SET enabled=0 WHERE id=1");
 }
