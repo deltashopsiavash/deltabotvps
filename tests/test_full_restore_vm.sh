@@ -108,7 +108,16 @@ echo 'DELTA_FULL_FRESH_VM_TEST_PASSED'
 # The deliberately invalid fixture Telegram token cannot be used for notifications.
 # GitHub-hosted runner image has a nonstandard sudoers file mode.
 if [[ -f /etc/sudoers.d/runner ]]; then chmod 0440 /etc/sudoers.d/runner; fi
+# Reproduce the missing directory seen after a legacy install/restore.
+rmdir /var/lib/deltabotvps/backups
 bash "$src/scripts/install-full-backup.sh"
+runuser -u www-data -- test -w /var/lib/deltabotvps/backups
+[[ $(stat -c '%U:%G:%a' /var/lib/deltabotvps) == root:www-data:750 ]]
+[[ $(stat -c '%U:%G:%a' /var/lib/deltabotvps/backups) == www-data:www-data:700 ]]
+# Installing again must preserve existing backup files.
+runuser -u www-data -- touch /var/lib/deltabotvps/backups/fixture.keep
+bash "$src/scripts/install-full-backup.sh"
+test -f /var/lib/deltabotvps/backups/fixture.keep
 mysql -uroot -e 'DELETE FROM delta.users; DELETE FROM delta_rb72.users; DELETE FROM delta_sms_bridge.events'
 rm -f /opt/vpsbot/vpsbot.sqlite3
 printf '%s\n' 'target after install' > /var/www/html/deltabotvps/fixture.txt
@@ -151,4 +160,7 @@ test ! -e /var/lib/delta-full-backup/queued-restore.gpg
 if runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup queue-restore-password < /root/ci-delta-full.delta.gpg; then
     echo 'REPLAY_ACCEPTED'; exit 1
 fi
+runuser -u www-data -- test -w /var/lib/deltabotvps/backups
+test -f /var/lib/deltabotvps/backups/fixture.keep
+echo 'DELTA_BACKUP_STORAGE_TEST_PASSED'
 echo 'DELTA_ONE_SHOT_RESTORE_VM_TEST_PASSED'

@@ -12,6 +12,14 @@ done
 if [[ "$mode" == normal ]]; then
     for c in sudo visudo mysql; do command -v "$c" >/dev/null || { echo "MISSING=$c"; exit 1; }; done
     [[ -f /var/www/html/deltabotvps/baseInfo.php ]] || exit 1
+    # Backups are deliberately outside the document root and archive scope.
+    for d in /var/lib/deltabotvps /var/lib/deltabotvps/backups; do
+        [[ ! -L "$d" && ( ! -e "$d" || -d "$d" ) ]] || { echo 'UNSAFE_BACKUP_DIRECTORY'; exit 1; }
+    done
+    install -d -o root -g www-data -m 0750 /var/lib/deltabotvps
+    install -d -o www-data -g www-data -m 0700 /var/lib/deltabotvps/backups
+    runuser -u www-data -- test -w /var/lib/deltabotvps/backups || { echo 'BACKUP_DIRECTORY_NOT_WRITABLE'; exit 1; }
+    echo 'BACKUP_DIRECTORY_OK'
 fi
 install -d -o root -g root -m 0700 /etc/delta-full-backup /var/lib/delta-full-backup
 key=/etc/delta-full-backup/recovery.key

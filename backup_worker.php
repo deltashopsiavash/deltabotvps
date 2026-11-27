@@ -234,9 +234,10 @@ function fullBackupMagic(string $path): bool {
 
 if ($mode === 'backup' && $fullOwnerRequest) {
     sendMsg($chatId, "⏳ در حال ساخت بکاپ رمزگذاری‌شده کل مجموعه دلتا...");
-    $path = ensureBackupDir().'/DELTA-FULL-'.date('Ymd_His').'-'.bin2hex(random_bytes(4)).'.delta.gpg';
+    $path = null;
     $ready = false;
     try {
+        $path = ensureBackupDir().'/DELTA-FULL-'.date('Ymd_His').'-'.bin2hex(random_bytes(4)).'.delta.gpg';
         // Preserve the portable app panel recovery envelope before taking the multi-DB snapshot.
         require_once __DIR__.'/delta_app_real_checkout.php';
         daSchema($connection);
@@ -258,7 +259,11 @@ if ($mode === 'backup' && $fullOwnerRequest) {
         sendMsg($chatId,!empty($res['ok'])?"✅ بکاپ ارسال شد. فایل و رمز بازیابی مستقل را جداگانه خارج از سرور نگه دارید.":"❌ ارسال تلگرام ناموفق بود؛ فایل رمزگذاری‌شده روی سرور محفوظ است.");
         exit(empty($res['ok'])?1:0);
     } catch (Throwable $e) {
-        if (!$ready) @unlink($path);
+        if (!$ready && $path !== null) @unlink($path);
+        if ($path === null) {
+            sendMsg($chatId,"❌ پوشه خصوصی بکاپ در دسترس نیست. کد بررسی: BACKUP_DIRECTORY_UNAVAILABLE");
+            exit(1);
+        }
         sendMsg($chatId,$ready?"⚠️ ارسال فایل ناموفق بود؛ فایل رمزگذاری‌شده روی سرور محفوظ است.":"❌ ساخت بکاپ کامل متوقف شد؛ هیچ بکاپ ناقصی ارسال نشد.");
         exit(1);
     }

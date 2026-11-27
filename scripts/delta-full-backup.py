@@ -362,6 +362,17 @@ def restore_path(src, target):
         finally:
             pathlib.Path(name).unlink(missing_ok=True)
 
+def ensure_backup_directory():
+    backup_dir = pathlib.Path("/var/lib/deltabotvps/backups")
+    require(not backup_dir.is_symlink() and not any(p.is_symlink() for p in backup_dir.parents), "UNSAFE_BACKUP_DIRECTORY")
+    backup_dir.parent.mkdir(mode=0o750, exist_ok=True)
+    shutil.chown(backup_dir.parent, user="root", group="www-data")
+    os.chmod(backup_dir.parent, 0o750)
+    backup_dir.mkdir(mode=0o700, exist_ok=True)
+    shutil.chown(backup_dir, user="www-data", group="www-data")
+    os.chmod(backup_dir, 0o700)
+
+
 def apply_verified(work, expected_sha, preserve_ui=False):
     # This command is never in the www-data sudo rule. The digest binds the
     # owner's independent approval to exactly the staged archive.
@@ -400,6 +411,7 @@ def apply_verified(work, expected_sha, preserve_ui=False):
     # Compare installed dependency requirements before replacing source code.
     oldreq, newreq = pathlib.Path("/opt/vpsbot/requirements.txt"), runtime / "opt/vpsbot/requirements.txt"
     require(oldreq.is_file() and newreq.is_file() and sha(oldreq) == sha(newreq), "TARGET_VPSBOT_DEPENDENCIES_MISMATCH")
+    ensure_backup_directory()
     args, env = mysql_access()
     running = active_services()
     # Stop writers before creating rollback archive and replacing data.
@@ -545,14 +557,7 @@ def fresh_restore(work, expected_sha):
     for rel in manifest["paths"]:
         if rel not in PRESERVE_TARGET:
             restore_path(runtime / rel, pathlib.Path("/") / rel)
-    backup_dir = pathlib.Path("/var/lib/deltabotvps/backups")
-    require(not backup_dir.is_symlink() and not any(p.is_symlink() for p in backup_dir.parents), "UNSAFE_BACKUP_DIRECTORY")
-    backup_dir.parent.mkdir(mode=0o750, exist_ok=True)
-    shutil.chown(backup_dir.parent, user="root", group="www-data")
-    os.chmod(backup_dir.parent, 0o750)
-    backup_dir.mkdir(mode=0o700, exist_ok=True)
-    shutil.chown(backup_dir, user="www-data", group="www-data")
-    os.chmod(backup_dir, 0o700)
+    ensure_backup_directory()
     vps = pathlib.Path("/opt/vpsbot")
     requirements = vps / "requirements.txt"
     require(requirements.is_file() and not requirements.is_symlink(), "VPSBOT_REQUIREMENTS_MISSING")
