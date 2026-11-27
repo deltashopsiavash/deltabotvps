@@ -398,8 +398,7 @@ def apply_verified(work, expected_sha):
         run(["systemctl", "daemon-reload"])
         run(["apache2ctl", "configtest"], stdout=subprocess.DEVNULL)
         # Verify app DB connectivity as the web user, not root; never expose secrets.
-        php = "require '/var/www/html/deltabotvps/baseInfo.php'; mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT); $c=new mysqli('localhost',$dbUserName,$dbPassword,$dbName); require '/var/www/html/deltabotvps/delta_app_core.php'; daVerifyRecoverySecrets($c); $q=$c->query('SELECT db_name FROM reseller_bots WHERE status=1 AND is_deleted=0'); while($r=$q->fetch_assoc()){ $x=new mysqli('localhost',$dbUserName,$dbPassword,$r['db_name']); $x->close(); }"
-        run(["runuser", "-u", "www-data", "--", "php", "-r", php], stdout=subprocess.DEVNULL)
+        check_restored_db()
         for svc in running:
             run(["systemctl", "start", svc])
         verified.unlink()
@@ -464,6 +463,125 @@ def rehearsal(work, expected_sha):
     print("ARCHIVE_SQLITE_COUNT=" + str(len(manifest["sqlite"])))
     print("DELTA_FULL_ARCHIVE_REHEARSAL_OK")
     print("No live SQL, service, webhook or configuration was changed.")
+
+def fresh_restore(work, expected_sha):
+    # Dedicated blank Ubuntu target only. No registration of real webhooks,
+    # no outbound Telegram calls, no start of bot writers until owner activation.
+    verified = ROOT / "verified-pending.tar.gz"
+    require(verified.is_file() and not verified.is_symlink() and sha(verified) == expected_sha,
+            "APPROVAL_DIGEST_MISMATCH")
+    require(not pathlib.Path("/var/www/html/deltabotvps/baseInfo.php").exists(), "TARGET_NOT_FRESH")
+    require(not pathlib.Path("/opt/vpsbot").exists() and not pathlib.Path("/opt/delta-sms-bridge").exists(), "TARGET_NOT_FRESH")
+    release = pathlib.Path("/etc/os-release").read_text()
+    require(re.search(r'^VERSION_ID="?24\.04"?
+    os.umask(0o077)
+    require(os.geteuid() == 0, "ROOT_REQUIRED")
+    for p in (ROOT, KEY.parent):
+        require(p.is_dir() and not p.is_symlink() and p.stat().st_uid == 0 and not p.stat().st_mode & 0o077, "PRIVATE_DIR_REQUIRED")
+    require(KEY.is_file() and not KEY.is_symlink() and KEY.stat().st_uid == 0 and not KEY.stat().st_mode & 0o077, "RECOVERY_KEY_REQUIRED")
+    require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety")) or
+            (len(sys.argv) == 3 and mode in ("apply", "prepare-install", "rehearse", "fresh-apply") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
+    (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
+    # create-safety runs only as root while its parent holds the lock.
+    if mode == "create-safety":
+        with tempfile.TemporaryDirectory(prefix="safety-", dir=ROOT) as d:
+            create(pathlib.Path(d), safety=True)
+        return
+    with (ROOT / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with tempfile.TemporaryDirectory(prefix="work-", dir=ROOT) as d:
+            stage = pathlib.Path(d)
+            if mode == "apply":
+                apply_verified(stage, sys.argv[2])
+            elif mode == "prepare-install":
+                prepare_install(stage, sys.argv[2])
+            elif mode == "rehearse":
+                rehearsal(stage, sys.argv[2])
+            elif mode == "fresh-apply":
+                fresh_restore(stage, sys.argv[2])
+            elif mode == "create":
+                create(stage)
+            else:
+                verify(stage, PLAIN_LIMIT if mode == "verify-local" else LIMIT)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        # Only fixed internal reason identifiers are safe to log.
+        reason = str(e) if isinstance(e, RuntimeError) and re.fullmatch(r"[A-Z_]+", str(e)) else type(e).__name__
+        print("DELTA_FULL_BACKUP_FAILED:" + reason, file=sys.stderr)
+        sys.exit(1)
+, release, re.M), "UBUNTU_24_04_REQUIRED")
+    manifest = unpack_outer(verified, work)
+    require(manifest.get("safety") is not True, "FULL_ARCHIVE_REQUIRED")
+    runtime = work / "runtime"
+    runtime.mkdir()
+    unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
+    if manifest["sqlite"]:
+        restore_sqlite(work / "sqlite.tar.gz", runtime, manifest["sqlite"])
+    for rel in REQUIRED:
+        require((runtime / rel).exists(), "RESTORE_COMPONENT_MISSING")
+    values = base_values(runtime / "var/www/html/deltabotvps/baseInfo.php")
+    require(values["dbName"] == "delta" and re.fullmatch(r"[A-Za-z0-9_]{1,32}", values["dbUserName"]) and values["dbUserName"].lower() not in ("root","mysql","mysql_session","mysql_innodb_cluster_metadata","debian-sys-maint","phpmyadmin"), "UNSAFE_DB_ACCOUNT")
+    require(bool(values["dbPassword"]), "EMPTY_DB_PASSWORD")
+    for cmd in ("mysql", "rsync", "apache2ctl", "systemctl", "python3", "runuser", "php"):
+        require(shutil.which(cmd), "TARGET_TOOL_MISSING")
+    args, env = mysql_access()
+    def query(sql):
+        return run(args + ["-NB"], env=env, input=sql.encode(), stdout=subprocess.PIPE).stdout.decode().splitlines()
+    existing = query("SHOW DATABASES;")
+    require(not any(re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n) for n in existing), "TARGET_DATABASES_ALREADY_EXIST")
+    username = values["dbUserName"]
+    require(not query("SELECT User FROM mysql.user WHERE User='" + username + "';"), "TARGET_DB_ACCOUNT_EXISTS")
+    # Ensure all services remain stopped during a fresh restore / rehearsal.
+    for svc in SERVICE_NAMES:
+        subprocess.run(["systemctl", "stop", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run(args + ["-e", "SET GLOBAL event_scheduler=OFF"], env=env, stdout=subprocess.DEVNULL)
+    # A fresh target has no previous Delta data. If import fails, keep writers
+    # stopped and retain the verified archive; never overwrite a non-fresh host.
+    print("FRESH_RESTORE_WRITERS_STOPPED", flush=True)
+    with (work / "databases.sql").open("rb") as sql:
+        run(args + ["--binary-mode", "--default-character-set=utf8mb4"], env=env, stdin=sql, stdout=subprocess.DEVNULL)
+    # Match the saved app credentials without restoring system grant tables or
+    # copying the old MySQL root password. Limit access to Delta schema names.
+    password = values["dbPassword"].replace("'", "''")
+    account = "'" + username + "'@'localhost'"
+    grants = "SET SESSION sql_mode='NO_BACKSLASH_ESCAPES';\nCREATE USER " + account + " IDENTIFIED BY '" + password + "';\n"
+    grants += "GRANT ALL PRIVILEGES ON \x60delta\x60.* TO " + account + ";\n"
+    grants += "GRANT ALL PRIVILEGES ON \x60delta\\_rb%\x60.* TO " + account + ";\n"
+    grants += "GRANT ALL PRIVILEGES ON \x60delta_sms_bridge\x60.* TO " + account + ";\n"
+    # Pass credentials via stdin only, never command line, shell or log.
+    run(args, env=env, input=grants.encode(), stdout=subprocess.DEVNULL)
+    for rel in manifest["paths"]:
+        if rel not in PRESERVE_TARGET:
+            restore_path(runtime / rel, pathlib.Path("/") / rel)
+    # Keep private backup storage outside the web root; restore archived
+    # runtime only, not previous recursive backup files.
+    backup_dir = pathlib.Path("/var/lib/deltabotvps/backups")
+    backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    require(not backup_dir.is_symlink(), "UNSAFE_BACKUP_DIRECTORY")
+    shutil.chown(backup_dir, user="www-data", group="www-data")
+    os.chmod(backup_dir, 0o700)
+    # Rebuild the excluded Python environment from restored dependencies.
+    vps = pathlib.Path("/opt/vpsbot")
+    requirements = vps / "requirements.txt"
+    require(requirements.is_file() and not requirements.is_symlink(), "VPSBOT_REQUIREMENTS_MISSING")
+    run(["python3", "-m", "venv", str(vps / "venv")], stdout=subprocess.DEVNULL)
+    run([str(vps / "venv/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)], stdout=subprocess.DEVNULL)
+    run(["systemctl", "daemon-reload"])
+    run(["apache2ctl", "configtest"], stdout=subprocess.DEVNULL)
+    check_restored_db()
+    # Do not start Cron, Apache or VPSBot while a rehearsal could coexist with
+    # the original production host. Keep the archive for independent checks.
+    print("DELTA_FRESH_RESTORE_OFFLINE_OK", flush=True)
+    print("Writers remain stopped. Verify domain/DNS, PHP, panel and SMS before activation.", flush=True)
+
+def check_restored_db():
+    php = "require '/var/www/html/deltabotvps/baseInfo.php'; mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT); $c=new mysqli('localhost',$dbUserName,$dbPassword,$dbName); require '/var/www/html/deltabotvps/delta_app_core.php'; daVerifyRecoverySecrets($c); $q=$c->query('SELECT db_name FROM reseller_bots WHERE status=1 AND is_deleted=0'); while($r=$q->fetch_assoc()){ $x=new mysqli('localhost',$dbUserName,$dbPassword,$r['db_name']); $x->close(); }"
+    run(["runuser", "-u", "www-data", "--", "php", "-r", php], stdout=subprocess.DEVNULL)
 
 def main():
     os.umask(0o077)
