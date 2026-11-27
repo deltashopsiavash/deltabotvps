@@ -50,6 +50,11 @@ jobs:
           php -l settings/expired_subscriptions_admin.php
           php -l config.php
           php -l backup_worker.php
+          bash -n scripts/install-full-backup.sh
+          bash -n scripts/deploy-full-backup.sh
+          bash -n scripts/bootstrap-full-restore.sh
+          python3 -m py_compile scripts/delta-full-backup.py
+          python3 tests/test_full_backup.py
           php -l delta_backup_integrity.php
           php -l tests/delta_unified_backup_mysql.php
           php -l delta_order_features.php
@@ -147,3 +152,9 @@ jobs:
         run: |
           php tests/delta_app_real_checkout_fixture.php
           php tests/delta_unified_backup_mysql.php
+
+      - name: Verify full disaster snapshot SQL against isolated MySQL
+        env:
+          DELTA_FULL_BACKUP_CI: '1'
+          DELTA_FULL_CI_MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: python3 tests/test_full_backup.py

@@ -23,6 +23,74 @@ if(PHP_SAPI!=='cli'){
 }
 include_once 'config.php';
 
+/* Full restore password is processed before general message handlers. No DB,
+ * shell argument, or log stores the password. The root helper independently
+ * verifies the one-time approved encrypted-file hash and recovery password. */
+if (empty($isChildBot) && (string)($from_id??'') === (string)$admin &&
+    (string)($chat_id??'') === (string)$admin &&
+    (($update->message->chat->type??$update->callback_query->message->chat->type??'') === 'private')) {
+    $pendingDir = '/var/lib/deltabotvps/backups/'.hash('sha256','delta');
+    $pending = $pendingDir.'/restore-pending-owner.delta.gpg';
+    if (is_file($pending) && !is_link($pending)) {
+        $cancel = isset($update->callback_query) || (($update->message->text??'') === '/cancel');
+        if ($cancel || time()-filemtime($pending)>600) {
+            @unlink($pending);
+            if (!$cancel) {
+                sendMessage("⌛ مهلت ورود رمز تمام شد. فایل را دوباره ارسال کنید.",null,null);
+                exit;
+            }
+            if (!isset($update->callback_query)) {
+                sendMessage("درخواست بازیابی لغو شد.",null,null);
+                exit;
+            }
+        } elseif (isset($update->message->text)) {
+            $password = (string)$update->message->text;
+            // Best effort only: deleting a Telegram message does not guarantee
+            // erasure from Telegram infrastructure.
+            @delMessage($update->message->message_id,$chat_id);
+            if (strlen($password)<24 || strlen($password)>1023 || strpbrk($password,"\r\n\0")!==false) {
+                unset($password);
+                sendMessage("❌ رمز بازیابی معتبر نیست. دوباره وارد کنید.",null,null);
+                exit;
+            }
+            $handle = @fopen($pending,'rb');
+            if (!$handle || !flock($handle,LOCK_EX|LOCK_NB)) {
+                if ($handle) fclose($handle);
+                sendMessage("درخواست دیگری در حال بررسی است.",null,null);
+                exit;
+            }
+            $reason = 'HELPER_UNAVAILABLE';
+            $ok = false;
+            try {
+                $proc = proc_open(['/usr/bin/sudo','-n','/usr/local/sbin/delta-full-backup','queue-restore-password'],
+                    [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);
+                if (is_resource($proc)) {
+                    @fwrite($pipes[0],$password."\n");
+                    @stream_copy_to_stream($handle,$pipes[0],19*1024*1024+1);
+                    fclose($pipes[0]);
+                    $out=stream_get_contents($pipes[1],8192);fclose($pipes[1]);
+                    $err=stream_get_contents($pipes[2],8192);fclose($pipes[2]);
+                    $ok=proc_close($proc)===0 && preg_match('/^DELTA_RESTORE_QUEUED\s*$/m',(string)$out);
+                    if (preg_match('/^DELTA_FULL_BACKUP_FAILED:([A-Za-z_]+)\s*$/m',(string)$err,$m)) $reason=$m[1];
+                }
+            } catch (Throwable $ignored) {
+                $ok=false;
+            } finally {
+                unset($password);
+                if ($ok || $reason!=='INVALID_RECOVERY_PASSWORD') @unlink($pending);
+                fclose($handle);
+            }
+            if ($ok) sendMessage("✅ رمز و فایل تأیید شدند. بازیابی کامل آغاز می‌شود؛ نتیجه در همین گفتگو ارسال خواهد شد.",null,null);
+            elseif ($reason==='INVALID_RECOVERY_PASSWORD') sendMessage("❌ رمز اشتباه است. دوباره رمز بازیابی را وارد کنید.",null,null);
+            else sendMessage("❌ بازیابی شروع نشد. کد بررسی: ".$reason,null,null);
+            exit;
+        } else {
+            sendMessage("🔐 ابتدا رمز بازیابی را وارد کنید یا /cancel را بفرستید.",null,null);
+            exit;
+        }
+    }
+}
+
 check();
 require_once __DIR__ . '/payment_card_rotation.php';
 require_once __DIR__ . '/black_friday.php';
@@ -826,6 +894,9 @@ if(!$isStartCmd){
             $cmd = 'nohup php ' . escapeshellarg($worker) . ' backup ' . escapeshellarg($tokenToUse) . ' ' . escapeshellarg($admin) . ' ' . escapeshellarg('deltabotvps_auto_backup') . ' ' . escapeshellarg($dbToUse) . ' >/dev/null 2>&1 &';
             @shell_exec($cmd);
         }else{
+            if (!$isChildBot) {
+                error_log('Full mother backup worker unavailable; no partial automatic backup sent.');
+            } else {
             // Fallback (sync) - may still take time on huge DBs
             $tmp = dbCreateSqlBackupFile('deltabotvps_auto_backup');
             if($tmp){
@@ -834,6 +905,7 @@ if(!$isStartCmd){
                     if(isset($sd['ok']) && $sd['ok']) @unlink($tmp);
                 }
             }
+        }
         }
     }
 }
@@ -1127,12 +1199,37 @@ if(($userInfo['step'] ?? '') == 'awaiting_backup_sql' && ($from_id == $admin || 
             $out = @fopen($path, 'xb');
             umask($oldBackupUmask);
             if($in && $out){
-                @stream_copy_to_stream($in, $out);
+                $received = @stream_copy_to_stream($in, $out, 19*1024*1024+1);
                 @fclose($in);
                 @fclose($out);
+                if ($received === false || $received < 1 || $received > 19*1024*1024 ||
+                    (isset($doc->file_size) && (int)$doc->file_size !== $received)) {
+                    @unlink($path);
+                    sendMessage("❌ دریافت فایل ناقص است یا از سقف حجم مجاز بیشتر است.");
+                    exit;
+                }
 
+                if (file_get_contents($path,false,null,0,14)==="DELTA-FULL-V1\n") {
+                    setUser('none','step');
+                    if (!empty($isChildBot) || (string)$from_id !== (string)$admin ||
+                        (string)$chat_id !== (string)$admin || ($update->message->chat->type??'')!=='private') {
+                        @unlink($path);
+                        sendMessage("❌ فقط مدیر اصلی ربات مادر در گفتگوی خصوصی مجاز است.",null,null);
+                        exit;
+                    }
+                    $pending=$dir.'/restore-pending-owner.delta.gpg';
+                    if (is_link($pending) || !@rename($path,$pending)) {
+                        @unlink($path);
+                        sendMessage("❌ ذخیره موقت فایل بازیابی ناموفق بود.",null,null);
+                        exit;
+                    }
+                    @chmod($pending,0600);
+                    @touch($pending);
+                    sendMessage("🔐 فایل بکاپ دریافت شد. رمز ۲۴ کاراکتری بازیابی را وارد کنید.\n⚠️ اطلاعات فعلی با بکاپ جایگزین می‌شوند. پیام رمز پس از دریافت، در صورت امکان حذف می‌شود.\nبرای لغو /cancel را ارسال کنید.",null,null);
+                    exit;
+                }
                 setUser('none','step');
-                sendMessage("✅ فایل بکاپ دریافت شد. در حال بازگردانی... ممکن است چند دقیقه طول بکشد.");
+                sendMessage("✅ فایل بکاپ دریافت شد. در حال اعتبارسنجی...");
 
                 $tokenToUse = $GLOBALS['botToken'] ?? ($botToken ?? null);
                 if($tokenToUse && isShellExecAvailable()){
@@ -2014,8 +2111,9 @@ if($data=='adminBackupMenu' && ($from_id == $admin || $userInfo['isAdmin'] == tr
         $message_id,
         "🗄 مدیریت بکاپ\n\n".
         "- بکاپ خودکار: هر {$interval} دقیقه (در صورت فعال بودن)\n".
-        "- بکاپ دستی: همین الان فایل SQL ارسال می‌شود\n".
-        "- بازگردانی: فایل SQL را ارسال کنید",
+        (!$isChildBot && (string)$from_id === (string)$admin
+            ? "- بکاپ دستی و خودکار مادر: فایل رمزگذاری‌شده کل مجموعه\n- بازگردانی: فایل را بفرستید و رمز بازیابی را وارد کنید؛ مجوز یک‌بارمصرف آپدیت لازم است."
+            : "- بکاپ دستی: فایل SQL دیتابیس همین ربات\n- بازگردانی: فایل SQL را ارسال کنید"),
         $keys
     );
 }
@@ -2041,6 +2139,10 @@ if($data=='adminBackupSetInterval' && ($from_id == $admin || $userInfo['isAdmin'
 }
 
 if($data=='adminBackupGet' && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if (!$isChildBot && (string)$from_id === (string)$admin && !isShellExecAvailable()) {
+        sendMessage('❌ اجرای سرویس بکاپ کامل در دسترس نیست؛ بکاپ ناقص ارسال نشد.');
+        exit;
+    }
     // Run backup asynchronously to avoid webhook/callback timeouts (prevents bot "hang")
     alert('✅ درخواست بکاپ ثبت شد. در حال آماده‌سازی...');
 
@@ -2079,7 +2181,7 @@ if($data=='adminBackupGet' && ($from_id == $admin || $userInfo['isAdmin'] == tru
 
 if($data=='adminBackupRestore' && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser('awaiting_backup_sql','step');
-    smartSendOrEdit($message_id, "📤 فایل بکاپ SQL را همینجا ارسال کنید.\n\n⚠️ توجه: بازگردانی بکاپ باعث جایگزینی کامل دیتابیس فعلی می‌شود.", ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
+    smartSendOrEdit($message_id, (!$isChildBot && (string)$from_id === (string)$admin ? "📤 فایل بکاپ رمزگذاری‌شده DELTA-FULL یا SQL را ارسال کنید. فایل کامل را بفرستید، سپس رمز بازیابی را وارد کنید. مجوز یک‌بارمصرف آپدیت و تطبیق هش فایل الزامی است. بازگردانی SQL قدیمی جایگزین دیتابیس فعلی می‌شود." : "📤 فایل بکاپ SQL را ارسال کنید.\n⚠️ بازگردانی SQL دیتابیس فعلی را جایگزین می‌کند."), ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
 }
 
 // ===== Admin Backup Files List (stored on server) =====
@@ -2094,7 +2196,7 @@ if(preg_match('/^adminBackupFiles_(\d+)/',$data,$m) && ($from_id == $admin || $u
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2148,7 +2250,7 @@ if(preg_match('/^adminBackupShow_(\d+)_(\d+)/',$data,$m) && ($from_id == $admin 
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2198,7 +2300,7 @@ if(preg_match('/^adminBackupDel_(\d+)_(\d+)/',$data,$m) && ($from_id == $admin |
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2235,7 +2337,7 @@ if(preg_match('/^adminBackupRestoreFromFile_(\d+)_(\d+)/',$data,$m) && ($from_id
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }

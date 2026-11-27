@@ -1,0 +1,27 @@
+name: Full Delta restore on Ubuntu 24.04
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/*full*backup*'
+      - 'scripts/bootstrap-full-restore.sh'
+      - 'tests/test_full_restore_vm.sh'
+      - 'backup_worker.php'
+      - 'bot.php'
+      - '.github/workflows/full-restore-vm.yml'
+  workflow_dispatch:
+jobs:
+  disposable-fresh-restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install isolated test prerequisites
+        run: |
+          sudo apt-get update -qq
+          echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 mysql-server libapache2-mod-php php-cli php-mysql php-mbstring php-curl php-xml phpmyadmin certbot python3-certbot-apache python3-venv python3-pip rsync gpg cron
+      - name: Restore synthetic complete backup on disposable VM
+        run: sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted DELTA_FULL_CI_VM=1 bash tests/test_full_restore_vm.sh

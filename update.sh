@@ -116,6 +116,29 @@ do
 			read -p "Are you sure you want to update?[y/n]: " answer
 			echo " "
 			if [ "$answer" != "${answer#[Yy]}" ]; then
+			read -r -p "Install the full-backup update (safe, no database changes)? [Y/n]: " backup_update
+			if [[ "$backup_update" != [Nn] ]]; then
+				(
+					set -Eeuo pipefail
+					umask 077
+					WORK=$(mktemp -d /root/delta-full-recovery-update.XXXXXXXX)
+					trap 'rm -rf -- "$WORK"' EXIT
+					git clone --branch main --single-branch https://github.com/deltashopsiavash/deltabotvps.git "$WORK"
+					REV=$(git -C "$WORK" rev-parse HEAD)
+					bash "$WORK/scripts/deploy-full-backup.sh" "$REV"
+					read -r -p "Authorize one DELTA-FULL restore through Telegram now? [y/N]: " recovery
+					if [[ "$recovery" == [Yy] ]]; then
+						read -r -p "Enter trusted SHA256 of your saved encrypted backup (64 hex characters): " EXPECTED
+						[[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]] || { echo 'INVALID_APPROVAL_DIGEST'; exit 1; }
+						echo "The exact approved backup will replace installed Delta data and stop services temporarily."
+						read -r -p "Type RESTORE to authorize one upload for 30 minutes: " CONFIRM
+						[[ "$CONFIRM" == RESTORE ]] || exit 1
+						/usr/local/sbin/delta-full-backup arm-restore "$EXPECTED"
+						echo 'DELTA_RESTORE_READY: upload the approved backup and enter its recovery password in the private mother admin chat.'
+					fi
+				)
+				exit $?
+			fi
 
 			# Preserve VPSBot runtime data (if present)
 			VPSBOT_DIR="/opt/vpsbot"
