@@ -26,6 +26,14 @@ if (!$mode || !$token || !$chatId) {
 
 require_once __DIR__ . "/config.php";
 require_once __DIR__ . '/delta_backup_integrity.php';
+$fullMotherDb = (string)($dbName ?? '');
+$fullOwner = (string)($admin ?? '');
+$fullMotherToken = (string)($botToken ?? '');
+$fullOwnerRequest = $fullMotherDb === 'delta' &&
+    ($arg5 === '' || $arg5 === $fullMotherDb) &&
+    $fullOwner !== '' && hash_equals($fullOwner, (string)$chatId) &&
+    $fullMotherToken !== '' && hash_equals($fullMotherToken, (string)$token);
+
 
 // override token for this worker run
 $GLOBALS['botToken'] = $token;
@@ -183,6 +191,78 @@ function expandBackupFile(string $path): ?string {
     }}finally{gzclose($in);fclose($out);}
     if(!$ok){@unlink($dest);return null;}
     return $dest;
+}
+
+// The root helper is installed outside the web root with a narrowly scoped sudo rule.
+// The independent recovery key never enters PHP, Telegram or the repository.
+function fullBackupHelper(string $action, string $path): bool {
+    if (!in_array($action, ['create', 'verify'], true)) return false;
+    if (!is_executable('/usr/local/sbin/delta-full-backup')) return false;
+    if ($action === 'create') {
+        $old = umask(0077);
+        $handle = fopen($path, 'xb');
+        umask($old);
+        if (!$handle) return false;
+        $io = [0=>['file','/dev/null','r'], 1=>$handle, 2=>['file','/dev/null','w']];
+    } else {
+        $handle = fopen($path,'rb');
+        if (!$handle) return false;
+        $io = [0=>$handle, 1=>['pipe','w'], 2=>['file','/dev/null','w']];
+    }
+    try {
+        $proc = proc_open(['/usr/bin/sudo','-n','/usr/local/sbin/delta-full-backup',$action], $io, $pipes);
+        if (!is_resource($proc)) return false;
+        if ($action === 'verify') {
+            $result = stream_get_contents($pipes[1], 4096);
+            fclose($pipes[1]);
+        }
+        $ok = proc_close($proc) === 0;
+        return $ok && ($action === 'create' || str_starts_with((string)$result,'VERIFIED_RESTORE_STAGED='));
+    } finally { fclose($handle); }
+}
+function fullBackupMagic(string $path): bool {
+    return is_file($path) && file_get_contents($path,false,null,0,14) === "DELTA-FULL-V1\n";
+}
+
+if ($mode === 'backup' && $fullOwnerRequest) {
+    sendMsg($chatId, "⏳ در حال ساخت بکاپ رمزگذاری‌شده کل مجموعه دلتا...");
+    $path = ensureBackupDir().'/DELTA-FULL-'.date('Ymd_His').'-'.bin2hex(random_bytes(4)).'.delta.gpg';
+    try {
+        // Preserve the portable app panel recovery envelope before taking the multi-DB snapshot.
+        require_once __DIR__.'/delta_app_real_checkout.php';
+        daSchema($connection);
+        daRealSchema($connection);
+        daPrepareRecoveryKey($connection);
+        if (!fullBackupHelper('create',$path) || !fullBackupMagic($path)) {
+            @unlink($path);
+            sendMsg($chatId,"❌ بکاپ کامل ساخته نشد. سرویس بکاپ و دسترسی دیتابیس‌ها را بررسی کنید؛ بکاپ ناقص ارسال نشد.");
+            exit(1);
+        }
+        if (filesize($path) > 19*1024*1024) {
+            sendMsg($chatId,"⚠️ بکاپ رمزگذاری‌شده سالم روی سرور ذخیره شد ولی از سقف دانلود تلگرام بزرگ‌تر است. از SSH آن را به فضای امن خارج سرور منتقل کنید.\n".basename($path));
+            exit(1);
+        }
+        $res = sendDoc($chatId,$path,"🔐 بکاپ رمزگذاری‌شده کل مجموعه دلتا\nربات مادر، نمایندگی‌ها، برنامه، SMS Bridge و تنظیمات سرور\n".date('Y-m-d H:i:s'));
+        sendMsg($chatId,!empty($res['ok'])?"✅ بکاپ ارسال شد. فایل و رمز بازیابی مستقل را جداگانه خارج از سرور نگه دارید.":"❌ ارسال تلگرام ناموفق بود؛ فایل رمزگذاری‌شده روی سرور محفوظ است.");
+        exit(empty($res['ok'])?1:0);
+    } catch (Throwable $e) {
+        @unlink($path);
+        sendMsg($chatId,"❌ ساخت بکاپ کامل متوقف شد؛ هیچ بکاپ ناقصی ارسال نشد.");
+        exit(1);
+    }
+}
+
+if ($mode === 'restore' && fullBackupMagic($arg4)) {
+    if (!$fullOwnerRequest) {
+        sendMsg($chatId,"❌ بازیابی کل مجموعه فقط برای مدیر اصلی ربات مادر مجاز است.");
+        exit(1);
+    }
+    if (!fullBackupHelper('verify',$arg4)) {
+        sendMsg($chatId,"❌ بکاپ کامل معتبر نیست یا کلید بازیابی مطابقت ندارد. هیچ دیتابیسی تغییر نکرد.");
+        exit(1);
+    }
+    sendMsg($chatId,"✅ فایل رمزگذاری‌شده بررسی و در فضای خصوصی root آماده شد. هیچ داده‌ای هنوز جایگزین نشده است. برای بازیابی کل سرور تأیید مستقل مالک از SSH لازم است.");
+    exit(0);
 }
 
 if($mode === 'backup'){
