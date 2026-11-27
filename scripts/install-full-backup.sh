@@ -34,6 +34,13 @@ if [[ "$mode" == --recovery-only ]]; then
     echo "DELTA_RECOVERY_TOOL_INSTALLED; use verify-local and prepare-install as root"
     exit 0
 fi
+# Save verified UI copies outside the restored web tree, so an old backup
+# cannot remove the new restore interface on a successful automated restore.
+install -d -o root -g root -m 0700 /etc/delta-full-backup/ui
+for f in bot.php backup_worker.php; do
+    php -l "$src/../$f"
+    install -o root -g root -m 0600 "$src/../$f" "/etc/delta-full-backup/ui/$f"
+done
 tmp=$(mktemp /etc/sudoers.d/.delta-backup.XXXXXXXX)
 trap 'rm -f "$tmp"' EXIT
 printf '%s\n' 'www-data ALL=(root) NOPASSWD: /usr/local/sbin/delta-full-backup create, /usr/local/sbin/delta-full-backup verify, /usr/local/sbin/delta-full-backup queue-restore-password' > "$tmp"
