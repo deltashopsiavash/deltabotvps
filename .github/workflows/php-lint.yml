@@ -156,4 +156,5 @@ jobs:
       - name: Verify full disaster snapshot SQL against isolated MySQL
         env:
           DELTA_FULL_BACKUP_CI: '1'
+          DELTA_FULL_CI_MYSQL_CONTAINER: ${{ job.services.mysql.id }}
         run: python3 tests/test_full_backup.py
