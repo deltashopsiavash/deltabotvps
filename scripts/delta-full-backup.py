@@ -575,6 +575,22 @@ def approved_restore():
     require(data["expires"] >= time.time(), "RESTORE_APPROVAL_EXPIRED")
     return data
 
+def queue_restore_password(stage, stream):
+    import hmac
+    approval = approved_restore()
+    attempts = int(approval.get("password_attempts", 0))
+    require(attempts < 5, "RESTORE_PASSWORD_ATTEMPTS_EXHAUSTED")
+    raw = stream.readline(1025)
+    require(raw.endswith(b"\n") and len(raw) <= 1024, "INVALID_RECOVERY_PASSWORD")
+    secret = raw[:-1]
+    if not hmac.compare_digest(secret, KEY.read_bytes().rstrip(b"\n")):
+        approval["password_attempts"] = attempts + 1
+        tmp = ROOT / "restore-approval.new"
+        tmp.write_text(json.dumps(approval))
+        os.replace(tmp, ROOT / "restore-approval.json")
+        raise RuntimeError("INVALID_RECOVERY_PASSWORD")
+    queue_restore(stage, stream)
+
 def queue_restore(stage, stream):
     approval = approved_restore()
     queued = ROOT / "queued-restore.gpg"
@@ -650,7 +666,7 @@ def main():
     require(KEY.is_file() and not KEY.is_symlink() and KEY.stat().st_uid == 0 and not KEY.stat().st_mode & 0o077, "RECOVERY_KEY_REQUIRED")
     require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety", "queue-restore", "auto-apply")) or
+    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety", "queue-restore", "queue-restore-password", "auto-apply")) or
             (len(sys.argv) == 3 and mode in ("apply", "prepare-install", "rehearse", "fresh-apply", "arm-restore") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
     (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
     # create-safety runs only as root while its parent holds the lock.
@@ -666,6 +682,8 @@ def main():
                 arm_restore(sys.argv[2])
             elif mode == "queue-restore":
                 queue_restore(stage, sys.stdin.buffer)
+            elif mode == "queue-restore-password":
+                queue_restore_password(stage, sys.stdin.buffer)
             elif mode == "auto-apply":
                 auto_apply(stage)
             elif mode == "apply":
