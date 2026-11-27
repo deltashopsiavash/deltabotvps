@@ -12,8 +12,8 @@ head=$(git -C "$src" rev-parse HEAD)
 for c in git gh php rsync python3 flock; do
     command -v "$c" >/dev/null || { echo "MISSING=$c"; exit 1; }
 done
-passed=$(gh run list -R deltashopsiavash/deltabotvps --workflow php-lint.yml --commit "$head" --limit 20 --json status,conclusion --jq 'any(.[]; .status=="completed" and .conclusion=="success")')
-[[ "$passed" == true ]] || { echo 'CI_NOT_PASSED'; exit 1; }
+passed=$(gh run list -R deltashopsiavash/deltabotvps --commit "$head" --limit 40 --json workflowName,status,conclusion --jq 'any(.[]; .workflowName=="PHP Lint" and .status=="completed" and .conclusion=="success") and any(.[]; .workflowName=="Full Delta restore on Ubuntu 24.04" and .status=="completed" and .conclusion=="success")')
+[[ "$passed" == true ]] || { echo 'CI_OR_FRESH_RESTORE_TEST_NOT_PASSED'; exit 1; }
 exec 9>/root/.delta-full-backup-deploy.lock
 flock -n 9 || { echo 'DEPLOY_ALREADY_RUNNING'; exit 1; }
 stage=$(mktemp -d /root/delta-full-backup-deploy.XXXXXXXX)
