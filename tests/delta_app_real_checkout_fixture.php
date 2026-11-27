@@ -256,4 +256,34 @@ check(daNewsFeed($db,$trialAid)['unread']===1,'archiving unread item updates cou
 rejected(fn()=>daNewsUrl('javascript:alert(1)'),'unsafe link schemes rejected');
 rejected(fn()=>daNewsUrl('http://example.invalid/test'),'non-HTTPS link rejected');
 rejected(fn()=>daNewsUrl('https://user:pass@example.invalid/test'),'URL credentials rejected');
+
+// Reinstall/migration: same stable identifier replaces its own session only.
+$aidDevice=(int)$trialAid;
+$accountDevice=daAccount($db,$aidDevice);
+$devicePassword='Fixture-device-password-123!';
+daExec($db,'UPDATE delta_app_accounts SET password_hash=?,device_limit=1 WHERE id=?','si',password_hash($devicePassword,PASSWORD_DEFAULT),$aidDevice);
+daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=?','i',$aidDevice);
+daExec($db,'DELETE FROM delta_app_devices WHERE account_id=?','i',$aidDevice);
+$legacyDevice=str_repeat('a',64);$stableDevice=str_repeat('b',64);$otherDevice=str_repeat('c',64);
+$first=daDeviceLogin($db,$accountDevice['username'],$devicePassword,$legacyDevice,'Fixture phone');
+$firstId=(int)daDeviceList($db,$aidDevice)[0]['id'];
+rejected(fn()=>daDeviceLogin($db,$accountDevice['username'],'wrong',$stableDevice,'Fixture phone',$legacyDevice),'legacy migration requires valid password');
+rejected(fn()=>daDeviceLogin($db,$accountDevice['username'],$devicePassword,$otherDevice,'Same model'),'different identifier cannot bypass full device limit');
+$next=daDeviceLogin($db,$accountDevice['username'],$devicePassword,$stableDevice,'Fixture phone',$legacyDevice);
+check(count(daDeviceList($db,$aidDevice))===1&&(int)daDeviceList($db,$aidDevice)[0]['id']===$firstId,'verified old installation migrates without allocating extra slot');
+check(!daRow($db,'SELECT token_hash FROM delta_app_sessions WHERE token_hash=?','s',hash('sha256',$first['token'])),'migration revokes old token');
+$again=daDeviceLogin($db,$accountDevice['username'],$devicePassword,$stableDevice,'Fixture phone');
+check(count(daDeviceList($db,$aidDevice))===1&&(int)daDeviceList($db,$aidDevice)[0]['id']===$firstId,'reinstall with stable ID needs no admin action');
+check(!daRow($db,'SELECT token_hash FROM delta_app_sessions WHERE token_hash=?','s',hash('sha256',$next['token'])),'reinstall revokes prior session only');
+$stableTwo=str_repeat('d',64);
+rejected(fn()=>daDeviceMigrateSession($db,$aidDevice,$next['token'],$stableTwo),'revoked token cannot migrate device');
+daDeviceMigrateSession($db,$aidDevice,$again['token'],$stableTwo);
+check((bool)daRow($db,'SELECT id FROM delta_app_devices WHERE account_id=? AND device_hash=?','is',$aidDevice,hash('sha256',$stableTwo)),'active session can migrate identifier');
+daExec($db,'UPDATE delta_app_accounts SET device_limit=2 WHERE id=?','i',$aidDevice);
+$other=daDeviceLogin($db,$accountDevice['username'],$devicePassword,$otherDevice,'Second phone');
+daDeviceMigrateSession($db,$aidDevice,$again['token'],$otherDevice);
+check(count(daDeviceList($db,$aidDevice))===2&&(bool)daRow($db,'SELECT token_hash FROM delta_app_sessions WHERE token_hash=?','s',hash('sha256',$other['token'])),'migration collision cannot kick another device');
+daDeviceRevoke($db,$aidDevice,$firstId);
+check(count(daDeviceList($db,$aidDevice))===1&&(bool)daRow($db,'SELECT token_hash FROM delta_app_sessions WHERE token_hash=?','s',hash('sha256',$other['token'])),'owner recovery removes only selected device');
+daExec($db,'UPDATE delta_app_accounts SET password_hash=?,device_limit=? WHERE id=?','sii',$accountDevice['password_hash'],(int)$accountDevice['device_limit'],$aidDevice);
 echo "All isolated checkout fixture checks passed.\n";
