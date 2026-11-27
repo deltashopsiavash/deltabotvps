@@ -485,7 +485,58 @@ def fresh_restore(work, expected_sha):
     require(not pathlib.Path("/var/www/html/deltabotvps/baseInfo.php").exists(), "TARGET_NOT_FRESH")
     require(not pathlib.Path("/opt/vpsbot").exists() and not pathlib.Path("/opt/delta-sms-bridge").exists(), "TARGET_NOT_FRESH")
     release = pathlib.Path("/etc/os-release").read_text()
-    require(re.search(r'^VERSION_ID="?24\.04"?
+    require(any(line.strip() in ('VERSION_ID="24.04"', 'VERSION_ID=24.04') for line in release.splitlines()), "UBUNTU_24_04_REQUIRED")
+    manifest = unpack_outer(verified, work)
+    require(manifest.get("safety") is not True, "FULL_ARCHIVE_REQUIRED")
+    runtime = work / "runtime"
+    runtime.mkdir()
+    unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
+    if manifest["sqlite"]:
+        restore_sqlite(work / "sqlite.tar.gz", runtime, manifest["sqlite"])
+    for rel in REQUIRED:
+        require((runtime / rel).exists(), "RESTORE_COMPONENT_MISSING")
+    values = base_values(runtime / "var/www/html/deltabotvps/baseInfo.php")
+    require(values["dbName"] == "delta", "MOTHER_DB_MISMATCH")
+    grants = fresh_grants(values)
+    for cmd in ("mysql", "rsync", "apache2ctl", "systemctl", "python3", "runuser", "php"):
+        require(shutil.which(cmd), "TARGET_TOOL_MISSING")
+    args, env = mysql_access()
+    def query(sql):
+        return run(args + ["-NB"], env=env, input=sql.encode(), stdout=subprocess.PIPE).stdout.decode().splitlines()
+    require(not any(re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n) for n in query("SHOW DATABASES;")), "TARGET_DATABASES_ALREADY_EXIST")
+    require(not query("SELECT User FROM mysql.user WHERE User='" + values["dbUserName"] + "';"), "TARGET_DB_ACCOUNT_EXISTS")
+    for svc in (*SERVICE_NAMES, "certbot.timer"):
+        subprocess.run(["systemctl", "disable", "--now", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    require(not active_services(), "FRESH_WRITERS_STILL_ACTIVE")
+    run(args + ["-e", "SET GLOBAL event_scheduler=OFF"], env=env, stdout=subprocess.DEVNULL)
+    print("FRESH_RESTORE_WRITERS_STOPPED", flush=True)
+    with (work / "databases.sql").open("rb") as sql:
+        run(args + ["--binary-mode", "--default-character-set=utf8mb4"], env=env, stdin=sql, stdout=subprocess.DEVNULL)
+    run(args, env=env, input=grants.encode(), stdout=subprocess.DEVNULL)
+    for rel in manifest["paths"]:
+        if rel not in PRESERVE_TARGET:
+            restore_path(runtime / rel, pathlib.Path("/") / rel)
+    backup_dir = pathlib.Path("/var/lib/deltabotvps/backups")
+    require(not backup_dir.is_symlink() and not any(p.is_symlink() for p in backup_dir.parents), "UNSAFE_BACKUP_DIRECTORY")
+    backup_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    shutil.chown(backup_dir, user="www-data", group="www-data")
+    os.chmod(backup_dir, 0o700)
+    vps = pathlib.Path("/opt/vpsbot")
+    requirements = vps / "requirements.txt"
+    require(requirements.is_file() and not requirements.is_symlink(), "VPSBOT_REQUIREMENTS_MISSING")
+    run(["python3", "-m", "venv", str(vps / "venv")], stdout=subprocess.DEVNULL)
+    run([str(vps / "venv/bin/python"), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)], stdout=subprocess.DEVNULL)
+    run(["systemctl", "daemon-reload"])
+    run(["apache2ctl", "configtest"], stdout=subprocess.DEVNULL)
+    check_restored_db()
+    print("DELTA_FRESH_RESTORE_OFFLINE_OK", flush=True)
+    print("Writers remain stopped. Verify domain/DNS, PHP, panel and SMS before activation.", flush=True)
+
+def check_restored_db():
+    php = "require '/var/www/html/deltabotvps/baseInfo.php'; mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT); $c=new mysqli('localhost',$dbUserName,$dbPassword,$dbName); require '/var/www/html/deltabotvps/delta_app_core.php'; daVerifyRecoverySecrets($c); $q=$c->query('SELECT db_name FROM reseller_bots WHERE status=1 AND is_deleted=0'); while($r=$q->fetch_assoc()){ $x=new mysqli('localhost',$dbUserName,$dbPassword,$r['db_name']); $x->close(); }"
+    run(["runuser", "-u", "www-data", "--", "php", "-r", php], stdout=subprocess.DEVNULL)
+
+def main():
     os.umask(0o077)
     require(os.geteuid() == 0, "ROOT_REQUIRED")
     for p in (ROOT, KEY.parent):
