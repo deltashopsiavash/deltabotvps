@@ -21,6 +21,28 @@ class Buffer:
         self.buffer = io.BytesIO(data)
 
 class FullBackupTest(unittest.TestCase):
+    def test_unarmed_wrong_hash_and_expired_restore(self):
+        import hashlib
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stage = root / "stage"
+            stage.mkdir()
+            with patch.object(full, "ROOT", root), patch.object(full, "verify") as verify:
+                with self.assertRaisesRegex(RuntimeError, "RESTORE_NOT_ARMED"):
+                    full.queue_restore(stage, io.BytesIO(b"wrong"))
+                full.arm_restore(hashlib.sha256(b"approved").hexdigest())
+                with self.assertRaisesRegex(RuntimeError, "RESTORE_ALREADY_ARMED"):
+                    full.arm_restore("a" * 64)
+                with self.assertRaisesRegex(RuntimeError, "APPROVED_FILE_HASH_MISMATCH"):
+                    full.queue_restore(stage, io.BytesIO(b"wrong"))
+                approval = root / "restore-approval.json"
+                approval.write_text(json.dumps({"sha256": "a" * 64, "expires": int(time.time()) - 1}))
+                with self.assertRaisesRegex(RuntimeError, "RESTORE_APPROVAL_EXPIRED"):
+                    full.queue_restore(stage, io.BytesIO(b"approved"))
+                verify.assert_not_called()
+                self.assertFalse((root / "queued-restore.gpg").exists())
+
     def test_runtime_rejects_escaping_members_and_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
