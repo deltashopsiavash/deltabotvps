@@ -64,8 +64,9 @@ def sha(p):
     with p.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
-def sqlite_snapshot(stage):
+def sqlite_snapshot(stage, safety=False):
     found = []
+    absent = []
     configured = set()
     for config in (pathlib.Path("/opt/vpsbot/.env"), pathlib.Path("/root/vpsbot/.env")):
         if config.is_file():
@@ -77,6 +78,12 @@ def sqlite_snapshot(stage):
                 require(under(str(path.resolve()).lstrip("/"), ("opt/vpsbot", "root/vpsbot")), "VPSBOT_DB_OUTSIDE_BACKUP_SCOPE")
                 require(not path.is_symlink() and not any(parent.is_symlink() for parent in path.parents), "VPSBOT_DB_SYMLINK")
                 # A configured but absent SQLite database is not equivalent to an empty backup.
+                if safety and not path.exists():
+                    # Rollback snapshots record actual absence on a fresh target;
+                    # never waive this requirement for a normal complete backup.
+                    require(not any(pathlib.Path(str(path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal")), "VPSBOT_DB_SIDECARS_WITHOUT_DATABASE")
+                    absent.append(str(path).lstrip("/"))
+                    continue
                 require(path.is_file(), "VPSBOT_CONFIGURED_DB_MISSING")
                 with path.open("rb") as check:
                     require(check.read(16) == b"SQLite format 3\x00", "VPSBOT_DB_INVALID")
@@ -105,6 +112,8 @@ def sqlite_snapshot(stage):
                 dst.close()
             found.append(rel)
     require({str(x).lstrip("/") for x in configured} <= set(found), "CONFIGURED_SQLITE_NOT_CAPTURED")
+    if safety:
+        return sorted(found), sorted(absent)
     return sorted(found)
 
 def runtime_filter(info):
@@ -120,7 +129,7 @@ def create(stage, safety=False):
     for p in REQUIRED:
         require(pathlib.Path("/" + p).exists(), "REQUIRED_COMPONENT_MISSING")
     dbs = database_snapshot(stage, safety=True) if safety else database_snapshot(stage)
-    sqlite = sqlite_snapshot(stage)
+    sqlite, absent = sqlite_snapshot(stage, safety=True) if safety else (sqlite_snapshot(stage), [])
     paths = [p for p in PATHS if pathlib.Path("/" + p).exists()]
     with tarfile.open(stage / "runtime.tar.gz", "w:gz", dereference=False) as tar:
         # Preserve symlinks without following them.
@@ -142,6 +151,7 @@ def create(stage, safety=False):
         names.append("sqlite.tar.gz")
     manifest = {"format": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                 "databases": dbs, "paths": paths, "sqlite": sqlite, "safety": safety,
+                "sqlite_absent": absent,
                 "files": {n: {"sha256": sha(stage / n), "size": (stage / n).stat().st_size} for n in names}}
     (stage / "manifest.json").write_text(json.dumps(manifest, indent=2))
     plain = stage / "archive.tar.gz"
@@ -359,6 +369,7 @@ def apply_verified(work, expected_sha):
     require(verified.is_file() and not verified.is_symlink() and sha(verified) == expected_sha,
             "APPROVAL_DIGEST_MISMATCH")
     manifest = unpack_outer(verified, work)
+    require(manifest.get("safety") is not True, "FULL_ARCHIVE_REQUIRED")
     runtime = work / "runtime"
     runtime.mkdir()
     unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
