@@ -609,6 +609,7 @@ def restore_notification(values, message):
     # Only the locally configured owner's private chat; never include secrets.
     import urllib.request, urllib.parse
     try:
+        require(re.fullmatch(r"[0-9]{5,16}:[A-Za-z0-9_-]{35}", values["botToken"]), "INVALID_NOTIFICATION_TOKEN")
         url = "https://api.telegram.org/bot" + values["botToken"] + "/sendMessage"
         data = urllib.parse.urlencode({"chat_id": values["admin"], "text": message}).encode()
         with urllib.request.urlopen(url, data=data, timeout=15) as response:
@@ -658,7 +659,7 @@ def main():
             create(pathlib.Path(d), safety=True)
         return
     with (ROOT / "lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock, fcntl.LOCK_EX if mode == "auto-apply" else fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="work-", dir=ROOT) as d:
             stage = pathlib.Path(d)
             if mode == "arm-restore":
