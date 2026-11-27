@@ -202,12 +202,12 @@ function deltaAppAdminHandle(): bool {
                     daSend('مبلغ '.number_format((int)$o['price']).' تومان از موجودی شما کسر می‌شود.',[daBtn('✅ پرداخت از موجودی','dar_wallet_'.$id),daBtn('بازگشت','dar_invoice_'.$id)]);return true;
                 }
                 daRealWallet($connection,(int)$from_id,$id);
-                try{daRealDeliverPaidHash($connection,(string)$o['pay_hash']);}catch(Throwable $e){daSend('پرداخت ثبت شد؛ تحویل در انتظار تکمیل است.',[daBtn('وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
-                daRealInvoiceView($connection,(int)$from_id,$id);return true;
+                try{$delivery=daRealDeliverPaidHash($connection,(string)$o['pay_hash']);}catch(Throwable $e){daSend('پرداخت ثبت شد؛ تحویل در انتظار تکمیل است.',[daBtn('وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
+                daRealDeliveryStatus($connection,$id,$delivery);return true;
             }
             if(preg_match('/^dar_deliver_(\d+)$/D',$cb,$m)){
                 $id=(int)$m[1];
-                try{$order=daRealOrder($connection,(int)$from_id,$id);daRealDeliverPaidHash($connection,(string)$order['pay_hash']);$renew=daRenewLink($connection,$id);daRealServiceView($connection,(int)$from_id,$renew?(int)$renew['root_order_id']:$id);}
+                try{$order=daRealOrder($connection,(int)$from_id,$id);$delivery=daRealDeliverPaidHash($connection,(string)$order['pay_hash']);daRealDeliveryStatus($connection,$id,$delivery);}
                 catch(Throwable $e){daSend('تحویل هنوز کامل نشده است؛ وضعیت فاکتور را بررسی کنید و دوباره پرداخت نکنید.',[daBtn('📋 وضعیت فاکتور','dar_invoice_'.$id)]);return true;}
                 return true;
             }
@@ -299,7 +299,7 @@ function deltaAppAdminHandle(): bool {
         if(preg_match('/^da_trialreleaseok_([1-9]\d{0,15})$/D',$cb,$m)){
             daRealSchema($connection);daTrialRelease($connection,(int)$m[1]);daSend('✅ اجازه دریافت مجدد ثبت شد.',[daBtn('بازگشت','da_trial')]);return true;
         }
-        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('🔔 اطلاع‌رسانی','da_news_inbox'),daBtn('📢 خبر شناور','da_news_float'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
+        if($cb==='da_menumanage'){setUser();daSend('⚙️ مدیریت',[daBtn('کاربران','da_users_0'),daBtn('ساخت کاربر','da_adduser'),daBtn('🎁 مدیریت اشتراک تست','da_trial'),daBtn('🔔 اطلاع‌رسانی','da_news_inbox'),daBtn('📢 خبر شناور','da_news_float'),daBtn('آیدی خرید و پشتیبانی','da_contacts'),daBtn('📎 تنظیم دانلود','da_download'),daBtn('به‌روزرسانی ساب کاربران','da_refresh'),daBtn('بازگشت','da_home')]);return true;}
         if($cb==='da_cats'){setUser();$rows=[];foreach(daRows($connection,'SELECT * FROM delta_app_categories ORDER BY id') as $r)$rows[]=daBtn($r['name'],'da_cat_'.$r['id']);$rows[]=daBtn('ساخت دسته‌بندی','da_catadd');$rows[]=daBtn('بازگشت','da_menuplans');daSend('دسته‌بندی‌ها',$rows);return true;}
         if($cb==='da_catadd'||preg_match('/^da_catedit_(\d+)$/D',$cb)){setUser($cb);daSend('نام دسته‌بندی را وارد کنید.',[daBtn('انصراف','da_cats')]);return true;}
         if(preg_match('/^da_cat_(\d+)$/D',$cb,$m)){setUser();$r=daRow($connection,'SELECT * FROM delta_app_categories WHERE id=?','i',(int)$m[1]);if(!$r)throw new InvalidArgumentException('دسته یافت نشد.');daSend(daEsc($r['name']),[daBtn('تغییر نام','da_catedit_'.$m[1]),daBtn('حذف دسته','da_catask_'.$m[1]),daBtn('بازگشت','da_cats')]);return true;}
@@ -336,6 +336,19 @@ function deltaAppAdminHandle(): bool {
             if($step!=='da_refconfirm')throw new InvalidArgumentException('دوباره به‌روزرسانی همین الان را انتخاب کنید.');
             $r=daRefreshBroadcast($connection,$cb==='da_refrestart');setUser();
             daSend('✅ فرمان #'.$r['refresh_revision'].' ثبت شد. دریافت و اجرای فرمان به آنلاین بودن و فعالیت برنامه بستگی دارد؛ اجرای همه گوشی‌ها هنوز تأیید نشده.',[daBtn('بازگشت','da_refresh')]);return true;
+        }
+        if($cb==='da_download'){setUser();daDownloadAdminView($connection);return true;}
+        if($cb==='da_download_url'){setUser('da_download_url');daSend('لینک مستقیم HTTPS دانلود APK را ارسال کنید.',[daBtn('انصراف','da_download')]);return true;}
+        if($cb==='da_download_file'){setUser('da_download_file');daSend('فایل آخرین نسخه APK (حداکثر ۵۰ مگابایت) را به‌صورت Document ارسال کنید.',[daBtn('انصراف','da_download')]);return true;}
+        if($cb===''&&$step==='da_download_url'){
+            try{daDownloadSetUrl($connection,$input);}catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_download')]);return true;}
+            setUser();daDownloadAdminView($connection,'✅ لینک دانلود ذخیره شد.');return true;
+        }
+        if($cb===''&&$step==='da_download_file'){
+            $doc=$update->message->document??null;
+            try{daDownloadSetFile($connection,(string)($doc->file_id??''),(string)($doc->file_name??''),(int)($doc->file_size??0));}
+            catch(InvalidArgumentException $e){daSend(daEsc($e->getMessage()),[daBtn('انصراف','da_download')]);return true;}
+            setUser();daDownloadAdminView($connection,'✅ فایل جدید ثبت شد؛ برای خریدهای بعدی ارسال می‌شود.');return true;
         }
         if($cb==='da_contacts'){
             setUser();$c=daContacts($connection);
@@ -489,6 +502,16 @@ function deltaAppAdminHandle(): bool {
     return true;
 }
 
+function daDownloadAdminView(mysqli $db,string $notice=''): void {
+    $s=daDownloadSettings($db);
+    daSend(($notice===''?'':$notice."\n\n")."📎 تنظیم دانلود برنامه\n\nلینک مستقیم: ".daEsc($s['url'])."\nفایل تلگرام: ".($s['file_id']!==''?daEsc($s['file_name']):'هنوز ثبت نشده؛ فقط لینک ارسال می‌شود.'),[daBtn('🔗 تنظیم لینک دانلود مستقیم','da_download_url'),daBtn('📎 ارسال فایل APK','da_download_file'),daBtn('بازگشت','da_menumanage')]);
+}
+function daRealDeliveryStatus(mysqli $db,int $id,array $delivery): void {
+    $renew=daRenewLink($db,$id);
+    $root=$renew?(int)$renew['root_order_id']:$id;
+    $msg=!empty($delivery['already_delivered'])?'✅ اشتراک قبلاً تحویل شده است. در صورت نیاز رمز را از سرویس‌های من تغییر دهید.':(!empty($delivery['notified'])?'✅ '.($renew?'تمدید':'خرید').' انجام شد؛ اطلاعات در پیام جداگانه ارسال شد.':'✅ پرداخت و تحویل سرویس انجام شد؛ ارسال پیام تأیید نشد. اطلاعات حساب و تغییر رمز در سرویس‌های من در دسترس است.');
+    daSend($msg,[daBtn('👤 مشاهده سرویس','dar_service_'.$root),daBtn('بازگشت','dar_home')]);
+}
 function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
     $o=daRealOrder($db,$buyer,$id);$rows=[];
     if($o['method']==='trial'){
@@ -496,6 +519,7 @@ function daRealInvoiceView(mysqli $db,int $buyer,int $id): void {
         daSend('این درخواست مربوط به اشتراک تست است.',[daBtn('🎁 اشتراک تست','dar_trial'),daBtn('بازگشت','dar_home')]);return;
     }
     $renew=daRenewLink($db,$id);
+    if($o['state']==='delivered'){daRealServiceView($db,$buyer,$renew?(int)$renew['root_order_id']:$id);return;}
     $status=['pending'=>'در انتظار پرداخت','paid'=>'پرداخت شده','provisioning'=>'در حال تحویل','delivered'=>'تحویل شده','cancelled'=>'لغو شده','deleting'=>'در انتظار حذف','deleted'=>'حذف شده'];
     $txt="🧾 فاکتور خرید دلتا\n〰〰〰〰〰〰〰\n".daEsc($o['name'])."\n🔹حجم: ".daQuotaLabel($o['gb'])." گیگ\n🔹اعتبار: ".$o['days']." روز\n🔹دستگاه: ".$o['device_limit']."\n💵مبلغ: ".number_format((int)$o['price'])." تومان\n〰〰〰〰〰〰〰\n🔖کد پیگیری: <code>".daEsc(deltaTrackingCode($o['pay_hash']))."</code>\n⏳وضعیت: ".($status[$o['state']]??'نامشخص')."\n➖➖➖➖➖➖➖";
     if($renew){
