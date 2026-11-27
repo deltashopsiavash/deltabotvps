@@ -1,4 +1,26 @@
 <?php
+// Reject unauthenticated requests before the full configuration, DB migrations
+// or payment handlers. Child bots authenticate with their own existing token.
+if(PHP_SAPI!=='cli'){
+    if(($_SERVER['REQUEST_METHOD']??'')!=='POST'){http_response_code(405);exit;}
+    $provided=$_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??'';
+    if(!is_string($provided)||!preg_match('/^[a-f0-9]{64}$/D',$provided)){http_response_code(403);exit;}
+    require_once __DIR__.'/baseInfo.php';
+    require_once __DIR__.'/reseller_webhook.php';
+    try{
+        $authToken=(string)$botToken;
+        if(array_key_exists('bid',$_GET)){
+            $bid=filter_var($_GET['bid'],FILTER_VALIDATE_INT,['options'=>['min_range'=>1]]);
+            if($bid===false||!is_scalar($_GET['bid'])){http_response_code(403);exit;}
+            $authDb=new mysqli('localhost',$dbUserName,$dbPassword,$dbName);
+            $st=$authDb->prepare('SELECT bot_token FROM reseller_bots WHERE id=? AND status=1 AND is_deleted=0 LIMIT 1');
+            $st->bind_param('i',$bid);$st->execute();$authRow=$st->get_result()->fetch_assoc();$st->close();$authDb->close();
+            $authToken=(string)($authRow['bot_token']??'');
+        }
+        if(!deltaWebhookAuthorized($_SERVER,$authToken)){http_response_code(403);exit;}
+    }catch(Throwable $e){http_response_code(403);exit;}
+    unset($authToken,$authRow,$authDb,$st,$provided);
+}
 include_once 'config.php';
 
 check();
