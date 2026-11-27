@@ -587,6 +587,54 @@ function daRefreshBroadcast(mysqli $db,bool $reconnect): array {
     }catch(Throwable $e){$db->rollback();throw $e;}
 }
 
+// Device IDs are app-scoped, not a hardware attestation. The account row
+// serializes login, migration, and revocation so no extra slot is granted.
+function daDeviceLogin(mysqli $db,string $name,string $password,string $device,string $model,string $legacy=''): array {
+    $db->begin_transaction();
+    try{
+        $a=daRow($db,'SELECT * FROM delta_app_accounts WHERE username=? FOR UPDATE','s',$name);
+        if(!$a||!password_verify($password,$a['password_hash'])||(int)$a['active']!==1)throw new DomainException('login',401);
+        $id=(int)$a['id'];
+        $mapping=daPgMap($db,$id);
+        if(!$mapping||$mapping['state']!=='ready')throw new DomainException('dedicated_required',409);
+        $dh=hash('sha256',$device);
+        $old=daRow($db,'SELECT * FROM delta_app_devices WHERE account_id=? AND device_hash=?','is',$id,$dh);
+        // Migrate only an exact previous installation ID supplied alongside
+        // the verified password, never infer ownership from phone model.
+        if(!$old&&$legacy!==''&&$legacy!==$device){
+            $old=daRow($db,'SELECT * FROM delta_app_devices WHERE account_id=? AND device_hash=?','is',$id,hash('sha256',$legacy));
+        }
+        $count=daRow($db,'SELECT COUNT(*) AS n FROM delta_app_devices WHERE account_id=?','i',$id);
+        if(!$old&&(int)$count['n']>=(int)$a['device_limit'])throw new DomainException('device_limit',409);
+        $token=bin2hex(random_bytes(32));$hash=hash('sha256',$token);$now=time();
+        if($old){
+            daExec($db,'DELETE FROM delta_app_sessions WHERE token_hash=?','s',$old['token_hash']);
+            daExec($db,'UPDATE delta_app_devices SET device_hash=?,token_hash=?,model=?,last_seen=? WHERE account_id=? AND id=?','sssiii',$dh,$hash,$model,$now,$id,(int)$old['id']);
+        }else{
+            daExec($db,'INSERT INTO delta_app_devices(account_id,device_hash,token_hash,model,created,last_seen) VALUES(?,?,?,?,?,?)','isssii',$id,$dh,$hash,$model,$now,$now);
+        }
+        daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=? AND token_hash NOT IN (SELECT token_hash FROM delta_app_devices WHERE account_id=?)','ii',$id,$id);
+        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',$hash,$id,$now+315360000);
+        $db->commit();
+        return ['account'=>$a,'token'=>$token];
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
+function daDeviceMigrateSession(mysqli $db,int $account,string $token,string $stable): void {
+    $db->begin_transaction();
+    try{
+        $a=daRow($db,'SELECT id,active FROM delta_app_accounts WHERE id=? FOR UPDATE','i',$account);
+        $h=hash('sha256',$token);
+        $dev=daRow($db,'SELECT d.id,d.device_hash FROM delta_app_devices d JOIN delta_app_sessions s ON s.token_hash=d.token_hash AND s.account_id=d.account_id WHERE d.account_id=? AND d.token_hash=? AND s.expires>?','isi',$account,$h,time());
+        if(!$a||(int)$a['active']!==1||!$dev)throw new DomainException('session',401);
+        $dh=hash('sha256',$stable);
+        if($dev['device_hash']!==$dh){
+            $other=daRow($db,'SELECT id FROM delta_app_devices WHERE account_id=? AND device_hash=?','is',$account,$dh);
+            // Never silently kick a different already registered slot.
+            if(!$other)daExec($db,'UPDATE delta_app_devices SET device_hash=? WHERE account_id=? AND id=?','sii',$dh,$account,(int)$dev['id']);
+        }
+        $db->commit();
+    }catch(Throwable $e){$db->rollback();throw $e;}
+}
 function daDeviceList(mysqli $db,int $id): array {
     return array_map(fn($r)=>['id'=>(int)$r['id'],'model'=>$r['model'],'created'=>(int)$r['created'],'last_seen'=>(int)$r['last_seen'],'used_bytes'=>null],daRows($db,'SELECT id,model,created,last_seen FROM delta_app_devices WHERE account_id=? ORDER BY created,id','i',$id));
 }
