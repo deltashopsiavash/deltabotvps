@@ -195,7 +195,7 @@ function expandBackupFile(string $path): ?string {
 
 // The root helper is installed outside the web root with a narrowly scoped sudo rule.
 // The independent recovery key never enters PHP, Telegram or the repository.
-function fullBackupHelper(string $action, string $path): bool {
+function fullBackupHelper(string $action, string $path, ?string &$digest = null): bool {
     if (!in_array($action, ['create', 'verify'], true)) return false;
     if (!is_executable('/usr/local/sbin/delta-full-backup')) return false;
     if ($action === 'create') {
@@ -217,7 +217,10 @@ function fullBackupHelper(string $action, string $path): bool {
             fclose($pipes[1]);
         }
         $ok = proc_close($proc) === 0;
-        return $ok && ($action === 'create' || str_starts_with((string)$result,'VERIFIED_RESTORE_STAGED='));
+        if ($action === 'create') return $ok;
+        if (!$ok || !preg_match('/^VERIFIED_RESTORE_STAGED=([a-f0-9]{64})\s*$/D',(string)$result,$match)) return false;
+        $digest = $match[1];
+        return true;
     } finally { fclose($handle); }
 }
 function fullBackupMagic(string $path): bool {
@@ -257,11 +260,12 @@ if ($mode === 'restore' && fullBackupMagic($arg4)) {
         sendMsg($chatId,"❌ بازیابی کل مجموعه فقط برای مدیر اصلی ربات مادر مجاز است.");
         exit(1);
     }
-    if (!fullBackupHelper('verify',$arg4)) {
+    $digest = null;
+    if (!fullBackupHelper('verify',$arg4,$digest)) {
         sendMsg($chatId,"❌ بکاپ کامل معتبر نیست یا کلید بازیابی مطابقت ندارد. هیچ دیتابیسی تغییر نکرد.");
         exit(1);
     }
-    sendMsg($chatId,"✅ فایل رمزگذاری‌شده بررسی و در فضای خصوصی root آماده شد. هیچ داده‌ای هنوز جایگزین نشده است. برای بازیابی کل سرور تأیید مستقل مالک از SSH لازم است.");
+    sendMsg($chatId,"✅ فایل رمزگذاری‌شده معتبر است. هیچ داده‌ای هنوز جایگزین نشده است.\n⚠️ برای تأیید نهایی و جایگزینی تمام اطلاعات، مالک از SSH دستور زیر را اجرا کند:\n/usr/local/sbin/delta-full-backup apply ".$digest);
     exit(0);
 }
 
