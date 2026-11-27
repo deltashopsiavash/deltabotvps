@@ -361,6 +361,13 @@ EOF
         sleep 1
 
         curl -F "url=https://${YOUR_DOMAIN}/deltabotvps/bot.php" -F "secret_token=$(printf '%s' "${YOUR_BOT_TOKEN}" | sha256sum | cut -d' ' -f1)" "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook"
+        # Keep backups out of the web root on new installations.
+        for backup_dir in /var/lib/deltabotvps /var/lib/deltabotvps/backups; do
+            [[ ! -L "$backup_dir" && ( ! -e "$backup_dir" || -d "$backup_dir" ) ]] || { echo 'UNSAFE_BACKUP_DIRECTORY'; exit 1; }
+        done
+        install -d -o root -g www-data -m 0750 /var/lib/deltabotvps || exit 1
+        install -d -o www-data -g www-data -m 0700 /var/lib/deltabotvps/backups || exit 1
+        runuser -u www-data -- test -w /var/lib/deltabotvps/backups || exit 1
         MESSAGE="✅ The delta bot has been successfully installed! @deltach"
         curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" -d chat_id="${YOUR_CHAT_ID}" -d text="$MESSAGE"
         
