@@ -66,6 +66,7 @@ def sha(p):
 
 def sqlite_snapshot(stage):
     found = []
+    configured = set()
     for config in (pathlib.Path("/opt/vpsbot/.env"), pathlib.Path("/root/vpsbot/.env")):
         if config.is_file():
             m = re.search(r"^\s*(?:export\s+)?DB_PATH\s*=\s*(.*?)\s*$", config.read_text(), re.M)
@@ -74,18 +75,19 @@ def sqlite_snapshot(stage):
                 if not path.is_absolute():
                     path = config.parent / path
                 require(under(str(path.resolve()).lstrip("/"), ("opt/vpsbot", "root/vpsbot")), "VPSBOT_DB_OUTSIDE_BACKUP_SCOPE")
-                require(not path.is_symlink(), "VPSBOT_DB_SYMLINK")
+                require(not path.is_symlink() and not any(parent.is_symlink() for parent in path.parents), "VPSBOT_DB_SYMLINK")
                 # A configured but absent SQLite database is not equivalent to an empty backup.
                 require(path.is_file(), "VPSBOT_CONFIGURED_DB_MISSING")
                 with path.open("rb") as check:
                     require(check.read(16) == b"SQLite format 3\x00", "VPSBOT_DB_INVALID")
+                configured.add(path)
     for base in (pathlib.Path("/opt/vpsbot"), pathlib.Path("/root/vpsbot")):
         if not base.is_dir():
             continue
         for p in base.rglob("*"):
             if any(s in SKIP for s in p.relative_to(base).parts) or p.is_symlink() or not p.is_file():
                 continue
-            if p.suffix.lower() not in (".sqlite", ".sqlite3", ".db"):
+            if p not in configured and p.suffix.lower() not in (".sqlite", ".sqlite3", ".db"):
                 continue
             with p.open("rb") as f:
                 if f.read(16) != b"SQLite format 3\x00":
@@ -102,6 +104,7 @@ def sqlite_snapshot(stage):
                 src.close()
                 dst.close()
             found.append(rel)
+    require({str(x).lstrip("/") for x in configured} <= set(found), "CONFIGURED_SQLITE_NOT_CAPTURED")
     return sorted(found)
 
 def runtime_filter(info):
@@ -123,6 +126,13 @@ def create(stage, safety=False):
         # Preserve symlinks without following them.
         for p in paths:
             tar.add("/" + p, arcname=p, filter=lambda info: None if info.name in sqlite else runtime_filter(info))
+    # Verify the runtime can actually be extracted before sending an archive.
+    rehearsal_dir = stage / "runtime-check"
+    rehearsal_dir.mkdir()
+    unpack_runtime(stage / "runtime.tar.gz", rehearsal_dir, paths)
+    for rel in REQUIRED:
+        require((rehearsal_dir / rel).exists(), "RESTORE_COMPONENT_MISSING")
+    shutil.rmtree(rehearsal_dir)
     with (stage / "packages.txt").open("wb") as f:
         run(["dpkg-query", "-W"], stdout=f)
     names = ["databases.sql", "runtime.tar.gz", "packages.txt"]
