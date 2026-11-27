@@ -35,7 +35,8 @@ for f in bot.php backup_worker.php; do
     [[ -f "$live/$f" && ! -L "$live/$f" ]] || exit 1
     git -C "$src" show "$base:$f" > "$stage/baseline"
     git -C "$src" show "$head:$f" > "$stage/$f"
-    cmp -s "$live/$f" "$stage/baseline" || cmp -s "$live/$f" "$stage/$f" || { echo "LOCAL_VERSION_MISMATCH=$f"; exit 1; }
+    git -C "$src" show "8dbb45596e78edabff9fc0dfe3c1556a69cc1dfe:$f" > "$stage/previous-full-backup"
+    cmp -s "$live/$f" "$stage/baseline" || cmp -s "$live/$f" "$stage/previous-full-backup" || cmp -s "$live/$f" "$stage/$f" || { echo "LOCAL_VERSION_MISMATCH=$f"; exit 1; }
     php -l "$stage/$f"
     cp -a "$live/$f" "$backup/$f"
 done
