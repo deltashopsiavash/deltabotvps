@@ -505,7 +505,7 @@ function daPgNew(mysqli $db,int $plan): array {
     try{daPgProvision($db,$id);return ['id'=>$id,'username'=>$name,'password'=>$pass,'ready'=>true];}
     catch(Throwable $e){return ['id'=>$id,'username'=>$name,'ready'=>false];}
 }
-function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
+function daPgLive(mysqli $db,array $a,bool $withConfigs=false,bool $allowPartial=false): array {
     $m=daPgMap($db,(int)$a['id']);
     if(!$m||$m['state']!=='ready')throw new InvalidArgumentException('حساب هنوز ساب اختصاصی ندارد.');
     $s=daPgServer($db,(int)$m['server_id'],$m['panel_base'],$m['panel_kind']);$token=daPgToken($s);$j=daPgGet($s,$token,$m);
@@ -517,11 +517,17 @@ function daPgLive(mysqli $db,array $a,bool $withConfigs=false): array {
         $pending=daRow($db,"SELECT r.target_limit,r.target_expires FROM delta_app_renewals r JOIN delta_app_real_orders o ON o.id=r.order_id WHERE r.account_id=? AND o.state='provisioning' AND r.target_limit IS NOT NULL LIMIT 1",'i',(int)$a['id']);
         if($pending&&(int)$pending['target_limit']===($j['data_limit']??null))throw new RuntimeException('renewal completion pending');
     }
-    $metrics=daPgMetrics($a,$j,false);$metrics['configs']=[];
+    $metrics=daPgMetrics($a,$j,false);$metrics['configs']=[];$metrics['configs_ready']=true;
     if($withConfigs&&$metrics['can_connect']){
-        [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
-        if($code!==200)throw new RuntimeException('sub fetch');
-        $metrics['configs']=daExtract($raw);
+        try{
+            [$code,$raw]=daPgHttp(daPgSub($s,$j),'GET',null,null,false,daPgRoute($s)['sub_resolve']);
+            if($code!==200)throw new RuntimeException('sub fetch');
+            $metrics['configs']=daExtract($raw);
+        }catch(Throwable $e){
+            if(!$allowPartial)throw $e;
+            // Authentication and verified quota are independent of a temporary catalog error.
+            $metrics['configs_ready']=false;
+        }
     }
     return $metrics;
 }
