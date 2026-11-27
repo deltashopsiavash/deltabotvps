@@ -103,3 +103,44 @@ runuser -u www-data -- test -w /var/lib/deltabotvps/backups
 ! systemctl is-active --quiet apache2
 ! systemctl is-active --quiet cron
 echo 'DELTA_FULL_FRESH_VM_TEST_PASSED'
+
+# Test the actual one-time web upload -> detached root worker -> installed restore.
+# The deliberately invalid fixture Telegram token cannot be used for notifications.
+bash "$src/scripts/install-full-backup.sh"
+mysql -uroot -e 'DELETE FROM delta.users; DELETE FROM delta_rb72.users; DELETE FROM delta_sms_bridge.events'
+rm -f /opt/vpsbot/vpsbot.sqlite3
+printf '%s\n' 'target after install' > /var/www/html/deltabotvps/fixture.txt
+systemctl start apache2 cron
+if runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup auto-apply; then
+    echo 'UNSAFE_DIRECT_AUTO_APPLY'; exit 1
+fi
+if runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup queue-restore < /root/ci-delta-full.delta.gpg; then
+    echo 'UNARMED_RESTORE_ACCEPTED'; exit 1
+fi
+expected=$(sha256sum /root/ci-delta-full.delta.gpg | cut -d' ' -f1)
+/usr/local/sbin/delta-full-backup arm-restore "$expected"
+if printf 'wrong file' | runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup queue-restore; then
+    echo 'WRONG_FILE_ACCEPTED'; exit 1
+fi
+[[ -z $(mysql -uroot -NB -e 'SELECT id FROM delta.users') ]]
+runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup queue-restore < /root/ci-delta-full.delta.gpg
+for attempt in $(seq 1 120); do
+    if journalctl -u delta-full-restore-once.service --no-pager | grep -q 'DELTA_FULL_RESTORE_COMPLETE_CHECK_EXTERNAL_SERVICES'; then
+        break
+    fi
+    sleep 2
+done
+journalctl -u delta-full-restore-once.service --no-pager
+[[ $(mysql -uroot -NB -e 'SELECT id FROM delta.users') == 123 ]]
+[[ $(mysql -uroot -NB -e 'SELECT id FROM delta_rb72.users') == 456 ]]
+[[ $(mysql -uroot -NB -e 'SELECT id FROM delta_sms_bridge.events') == 789 ]]
+grep -Fxq 'source fixture' /var/www/html/deltabotvps/fixture.txt
+[[ -f /opt/vpsbot/vpsbot.sqlite3 ]]
+systemctl is-active --quiet apache2
+systemctl is-active --quiet cron
+test ! -e /var/lib/delta-full-backup/restore-approval.json
+test ! -e /var/lib/delta-full-backup/queued-restore.gpg
+if runuser -u www-data -- sudo -n /usr/local/sbin/delta-full-backup queue-restore < /root/ci-delta-full.delta.gpg; then
+    echo 'REPLAY_ACCEPTED'; exit 1
+fi
+echo 'DELTA_ONE_SHOT_RESTORE_VM_TEST_PASSED'
