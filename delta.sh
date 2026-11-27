@@ -358,7 +358,7 @@ EOF
 
         sleep 1
 
-        curl -F "url=https://${YOUR_DOMAIN}/deltabotvps/bot.php" "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook"
+        curl -F "url=https://${YOUR_DOMAIN}/deltabotvps/bot.php" -F "secret_token=$(printf '%s' "${YOUR_BOT_TOKEN}" | sha256sum | cut -d' ' -f1)" "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/setWebhook"
         MESSAGE="✅ The delta bot has been successfully installed! @deltach"
         curl -s -X POST "https://api.telegram.org/bot${YOUR_BOT_TOKEN}/sendMessage" -d chat_id="${YOUR_CHAT_ID}" -d text="$MESSAGE"
         
