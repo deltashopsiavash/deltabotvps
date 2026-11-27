@@ -195,7 +195,7 @@ function expandBackupFile(string $path): ?string {
 
 // The root helper is installed outside the web root with a narrowly scoped sudo rule.
 // The independent recovery key never enters PHP, Telegram or the repository.
-function fullBackupHelper(string $action, string $path, ?string &$digest = null): bool {
+function fullBackupHelper(string $action, string $path, ?string &$digest = null, ?string &$reason = null): bool {
     if (!in_array($action, ['create', 'verify'], true)) return false;
     if (!is_executable('/usr/local/sbin/delta-full-backup')) return false;
     if ($action === 'create') {
@@ -203,11 +203,11 @@ function fullBackupHelper(string $action, string $path, ?string &$digest = null)
         $handle = fopen($path, 'xb');
         umask($old);
         if (!$handle) return false;
-        $io = [0=>['file','/dev/null','r'], 1=>$handle, 2=>['file','/dev/null','w']];
+        $io = [0=>['file','/dev/null','r'], 1=>$handle, 2=>['pipe','w']];
     } else {
         $handle = fopen($path,'rb');
         if (!$handle) return false;
-        $io = [0=>$handle, 1=>['pipe','w'], 2=>['file','/dev/null','w']];
+        $io = [0=>$handle, 1=>['pipe','w'], 2=>['pipe','w']];
     }
     try {
         $proc = proc_open(['/usr/bin/sudo','-n','/usr/local/sbin/delta-full-backup',$action], $io, $pipes);
@@ -216,7 +216,12 @@ function fullBackupHelper(string $action, string $path, ?string &$digest = null)
             $result = stream_get_contents($pipes[1], 4096);
             fclose($pipes[1]);
         }
+        $error = stream_get_contents($pipes[2], 4096);
+        fclose($pipes[2]);
         $ok = proc_close($proc) === 0;
+        if (!$ok && preg_match('/^DELTA_FULL_BACKUP_FAILED:([A-Za-z_]+)\s*$/m',(string)$error,$failure)) {
+            $reason = $failure[1];
+        }
         if ($action === 'create') return $ok;
         if (!$ok || !preg_match('/^VERIFIED_RESTORE_STAGED=([a-f0-9]{64})\s*$/D',(string)$result,$match)) return false;
         $digest = $match[1];
@@ -230,17 +235,21 @@ function fullBackupMagic(string $path): bool {
 if ($mode === 'backup' && $fullOwnerRequest) {
     sendMsg($chatId, "⏳ در حال ساخت بکاپ رمزگذاری‌شده کل مجموعه دلتا...");
     $path = ensureBackupDir().'/DELTA-FULL-'.date('Ymd_His').'-'.bin2hex(random_bytes(4)).'.delta.gpg';
+    $ready = false;
     try {
         // Preserve the portable app panel recovery envelope before taking the multi-DB snapshot.
         require_once __DIR__.'/delta_app_real_checkout.php';
         daSchema($connection);
         daRealSchema($connection);
         daPrepareRecoveryKey($connection);
-        if (!fullBackupHelper('create',$path) || !fullBackupMagic($path)) {
+        $reason = null;
+        $unused = null;
+        if (!fullBackupHelper('create',$path,$unused,$reason) || !fullBackupMagic($path)) {
             @unlink($path);
-            sendMsg($chatId,"❌ بکاپ کامل ساخته نشد. سرویس بکاپ و دسترسی دیتابیس‌ها را بررسی کنید؛ بکاپ ناقص ارسال نشد.");
+            sendMsg($chatId,"❌ بکاپ کامل ساخته نشد؛ بکاپ ناقص ارسال نشد.\nکد بررسی: ".($reason??"HELPER_UNAVAILABLE"));
             exit(1);
         }
+        $ready = true;
         if (filesize($path) > 19*1024*1024) {
             sendMsg($chatId,"⚠️ بکاپ رمزگذاری‌شده سالم روی سرور ذخیره شد ولی از سقف دانلود تلگرام بزرگ‌تر است. از SSH آن را به فضای امن خارج سرور منتقل کنید.\n".basename($path));
             exit(1);
@@ -249,8 +258,8 @@ if ($mode === 'backup' && $fullOwnerRequest) {
         sendMsg($chatId,!empty($res['ok'])?"✅ بکاپ ارسال شد. فایل و رمز بازیابی مستقل را جداگانه خارج از سرور نگه دارید.":"❌ ارسال تلگرام ناموفق بود؛ فایل رمزگذاری‌شده روی سرور محفوظ است.");
         exit(empty($res['ok'])?1:0);
     } catch (Throwable $e) {
-        @unlink($path);
-        sendMsg($chatId,"❌ ساخت بکاپ کامل متوقف شد؛ هیچ بکاپ ناقصی ارسال نشد.");
+        if (!$ready) @unlink($path);
+        sendMsg($chatId,$ready?"⚠️ ارسال فایل ناموفق بود؛ فایل رمزگذاری‌شده روی سرور محفوظ است.":"❌ ساخت بکاپ کامل متوقف شد؛ هیچ بکاپ ناقصی ارسال نشد.");
         exit(1);
     }
 }
