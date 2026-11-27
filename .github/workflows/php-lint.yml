@@ -43,6 +43,8 @@ jobs:
           php -l service_subscription_ui.php
           php -l reseller_webhook.php
           php -l scripts/configure-webhook-auth.php
+          php -l install/install.php
+          php -l install/update.php
           php -l reseller_finalize_worker.php
           php -l settings/warnusers.php
           php -l settings/expired_subscriptions_admin.php
@@ -68,6 +70,7 @@ jobs:
           php tests/reseller_webhook.php
           bash -n update.sh
           bash -n delta.sh
+          bash -n scripts/deploy-delta-security.sh
           bash -n scripts/configure-sms-approval.sh
       - name: Test NPVS v6 public-key generator
         run: |
