@@ -196,7 +196,7 @@ function expandBackupFile(string $path): ?string {
 // The root helper is installed outside the web root with a narrowly scoped sudo rule.
 // The independent recovery key never enters PHP, Telegram or the repository.
 function fullBackupHelper(string $action, string $path, ?string &$digest = null, ?string &$reason = null): bool {
-    if (!in_array($action, ['create', 'verify'], true)) return false;
+    if (!in_array($action, ['create', 'verify', 'queue-restore'], true)) return false;
     if (!is_executable('/usr/local/sbin/delta-full-backup')) return false;
     if ($action === 'create') {
         $old = umask(0077);
@@ -212,7 +212,7 @@ function fullBackupHelper(string $action, string $path, ?string &$digest = null,
     try {
         $proc = proc_open(['/usr/bin/sudo','-n','/usr/local/sbin/delta-full-backup',$action], $io, $pipes);
         if (!is_resource($proc)) return false;
-        if ($action === 'verify') {
+        if ($action !== 'create') {
             $result = stream_get_contents($pipes[1], 4096);
             fclose($pipes[1]);
         }
@@ -223,6 +223,7 @@ function fullBackupHelper(string $action, string $path, ?string &$digest = null,
             $reason = $failure[1];
         }
         if ($action === 'create') return $ok;
+        if ($action === 'queue-restore') return $ok && preg_match('/^DELTA_RESTORE_QUEUED\\s*$/m',(string)$result) === 1;
         if (!$ok || !preg_match('/^VERIFIED_RESTORE_STAGED=([a-f0-9]{64})\s*$/D',(string)$result,$match)) return false;
         $digest = $match[1];
         return true;
@@ -270,12 +271,17 @@ if ($mode === 'restore' && fullBackupMagic($arg4)) {
         exit(1);
     }
     $digest = null;
-    if (!fullBackupHelper('verify',$arg4,$digest)) {
-        sendMsg($chatId,"❌ بکاپ کامل معتبر نیست یا کلید بازیابی مطابقت ندارد. هیچ دیتابیسی تغییر نکرد.");
-        exit(1);
+    $reason = null;
+    if (fullBackupHelper('queue-restore',$arg4,$digest,$reason)) {
+        sendMsg($chatId,"✅ فایل تأیید شد و بازیابی مستقل در سرور زمان‌بندی شد. پس از توقف موقت سرویس‌ها، نتیجه به همین گفتگو ارسال می‌شود.");
+        exit(0);
     }
-    sendMsg($chatId,"✅ فایل رمزگذاری‌شده معتبر است. هیچ داده‌ای هنوز جایگزین نشده است.\n⚠️ برای تأیید نهایی و جایگزینی تمام اطلاعات، مالک از SSH دستور زیر را اجرا کند:\n/usr/local/sbin/delta-full-backup apply ".$digest);
-    exit(0);
+    if ($reason === 'RESTORE_NOT_ARMED' || $reason === 'RESTORE_APPROVAL_EXPIRED') {
+        sendMsg($chatId,"⚠️ مجوز یک‌بارمصرف بازیابی از طریق گزینه ۱ آپدیت فعال نیست یا منقضی شده است. هیچ اطلاعاتی جایگزین نشد.");
+    } else {
+        sendMsg($chatId,"❌ بازیابی آغاز نشد. کد بررسی: ".($reason??"HELPER_UNAVAILABLE")."\nهیچ اطلاعاتی جایگزین نشد.");
+    }
+    exit(1);
 }
 
 if($mode === 'backup'){
