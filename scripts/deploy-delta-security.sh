@@ -2,8 +2,8 @@
 # Targeted security update. Never deletes the live tree or runs legacy migrations.
 set -Eeuo pipefail
 umask 077
-mode=$1
-expected=$2
+mode=${1:-}
+expected=${2:-}
 [[ "$mode" == --check || "$mode" == --apply ]] || { echo 'Usage: bash scripts/deploy-delta-security.sh --check|--apply COMMIT'; exit 2; }
 [[ "$expected" =~ ^[a-f0-9]{40}$ ]] || exit 2
 [[ $(id -u) == 0 ]] || { echo 'Run as root'; exit 1; }
@@ -120,6 +120,13 @@ chmod 640 "$live/baseInfo.php"
 if [[ -f /root/confdelta/dbrootdelta.txt && ! -L /root/confdelta/dbrootdelta.txt ]]; then chmod 600 /root/confdelta/dbrootdelta.txt; fi
 if [[ -f /opt/vpsbot/.env && ! -L /opt/vpsbot/.env ]]; then chmod 600 /opt/vpsbot/.env; fi
 systemctl reload apache2
+# Cap all pre-existing sessions at a fixed deployment-time deadline, without extension.
+php -r '
+require $argv[1];
+$db=new mysqli("localhost",$dbUserName,$dbPassword,$dbName);
+$t=$db->query("SHOW TABLES LIKE \"delta_app_sessions\"");
+if($t&&$t->num_rows){$until=time()+90*86400;$st=$db->prepare("UPDATE delta_app_sessions SET expires=LEAST(expires,?)");$st->bind_param("i",$until);$st->execute();$st->close();}
+' "$live/baseInfo.php"
 finished=1
 echo "DELTA_SECURITY_DEPLOYED; backup: $backup"
 echo 'Next: verify actual Telegram delivery, purchases, renewal and API login with a test account.'
