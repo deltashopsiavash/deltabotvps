@@ -9,11 +9,11 @@ KEY = pathlib.Path("/etc/delta-full-backup/recovery.key")
 LIMIT = 19 * 1024 * 1024
 PLAIN_LIMIT = 2 * 1024 * 1024 * 1024
 PATHS = (
-    "var/www/html/deltabotvps", "var/www/delta-sms-bridge-public",
+    "var/www/html", "var/www/delta-sms-bridge-public",
     "opt/delta-sms-bridge", "opt/vpsbot", "root/vpsbot",
     "etc/delta-sms-bridge.php", "var/lib/delta-sms-bridge",
     "root/delta-sms-bridge-pairing.txt", "root/confdelta",
-    "etc/apache2", "etc/letsencrypt", "etc/mysql", "etc/cron.d",
+    "etc/apache2", "etc/letsencrypt", "etc/mysql", "etc/php", "etc/cron.d",
     "var/spool/cron/crontabs", "etc/systemd/system/vpsbridge.service",
     "etc/systemd/system/vpsbot.service",
 )
@@ -104,7 +104,7 @@ def create(stage):
     paths = [p for p in PATHS if pathlib.Path("/" + p).exists()]
     with tarfile.open(stage / "runtime.tar.gz", "w:gz", dereference=False) as tar:
         for p in paths:
-            tar.add("/" + p, arcname=p, filter=runtime_filter)
+            tar.add("/" + p, arcname=p, filter=lambda info: None if info.name in sqlite else runtime_filter(info))
     with (stage / "packages.txt").open("wb") as f:
         run(["dpkg-query", "-W"], stdout=f)
     names = ["databases.sql", "runtime.tar.gz", "packages.txt"]
@@ -171,8 +171,9 @@ def verify(stage):
             require(manifest["files"][name] == {"sha256": h.hexdigest(), "size": size}, "HASH_MISMATCH")
         require({"delta", "delta_sms_bridge"} <= set(manifest["databases"]), "MISSING_DATABASES")
         require(all(re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n) for n in manifest["databases"]), "INVALID_DB_LIST")
-    ready = ROOT / ("verified-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(4).hex() + ".tar.gz")
-    os.rename(plain, ready)
+    # Keep only one pending restore. No unbounded plaintext staging via the web worker.
+    ready = ROOT / "verified-pending.tar.gz"
+    os.replace(plain, ready)
     print("VERIFIED_RESTORE_STAGED=" + ready.name)
 
 def main():
@@ -193,5 +194,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print("DELTA_FULL_BACKUP_FAILED:" + type(e).__name__, file=sys.stderr)
+        # Only fixed internal reason identifiers are safe to log.
+        reason = str(e) if isinstance(e, RuntimeError) and re.fullmatch(r"[A-Z_]+", str(e)) else type(e).__name__
+        print("DELTA_FULL_BACKUP_FAILED:" + reason, file=sys.stderr)
         sys.exit(1)
