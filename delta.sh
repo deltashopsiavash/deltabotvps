@@ -192,7 +192,7 @@ PATHS=$(cat /root/confdelta/dbrootdelta.txt | grep '$path' | cut -d"'" -f2)
 (crontab -l ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabotvps/settings/messagedelta.php >/dev/null 2>&1") | sort - | uniq - | crontab -
 (crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/rewardReport.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-reward-report.lock /usr/bin/php /var/www/html/deltabotvps/settings/rewardReport.php >/dev/null 2>&1') | crontab -
 (crontab -l ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabotvps/settings/specialOffers.php >/dev/null 2>&1") | sort - | uniq - | crontab -
-(crontab -l ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabotvps/settings/warnusers.php >/dev/null 2>&1") | sort - | uniq - | crontab -
+(crontab -l 2>/dev/null | grep -v 'deltabotvps/settings/warnusers.php'; echo '* * * * * cd /var/www/html/deltabotvps/settings && /usr/bin/flock -n /tmp/deltabotvps-warnusers.lock /usr/bin/php /var/www/html/deltabotvps/settings/warnusers.php >/dev/null 2>&1') | crontab -
 (crontab -l ; echo "* * * * * curl https://${DOMAIN_NAME}/deltabotvps/settings/gift2all.php >/dev/null 2>&1") | sort - | uniq - | crontab -
 (crontab -l ; echo "*/3 * * * * curl https://${DOMAIN_NAME}/deltabotvps/settings/tronChecker.php >/dev/null 2>&1") | sort - | uniq - | crontab -
 (crontab -l ; echo "* * * * * curl https://${DOMAIN_NAME}/${PATHS}/backupnutif.php >/dev/null 2>&1") | sort - | uniq - | crontab -
