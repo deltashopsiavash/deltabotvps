@@ -2518,8 +2518,7 @@ function get_client_ip(){
 
 
 function check($return = false){
-    global $range;
-    if(deltaWebhookAuthorized($_SERVER,(string)($GLOBALS['botToken']??''),$range))return true;
+    if(deltaWebhookAuthorized($_SERVER,(string)($GLOBALS['botToken']??'')))return true;
     if($return == true)return false;
     http_response_code(403);
     exit('Forbidden');
