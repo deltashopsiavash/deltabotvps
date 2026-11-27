@@ -130,6 +130,20 @@ INSERT INTO delta_sms_bridge.events VALUES(789);
             self.assertEqual(sql("SELECT id FROM delta_sms_bridge.events"), b"789\n")
             self.assertEqual(sql("SHOW TABLES FROM delta LIKE 'extra_after_backup'"), b"")
             self.assertEqual(sql("SELECT CONCAT(status,':',is_deleted) FROM delta.reseller_bots WHERE id=71"), b"0:1\n")
+            # Fresh-server credentials are recreated without granting access
+            # to system schemas or modifying the MySQL root account.
+            password = "ci-fresh-'\\-password-234"
+            sql(full.fresh_grants({"dbUserName": "delta_restore_ci", "dbPassword": password}))
+            account_env = dict(env, MYSQL_PWD=password)
+            def as_app(statement):
+                return subprocess.run(args[:-2] + ["-udelta_restore_ci", "-NB"], input=statement.encode(),
+                                      env=account_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(as_app("SELECT id FROM delta.users").stdout, b"123\n")
+            self.assertEqual(as_app("SELECT id FROM delta_rb72.users").stdout, b"456\n")
+            self.assertEqual(as_app("SELECT id FROM delta_sms_bridge.events").stdout, b"789\n")
+            self.assertNotEqual(as_app("SELECT User FROM mysql.user").returncode, 0)
+            self.assertEqual(as_app("CREATE DATABASE delta_rb9999").returncode, 0)
+            sql("DROP DATABASE delta_rb9999; DROP USER 'delta_restore_ci'@'localhost';")
 
     def test_round_trip_and_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
