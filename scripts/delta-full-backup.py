@@ -362,7 +362,7 @@ def restore_path(src, target):
         finally:
             pathlib.Path(name).unlink(missing_ok=True)
 
-def apply_verified(work, expected_sha):
+def apply_verified(work, expected_sha, preserve_ui=False):
     # This command is never in the www-data sudo rule. The digest binds the
     # owner's independent approval to exactly the staged archive.
     verified = ROOT / "verified-pending.tar.gz"
@@ -379,6 +379,21 @@ def apply_verified(work, expected_sha):
         require((runtime / rel).exists(), "RESTORE_COMPONENT_MISSING")
     target_base = pathlib.Path("/var/www/html/deltabotvps/baseInfo.php")
     verify_target(runtime / "var/www/html/deltabotvps/baseInfo.php", target_base)
+    if preserve_ui:
+        # Stage only the root-installed, CI-gated UI copies; never a web-supplied path.
+        ui = KEY.parent / "ui"
+        require(ui.is_dir() and not ui.is_symlink() and ui.stat().st_uid == 0 and not ui.stat().st_mode & 0o077, "TRUSTED_RESTORE_UI_REQUIRED")
+        import grp
+        for name in ("bot.php", "backup_worker.php"):
+            source = ui / name
+            dest = runtime / "var/www/html/deltabotvps" / name
+            require(source.is_file() and not source.is_symlink() and source.stat().st_uid == 0 and not source.stat().st_mode & 0o077, "TRUSTED_RESTORE_UI_REQUIRED")
+            require(not dest.is_symlink() and not any(parent.is_symlink() for parent in dest.parents), "UNSAFE_RESTORE_UI_DESTINATION")
+            require(not dest.exists() or (dest.is_file() and dest.stat().st_nlink == 1), "UNSAFE_RESTORE_UI_DESTINATION")
+            dest.unlink(missing_ok=True)
+            shutil.copyfile(source, dest)
+            os.chown(dest, 0, grp.getgrnam("www-data").gr_gid)
+            os.chmod(dest, 0o644)
     require(pathlib.Path("/opt/vpsbot/venv/bin/python").exists(), "TARGET_VPSBOT_ENV_REQUIRED")
     for tool in ("rsync", "mysql", "apache2ctl", "systemctl"):
         require(shutil.which(tool), "TARGET_TOOL_MISSING")
@@ -648,7 +663,7 @@ def auto_apply(stage):
             digest = verify(stage, LIMIT, f)
         work = stage / "apply"
         work.mkdir()
-        apply_verified(work, digest)
+        apply_verified(work, digest, preserve_ui=True)
         restore_notification(values, "✅ اطلاعات بکاپ کامل بازگردانی شد. اکنون سلامت ربات، نمایندگی و سرویس‌های خارجی را بررسی کنید.")
     except Exception as e:
         reason = str(e) if isinstance(e, RuntimeError) and re.fullmatch(r"[A-Z_]+", str(e)) else type(e).__name__
