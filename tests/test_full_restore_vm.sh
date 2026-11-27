@@ -99,6 +99,7 @@ import sqlite3
 with sqlite3.connect("file:/opt/vpsbot/vpsbot.sqlite3?mode=ro", uri=True) as db:
     assert db.execute("SELECT id FROM orders").fetchone() == (456,)
 PY
+runuser -u www-data -- test -w /var/lib/deltabotvps/backups
 ! systemctl is-active --quiet apache2
 ! systemctl is-active --quiet cron
 echo 'DELTA_FULL_FRESH_VM_TEST_PASSED'
