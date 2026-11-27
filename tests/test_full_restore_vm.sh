@@ -33,6 +33,7 @@ $dbUserName = 'delta_fixture_owner';
 $dbPassword = 'fixture-local-db-password-123';
 PHP
 cp "$src/delta_app_core.php" /var/www/html/deltabotvps/delta_app_core.php
+chmod 755 /var/www/html/deltabotvps
 chmod 644 /var/www/html/deltabotvps/delta_app_core.php
 chown root:www-data /var/www/html/deltabotvps/baseInfo.php
 chmod 640 /var/www/html/deltabotvps/baseInfo.php
