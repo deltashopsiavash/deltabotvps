@@ -4,24 +4,10 @@
  * No CLI/background worker dependency and no optimistic success messages.
  * This file is intentionally usable from pure PHP tests without loading config.php.
  */
-// Never use client-supplied forwarding headers as proof of Telegram origin.
-function deltaWebhookAuthorized(array $server,string $botToken,array $ranges): bool {
-    if($botToken==='')return false;
-    if(array_key_exists('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN',$server)){
-        $provided=$server['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'];
-        return is_string($provided)&&hash_equals(hash('sha256',$botToken),$provided);
-    }
-    $ip=$server['REMOTE_ADDR']??'';
-    if(!is_string($ip)||!filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4))return false;
-    $address=ip2long($ip);
-    foreach($ranges as $cidr){
-        [$network,$prefix]=explode('/',$cidr,2);
-        $bits=(int)$prefix;
-        if($bits<1||$bits>32||!filter_var($network,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4))continue;
-        $mask=(-1)<<(32-$bits);
-        if(($address&$mask)===(ip2long($network)&$mask))return true;
-    }
-    return false;
+// Telegram's configured secret is mandatory, including through reverse proxies.
+function deltaWebhookAuthorized(array $server,string $botToken): bool {
+    $provided=$server['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN']??'';
+    return $botToken!==''&&is_string($provided)&&preg_match('/^[a-f0-9]{64}$/D',$provided)===1&&hash_equals(hash('sha256',$botToken),$provided);
 }
 function deltaResellerWebhookCandidates($rid,$motherWebhook,$configuredBase,$requestHost='',$requestScript='',$https=false){
     $rid=(int)$rid;
