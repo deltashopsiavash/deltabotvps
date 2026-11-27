@@ -30,7 +30,7 @@ def run(cmd, **kw):
 def mysql_access():
     env = dict(os.environ)
     env.pop("MYSQL_PWD", None)
-    args = ["mysql", "-uroot", "-NB"]
+    args = ["mysql", "-uroot"]
     if subprocess.run(args + ["-e", "SELECT 1"], env=env, stdout=subprocess.DEVNULL,
                       stderr=subprocess.DEVNULL).returncode:
         match = re.search(r"\$pass\s*=\s*'([^']*)'", pathlib.Path("/root/confdelta/dbrootdelta.txt").read_text())
@@ -41,7 +41,7 @@ def mysql_access():
 def database_snapshot(stage, safety=False):
     args, env = mysql_access()
     def query(sql):
-        return run(args + ["-e", sql], env=env, stdout=subprocess.PIPE).stdout.decode().splitlines()
+        return run(args + ["-NB", "-e", sql], env=env, stdout=subprocess.PIPE).stdout.decode().splitlines()
     dbs = sorted(n for n in query("SHOW DATABASES") if re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n))
     require("delta" in dbs and (safety or "delta_sms_bridge" in dbs), "REQUIRED_DATABASE_MISSING")
     for row in query("SELECT id,COALESCE(db_name,'') FROM delta.reseller_bots WHERE status=1 AND is_deleted=0"):
@@ -51,7 +51,7 @@ def database_snapshot(stage, safety=False):
     require(dump, "MYSQLDUMP_REQUIRED")
     sql = stage / "databases.sql"
     with sql.open("wb") as f:
-        run([dump, "-uroot", "--lock-all-tables", "--quick", "--no-tablespaces", "--hex-blob",
+        run([dump, *args[1:], "--lock-all-tables", "--quick", "--no-tablespaces", "--hex-blob",
              "--routines", "--events", "--triggers", "--default-character-set=utf8mb4",
              "--add-drop-database", "--databases", *dbs], env=env, stdout=f)
     require(sql.stat().st_size > 1024, "EMPTY_SQL")
@@ -155,6 +155,7 @@ def verify(stage, limit=LIMIT):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            proc.stdout.close()
     allowed = {"manifest.json", "databases.sql", "runtime.tar.gz", "packages.txt", "sqlite.tar.gz"}
     with tarfile.open(plain, "r:gz") as tar:
         members = tar.getmembers()
