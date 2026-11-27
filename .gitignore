@@ -4,3 +4,17 @@ settings/npv_public_keys/
 settings/npvs_tmp/
 settings/npv_devices/
 settings/npvtsub_tmp/
+
+# Keep deployment settings and runtime state out of version control
+/baseInfo.php
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
+*.pyc
+*.bak
+*.bak[0-9]*
+/vpsbot/vpsbot.zip
