@@ -52,6 +52,7 @@ jobs:
           php -l backup_worker.php
           bash -n scripts/install-full-backup.sh
           bash -n scripts/deploy-full-backup.sh
+          bash -n scripts/bootstrap-full-restore.sh
           python3 -m py_compile scripts/delta-full-backup.py
           python3 tests/test_full_backup.py
           php -l delta_backup_integrity.php
