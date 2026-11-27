@@ -115,7 +115,7 @@ INSERT INTO delta_rb72.users VALUES(456);
 CREATE TABLE delta_sms_bridge.events(id INT PRIMARY KEY);
 INSERT INTO delta_sms_bridge.events VALUES(789);
 """)
-        with tempfile.TemporaryDirectory() as d, patch.object(full, "mysql_access", return_value=(args, env)):
+        with tempfile.TemporaryDirectory() as d, patch.object(full, "mysql_access", return_value=(args[:-1], env)):
             stage = pathlib.Path(d)
             sql("UPDATE delta.reseller_bots SET status=1,is_deleted=0 WHERE id=71")
             with self.assertRaisesRegex(RuntimeError, "ACTIVE_RESELLER_DB_MISSING"):
