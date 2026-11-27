@@ -106,6 +106,8 @@ echo 'DELTA_FULL_FRESH_VM_TEST_PASSED'
 
 # Test the actual one-time web upload -> detached root worker -> installed restore.
 # The deliberately invalid fixture Telegram token cannot be used for notifications.
+# GitHub-hosted runner image has a nonstandard sudoers file mode.
+if [[ -f /etc/sudoers.d/runner ]]; then chmod 0440 /etc/sudoers.d/runner; fi
 bash "$src/scripts/install-full-backup.sh"
 mysql -uroot -e 'DELETE FROM delta.users; DELETE FROM delta_rb72.users; DELETE FROM delta_sms_bridge.events'
 rm -f /opt/vpsbot/vpsbot.sqlite3
