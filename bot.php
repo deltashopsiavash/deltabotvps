@@ -2094,7 +2094,7 @@ if($data=='adminBackupGet' && ($from_id == $admin || $userInfo['isAdmin'] == tru
 
 if($data=='adminBackupRestore' && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser('awaiting_backup_sql','step');
-    smartSendOrEdit($message_id, (!$isChildBot && (string)$from_id === (string)$admin ? "📤 فایل بکاپ رمزگذاری‌شده DELTA-FULL یا SQL را ارسال کنید. فایل کامل فقط اعتبارسنجی و برای تأیید مستقل مالک آماده می‌شود. بازگردانی SQL قدیمی جایگزین دیتابیس فعلی می‌شود." : "📤 فایل بکاپ SQL را ارسال کنید.\n⚠️ بازگردانی SQL دیتابیس فعلی را جایگزین می‌کند."), ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
+    smartSendOrEdit($message_id, (!$isChildBot && (string)$from_id === (string)$admin ? "📤 فایل بکاپ رمزگذاری‌شده DELTA-FULL یا SQL را ارسال کنید. فایل کامل فقط با مجوز یک‌بارمصرف از آپدیت و تطبیق هش همان فایل بازگردانی می‌شود. سرویس‌ها موقتاً متوقف خواهند شد. بازگردانی SQL قدیمی جایگزین دیتابیس فعلی می‌شود." : "📤 فایل بکاپ SQL را ارسال کنید.\n⚠️ بازگردانی SQL دیتابیس فعلی را جایگزین می‌کند."), ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
 }
 
 // ===== Admin Backup Files List (stored on server) =====
