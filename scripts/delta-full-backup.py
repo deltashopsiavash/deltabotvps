@@ -464,6 +464,18 @@ def rehearsal(work, expected_sha):
     print("DELTA_FULL_ARCHIVE_REHEARSAL_OK")
     print("No live SQL, service, webhook or configuration was changed.")
 
+def fresh_grants(values):
+    username = values["dbUserName"]
+    require(re.fullmatch(r"[A-Za-z0-9_]{1,32}", username) and username.lower() not in ("root","mysql","mysql_session","mysql_innodb_cluster_metadata","debian-sys-maint","phpmyadmin"), "UNSAFE_DB_ACCOUNT")
+    password = values["dbPassword"].replace("'", "''")
+    require(bool(password) and "\x00" not in password, "EMPTY_DB_PASSWORD")
+    account = "'" + username + "'@'localhost'"
+    sql = "SET SESSION sql_mode='NO_BACKSLASH_ESCAPES';\nCREATE USER " + account + " IDENTIFIED BY '" + password + "';\n"
+    sql += "GRANT ALL PRIVILEGES ON \x60delta\x60.* TO " + account + ";\n"
+    sql += "GRANT ALL PRIVILEGES ON \x60delta\\_rb%\x60.* TO " + account + ";\n"
+    sql += "GRANT ALL PRIVILEGES ON \x60delta\\_sms\\_bridge\x60.* TO " + account + ";\n"
+    return sql
+
 def fresh_restore(work, expected_sha):
     # Dedicated blank Ubuntu target only. No registration of real webhooks,
     # no outbound Telegram calls, no start of bot writers until owner activation.
@@ -537,8 +549,9 @@ if __name__ == "__main__":
     username = values["dbUserName"]
     require(not query("SELECT User FROM mysql.user WHERE User='" + username + "';"), "TARGET_DB_ACCOUNT_EXISTS")
     # Ensure all services remain stopped during a fresh restore / rehearsal.
-    for svc in SERVICE_NAMES:
-        subprocess.run(["systemctl", "stop", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for svc in (*SERVICE_NAMES, "certbot.timer"):
+        subprocess.run(["systemctl", "disable", "--now", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    require(not active_services(), "FRESH_WRITERS_STILL_ACTIVE")
     run(args + ["-e", "SET GLOBAL event_scheduler=OFF"], env=env, stdout=subprocess.DEVNULL)
     # A fresh target has no previous Delta data. If import fails, keep writers
     # stopped and retain the verified archive; never overwrite a non-fresh host.
@@ -547,14 +560,7 @@ if __name__ == "__main__":
         run(args + ["--binary-mode", "--default-character-set=utf8mb4"], env=env, stdin=sql, stdout=subprocess.DEVNULL)
     # Match the saved app credentials without restoring system grant tables or
     # copying the old MySQL root password. Limit access to Delta schema names.
-    password = values["dbPassword"].replace("'", "''")
-    account = "'" + username + "'@'localhost'"
-    grants = "SET SESSION sql_mode='NO_BACKSLASH_ESCAPES';\nCREATE USER " + account + " IDENTIFIED BY '" + password + "';\n"
-    grants += "GRANT ALL PRIVILEGES ON \x60delta\x60.* TO " + account + ";\n"
-    grants += "GRANT ALL PRIVILEGES ON \x60delta\\_rb%\x60.* TO " + account + ";\n"
-    grants += "GRANT ALL PRIVILEGES ON \x60delta_sms_bridge\x60.* TO " + account + ";\n"
-    # Pass credentials via stdin only, never command line, shell or log.
-    run(args, env=env, input=grants.encode(), stdout=subprocess.DEVNULL)
+    run(args, env=env, input=fresh_grants(values).encode(), stdout=subprocess.DEVNULL)
     for rel in manifest["paths"]:
         if rel not in PRESERVE_TARGET:
             restore_path(runtime / rel, pathlib.Path("/") / rel)
