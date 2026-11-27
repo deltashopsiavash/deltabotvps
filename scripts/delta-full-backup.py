@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Root-only encrypted disaster snapshot; verify/stage never executes archive contents."""
-import os, sys, re, json, tarfile, hashlib, subprocess, tempfile, shutil, pathlib, fcntl, sqlite3
+import os, sys, re, json, tarfile, hashlib, subprocess, tempfile, shutil, pathlib, fcntl, sqlite3, posixpath, stat
 from datetime import datetime, timezone
 
 MAGIC = b"DELTA-FULL-V1\n"
@@ -27,7 +27,7 @@ def require(ok, code):
 def run(cmd, **kw):
     return subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL, **kw)
 
-def database_snapshot(stage):
+def mysql_access():
     env = dict(os.environ)
     env.pop("MYSQL_PWD", None)
     args = ["mysql", "-uroot", "-NB"]
@@ -36,6 +36,10 @@ def database_snapshot(stage):
         match = re.search(r"\$pass\s*=\s*'([^']*)'", pathlib.Path("/root/confdelta/dbrootdelta.txt").read_text())
         require(match, "MYSQL_ROOT_UNAVAILABLE")
         env["MYSQL_PWD"] = match.group(1)
+    return args, env
+
+def database_snapshot(stage):
+    args, env = mysql_access()
     def query(sql):
         return run(args + ["-e", sql], env=env, stdout=subprocess.PIPE).stdout.decode().splitlines()
     dbs = sorted(n for n in query("SHOW DATABASES") if re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n))
@@ -49,7 +53,7 @@ def database_snapshot(stage):
     with sql.open("wb") as f:
         run([dump, "-uroot", "--lock-all-tables", "--quick", "--no-tablespaces", "--hex-blob",
              "--routines", "--events", "--triggers", "--default-character-set=utf8mb4",
-             "--databases", *dbs], env=env, stdout=f)
+             "--add-drop-database", "--databases", *dbs], env=env, stdout=f)
     require(sql.stat().st_size > 1024, "EMPTY_SQL")
     with sql.open("rb") as f:
         f.seek(max(0, sql.stat().st_size - 8192))
@@ -127,7 +131,7 @@ def create(stage):
     with enc.open("rb") as f:
         shutil.copyfileobj(f, sys.stdout.buffer)
 
-def verify(stage):
+def verify(stage, limit=LIMIT):
     stream = sys.stdin.buffer
     require(stream.read(len(MAGIC)) == MAGIC, "INVALID_HEADER")
     enc = stage / "input.gpg"
@@ -135,7 +139,7 @@ def verify(stage):
         size = 0
         while chunk := stream.read(1048576):
             size += len(chunk)
-            require(size <= LIMIT, "ARCHIVE_TOO_LARGE")
+            require(size <= limit, "ARCHIVE_TOO_LARGE")
             f.write(chunk)
     plain = stage / "verified.tar.gz"
     with plain.open("wb") as out:
@@ -174,7 +178,193 @@ def verify(stage):
     # Keep only one pending restore. No unbounded plaintext staging via the web worker.
     ready = ROOT / "verified-pending.tar.gz"
     os.replace(plain, ready)
-    print("VERIFIED_RESTORE_STAGED=" + ready.name)
+    print("VERIFIED_RESTORE_STAGED=" + sha(ready))
+
+# Restore only explicit paths from the authenticated backup. Never extract an
+# uploaded archive directly onto /. All links are installed after regular files.
+# MySQL server configuration and root credentials remain those of the target.
+PRESERVE_TARGET = {"etc/mysql", "root/confdelta"}
+SERVICE_NAMES = ("apache2", "cron", "vpsbridge", "vpsbot")
+def under(name, roots):
+    return any(name == p or name.startswith(p + "/") for p in roots)
+
+def safe_name(name):
+    return bool(name) and not name.startswith("/") and all(
+        part not in ("", ".", "..") for part in name.split("/"))
+
+def unpack_runtime(archive, dest, roots):
+    roots = tuple(roots)
+    require(all(safe_name(x) and x in PATHS for x in roots), "INVALID_RUNTIME_ROOT")
+    seen = set()
+    links = []
+    directories = []
+    total = 0
+    with tarfile.open(archive, "r:gz") as tar:
+        for m in tar:
+            name = m.name.rstrip("/")
+            require(safe_name(name) and under(name, roots) and name not in seen, "UNSAFE_RUNTIME_MEMBER")
+            require(not any(x in SKIP for x in name.split("/")), "EXCLUDED_RUNTIME_MEMBER")
+            require(m.isdir() or m.isfile() or m.issym(), "UNSUPPORTED_RUNTIME_MEMBER")
+            seen.add(name)
+            total += m.size
+            require(total <= PLAIN_LIMIT and len(seen) <= 200000, "RUNTIME_LIMIT")
+            out = dest / name
+            require(not any(p.is_symlink() for p in out.parents if p != dest.parent), "LINK_PARENT")
+            if m.issym():
+                target = m.linkname
+                normalized = posixpath.normpath(target.lstrip("/") if target.startswith("/") else posixpath.join(posixpath.dirname(name), target))
+                require(safe_name(normalized) and under(normalized, roots), "UNSAFE_RUNTIME_LINK")
+                links.append((out, m))
+            elif m.isdir():
+                out.mkdir(parents=True, exist_ok=True)
+                directories.append((out, m))
+            else:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(m) as src, out.open("xb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if os.geteuid() == 0:
+                    os.chown(out, m.uid, m.gid)
+                os.chmod(out, m.mode & 0o777)
+        for out, m in links:
+            require(not out.exists() and not out.is_symlink(), "LINK_COLLISION")
+            require(not any(p.is_symlink() for p in out.parents if p != dest.parent), "LINK_PARENT")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.symlink_to(m.linkname)
+            if os.geteuid() == 0:
+                os.lchown(out, m.uid, m.gid)
+        for out, m in reversed(directories):
+            if os.geteuid() == 0:
+                os.chown(out, m.uid, m.gid)
+            os.chmod(out, m.mode & 0o777)
+
+def unpack_outer(verified, work):
+    with tarfile.open(verified, "r:gz") as tar:
+        manifest = json.load(tar.extractfile("manifest.json"))
+        for name in manifest["files"]:
+            with tar.extractfile(name) as src, (work / name).open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+            require(sha(work / name) == manifest["files"][name]["sha256"], "STAGED_HASH_MISMATCH")
+    return manifest
+
+def base_values(path):
+    # Parse the installer-generated literal values without executing PHP as root.
+    content = path.read_text()
+    values = {}
+    for name in ("botToken", "botUrl", "admin", "dbName", "dbUserName", "dbPassword"):
+        if name == "admin":
+            m = re.search(r"\$admin\s*=\s*['\"]?([0-9]+)['\"]?\s*;", content)
+        else:
+            m = re.search(r"\$" + name + r"\s*=\s*(['\"])([^'\"\r\n]*)\1\s*;", content)
+        require(m is not None, "UNSUPPORTED_BASEINFO")
+        values[name] = m.group(1 if name == "admin" else 2)
+    return values
+
+def verify_target(source, target):
+    a, b = base_values(source), base_values(target)
+    require(a["dbName"] == "delta" and b["dbName"] == "delta", "MOTHER_DB_MISMATCH")
+    require(all(a[k] == b[k] for k in ("botToken", "botUrl", "admin", "dbUserName", "dbPassword")),
+            "TARGET_INSTALL_CREDENTIALS_MISMATCH")
+
+def restore_sqlite(archive, dest, expected):
+    with tarfile.open(archive, "r:gz") as tar:
+        found = set()
+        for m in tar:
+            if m.isdir():
+                continue
+            rel = m.name.removeprefix("sqlite/")
+            require(m.isfile() and m.name.startswith("sqlite/") and safe_name(rel) and
+                    under(rel, ("opt/vpsbot", "root/vpsbot")) and rel in expected and rel not in found,
+                    "INVALID_SQLITE_ARCHIVE")
+            found.add(rel)
+            target = dest / rel
+            require(not any(p.is_symlink() for p in target.parents) and not target.is_symlink(), "SQLITE_LINK")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tar.extractfile(m) as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+            with sqlite3.connect(target.as_uri() + "?mode=ro", uri=True) as db:
+                require(db.execute("PRAGMA quick_check").fetchone()[0] == "ok", "SQLITE_INVALID")
+            os.chmod(target, 0o600)
+        require(found == set(expected), "SQLITE_SET_MISMATCH")
+
+def active_services():
+    return [s for s in SERVICE_NAMES if subprocess.run(
+        ["systemctl", "is-active", "--quiet", s], stderr=subprocess.DEVNULL).returncode == 0]
+
+def restore_path(src, target):
+    require(not any(p.is_symlink() for p in target.parents) and not target.is_symlink(), "UNSAFE_TARGET_PATH")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        require(not src.is_symlink(), "UNSAFE_SOURCE_PATH")
+        target.mkdir(exist_ok=True)
+        # Keep rebuilt Python environments and git metadata on the target.
+        run(["rsync", "-a", "--delete", "--exclude=venv/", "--exclude=.venv/",
+             "--exclude=.git/", "--exclude=backups/", str(src) + "/", str(target) + "/"])
+    else:
+        require(src.is_file() and not src.is_symlink(), "UNSAFE_SOURCE_PATH")
+        fd, name = tempfile.mkstemp(prefix=".delta-restore-", dir=target.parent)
+        os.close(fd)
+        try:
+            shutil.copy2(src, name)
+            meta = src.stat()
+            os.chown(name, meta.st_uid, meta.st_gid)
+            os.replace(name, target)
+        finally:
+            pathlib.Path(name).unlink(missing_ok=True)
+
+def apply_verified(work, expected_sha):
+    # This command is never in the www-data sudo rule. The digest binds the
+    # owner's independent approval to exactly the staged archive.
+    verified = ROOT / "verified-pending.tar.gz"
+    require(verified.is_file() and not verified.is_symlink() and sha(verified) == expected_sha,
+            "APPROVAL_DIGEST_MISMATCH")
+    manifest = unpack_outer(verified, work)
+    runtime = work / "runtime"
+    runtime.mkdir()
+    unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
+    if manifest["sqlite"]:
+        restore_sqlite(work / "sqlite.tar.gz", runtime, manifest["sqlite"])
+    for rel in REQUIRED:
+        require((runtime / rel).exists(), "RESTORE_COMPONENT_MISSING")
+    target_base = pathlib.Path("/var/www/html/deltabotvps/baseInfo.php")
+    verify_target(runtime / "var/www/html/deltabotvps/baseInfo.php", target_base)
+    require(pathlib.Path("/opt/vpsbot/venv/bin/python").exists(), "TARGET_VPSBOT_ENV_REQUIRED")
+    for tool in ("rsync", "mysql", "apache2ctl", "systemctl"):
+        require(shutil.which(tool), "TARGET_TOOL_MISSING")
+    # Compare installed dependency requirements before replacing source code.
+    oldreq, newreq = pathlib.Path("/opt/vpsbot/requirements.txt"), runtime / "opt/vpsbot/requirements.txt"
+    require(oldreq.is_file() and newreq.is_file() and sha(oldreq) == sha(newreq), "TARGET_VPSBOT_DEPENDENCIES_MISMATCH")
+    args, env = mysql_access()
+    running = active_services()
+    # Stop writers before creating rollback archive and replacing data.
+    # Keep MySQL running. If anything fails, leave writers stopped, and retain
+    # the safety backup for root recovery rather than claim a successful restore.
+    print("RESTORE_STOPPING_WRITERS", flush=True)
+    for svc in running:
+        run(["systemctl", "stop", svc])
+    safety = ROOT / ("before-restore-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(4).hex() + ".delta.gpg")
+    try:
+        with safety.open("xb") as out:
+            run([sys.executable, __file__, "create-safety"], stdout=out)
+        require(safety.stat().st_size > len(MAGIC), "SAFETY_ARCHIVE_FAILED")
+        print("SAFETY_BACKUP=" + str(safety), flush=True)
+        with (work / "databases.sql").open("rb") as sql:
+            run(args + ["--binary-mode", "--default-character-set=utf8mb4"], env=env, stdin=sql, stdout=subprocess.DEVNULL)
+        # Existing MySQL root config and root password must remain target-local.
+        for rel in manifest["paths"]:
+            if rel not in PRESERVE_TARGET:
+                restore_path(runtime / rel, pathlib.Path("/") / rel)
+        run(["systemctl", "daemon-reload"])
+        run(["apache2ctl", "configtest"], stdout=subprocess.DEVNULL)
+        # Verify app DB connectivity as the web user, not root; never expose secrets.
+        php = "require '/var/www/html/deltabotvps/baseInfo.php'; mysqli_report(MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT); $c=new mysqli('localhost',$dbUserName,$dbPassword,$dbName); require '/var/www/html/deltabotvps/delta_app_core.php'; daVerifyRecoverySecrets($c); $q=$c->query('SELECT db_name FROM reseller_bots WHERE status=1 AND is_deleted=0'); while($r=$q->fetch_assoc()){ $x=new mysqli('localhost',$dbUserName,$dbPassword,$r['db_name']); $x->close(); }"
+        run(["runuser", "-u", "www-data", "--", "php", "-r", php], stdout=subprocess.DEVNULL)
+        for svc in running:
+            run(["systemctl", "start", svc])
+        verified.unlink()
+        print("DELTA_FULL_RESTORE_COMPLETE_CHECK_EXTERNAL_SERVICES", flush=True)
+    except Exception:
+        print("RESTORE_FAILED_WRITERS_MAY_BE_STOPPED; SAFETY_BACKUP=" + str(safety), file=sys.stderr)
+        raise
 
 def main():
     os.umask(0o077)
@@ -183,12 +373,25 @@ def main():
         require(p.is_dir() and not p.is_symlink() and p.stat().st_uid == 0 and not p.stat().st_mode & 0o077, "PRIVATE_DIR_REQUIRED")
     require(KEY.is_file() and not KEY.is_symlink() and KEY.stat().st_uid == 0 and not KEY.stat().st_mode & 0o077, "RECOVERY_KEY_REQUIRED")
     require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
-    require(len(sys.argv) == 2 and sys.argv[1] in ("create", "verify"), "INVALID_MODE")
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety")) or
+            (len(sys.argv) == 3 and mode == "apply" and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
     (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
+    # create-safety runs only as root while its parent holds the lock.
+    if mode == "create-safety":
+        with tempfile.TemporaryDirectory(prefix="safety-", dir=ROOT) as d:
+            create(pathlib.Path(d))
+        return
     with (ROOT / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="work-", dir=ROOT) as d:
-            (create if sys.argv[1] == "create" else verify)(pathlib.Path(d))
+            stage = pathlib.Path(d)
+            if mode == "apply":
+                apply_verified(stage, sys.argv[2])
+            elif mode == "create":
+                create(stage)
+            else:
+                verify(stage, PLAIN_LIMIT if mode == "verify-local" else LIMIT)
 
 if __name__ == "__main__":
     try:
