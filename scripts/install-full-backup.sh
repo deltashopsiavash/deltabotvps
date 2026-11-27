@@ -36,7 +36,7 @@ if [[ "$mode" == --recovery-only ]]; then
 fi
 tmp=$(mktemp /etc/sudoers.d/.delta-backup.XXXXXXXX)
 trap 'rm -f "$tmp"' EXIT
-printf '%s\n' 'www-data ALL=(root) NOPASSWD: /usr/local/sbin/delta-full-backup create, /usr/local/sbin/delta-full-backup verify, /usr/local/sbin/delta-full-backup queue-restore' > "$tmp"
+printf '%s\n' 'www-data ALL=(root) NOPASSWD: /usr/local/sbin/delta-full-backup create, /usr/local/sbin/delta-full-backup verify, /usr/local/sbin/delta-full-backup queue-restore-password' > "$tmp"
 chmod 0440 "$tmp"
 visudo -cf "$tmp"
 mv -fT "$tmp" /etc/sudoers.d/delta-full-backup
