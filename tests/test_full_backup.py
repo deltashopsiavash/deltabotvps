@@ -135,9 +135,12 @@ INSERT INTO delta_sms_bridge.events VALUES(789);
             password = "ci-fresh-'\\-password-234"
             sql(full.fresh_grants({"dbUserName": "delta_restore_ci", "dbPassword": password}))
             account_env = dict(env, MYSQL_PWD=password)
+            container = os.environ["DELTA_FULL_CI_MYSQL_CONTAINER"]
+            self.assertRegex(container, r"^[a-f0-9]{64}$")
             def as_app(statement):
-                return subprocess.run(args[:-2] + ["-udelta_restore_ci", "-NB"], input=statement.encode(),
-                                      env=account_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                # The account is deliberately localhost-only. Exercise it inside MySQL's CI container, not from the external runner IP.
+                return subprocess.run(["docker", "exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "-udelta_restore_ci", "-NB"],
+                                      input=statement.encode(), env=account_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(as_app("SELECT id FROM delta.users").stdout, b"123\n")
             self.assertEqual(as_app("SELECT id FROM delta_rb72.users").stdout, b"456\n")
             self.assertEqual(as_app("SELECT id FROM delta_sms_bridge.events").stdout, b"789\n")
