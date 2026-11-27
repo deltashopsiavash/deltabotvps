@@ -411,9 +411,14 @@ foreach([[111,'scope-a',1401,'melli','11111'],[112,'scope-b',1402,'pasargad','22
     $p=deltaSmsReviewPay($id);$p['request_date']=$now-10;
     $r=deltaSmsReservePresentation($p,['id'=>$id,'sms_bank'=>$bank,'sms_hint'=>$hint]);
     ok($r&&$r['amount_irr']===987000,'mapped account keeps exact nominal amount');
-    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$now)");
-    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);deltaMarkReceiptSubmitted($hash,$now);
+    $shown=(int)$connection->query("SELECT shown_at FROM delta_sms_invoice_bindings WHERE display_id=$id")->fetch_assoc()['shown_at'];
+    $connection->query("INSERT INTO payment_card_displays VALUES ($id,'$hash',$uid,'0000000000000000',$shown)");
+    upsertSettingValue('PAYMENT_CARD_SELECTED_'.sha1($hash),(string)$id);
 }
+// The bank event and receipt occur after BOTH real presentation timestamps.
+// A fixture crossing a wall-clock second must not fabricate an early deposit.
+$now=time();
+foreach(['scope-a','scope-b'] as $hash)deltaMarkReceiptSubmitted($hash,$now);
 $ea=['event_id'=>str_repeat('8',63).'9','bank'=>'melli','source'=>'sms','sender'=>'fixture','account_hint'=>'11111','amount_irr'=>987000,'received_at'=>$now,'ingested_at'=>$now];
 $eb=array_replace($ea,['event_id'=>str_repeat('9',63).'8','bank'=>'pasargad','account_hint'=>'22222']);
 $pa=deltaSmsReviewPay(111);$pb=deltaSmsReviewPay(112);
