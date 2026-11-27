@@ -120,7 +120,7 @@ do
 			# Preserve VPSBot runtime data (if present)
 			VPSBOT_DIR="/opt/vpsbot"
 			VPSBOT_BACKUP_DIR="/root/confdelta/vpsbot_update_backup"
-			mkdir -p "$VPSBOT_BACKUP_DIR"
+			install -d -m 0700 "$VPSBOT_BACKUP_DIR"
 			if [ -d "$VPSBOT_DIR" ]; then
 				[ -f "$VPSBOT_DIR/.env" ] && cp -f "$VPSBOT_DIR/.env" "$VPSBOT_BACKUP_DIR/.env"
 				# Preserve DB if using default path
@@ -130,7 +130,7 @@ do
 			# Preserve NPV runtime identity/data across the destructive repo refresh.
 			NPV_BACKUP_DIR="/root/confdelta/npv_update_backup"
 			rm -rf "$NPV_BACKUP_DIR"
-			mkdir -p "$NPV_BACKUP_DIR"
+			install -d -m 0700 "$NPV_BACKUP_DIR"
 			NPV_SETTINGS="/var/www/html/deltabotvps/settings"
 			if [ -f "$NPV_SETTINGS/npvs_creator_key.pem" ]; then
 				cp -p "$NPV_SETTINGS/npvs_creator_key.pem" "$NPV_BACKUP_DIR/npvs_creator_key.pem"
@@ -174,6 +174,8 @@ do
 			sudo chmod -R 755 /var/www/html/deltabotvps/
 			sleep 3
 			mv /root/baseInfo.php /var/www/html/deltabotvps/
+			chown root:www-data /var/www/html/deltabotvps/baseInfo.php
+			chmod 640 /var/www/html/deltabotvps/baseInfo.php
 
 			# Sync embedded VPSBot to /opt/vpsbot so updates apply via update.sh
 			if [ -d "/var/www/html/deltabotvps/vpsbot" ]; then
@@ -192,7 +194,7 @@ do
 				fi
 
 				# Restore preserved runtime files
-				[ -f "$VPSBOT_BACKUP_DIR/.env" ] && cp -f "$VPSBOT_BACKUP_DIR/.env" "$VPSBOT_DIR/.env"
+				[ -f "$VPSBOT_BACKUP_DIR/.env" ] && install -m 0600 "$VPSBOT_BACKUP_DIR/.env" "$VPSBOT_DIR/.env"
 				[ -f "$VPSBOT_BACKUP_DIR/vpsbot.sqlite3" ] && cp -f "$VPSBOT_BACKUP_DIR/vpsbot.sqlite3" "$VPSBOT_DIR/vpsbot.sqlite3"
 
 				# Ensure venv exists and deps are updated
@@ -226,7 +228,7 @@ do
 			
 			bot_value=$(cat $filepath | grep '$admin =' | sed 's/.*= //' | sed 's/;//')
 			
-                        MESSAGE="🤖 Delta robot has been successfully updated! "$'\n\n'"🔻token: <code>${bot_token}</code>"$'\n'"🔻admin: <code>${bot_value}</code> "$'\n'"🔻phpmyadmin: <code>https://domain.com/phpmyadmin</code>"$'\n'"🔹db name: <code>${db_namedelta}</code>"$'\n'"🔹db username: <code>${db_userdelta}</code>"$'\n'"🔹db password: <code>${db_passdelta}</code>"$'\n\n'"📢 @deltach "
+			MESSAGE="✅ Delta bot updated. Credentials are never included in notifications."
 			
    			curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" -d chat_id="${bot_value}" -d text="$MESSAGE" -d parse_mode="html"
 			
