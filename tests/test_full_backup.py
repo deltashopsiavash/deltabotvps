@@ -3,6 +3,8 @@
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import pathlib
 import tarfile
 import tempfile
@@ -90,6 +92,44 @@ $dbPassword = 'fixturepass';
             target.write_text(fixture.replace("fixturepass", "different"))
             with self.assertRaisesRegex(RuntimeError, "TARGET_INSTALL_CREDENTIALS_MISMATCH"):
                 full.verify_target(source, target)
+
+    @unittest.skipUnless(os.environ.get("DELTA_FULL_BACKUP_CI") == "1", "isolated MySQL integration only")
+    def test_actual_multi_database_dump_and_restore(self):
+        # Never run this destructive fixture against a real server.
+        env = dict(os.environ)
+        env.update(MYSQL_PWD="ci_test_password", MYSQL_HOST="127.0.0.1", MYSQL_TCP_PORT="3306")
+        args = ["mysql", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-NB"]
+        def sql(statement):
+            return subprocess.run(args, input=statement.encode(), env=env, check=True, stdout=subprocess.PIPE).stdout
+        # CI job runs against its own disposable MySQL container.
+        sql("""
+CREATE DATABASE delta;
+CREATE DATABASE delta_rb72;
+CREATE DATABASE delta_sms_bridge;
+CREATE TABLE delta.reseller_bots(id INT PRIMARY KEY,db_name VARCHAR(80),status INT,is_deleted INT);
+INSERT INTO delta.reseller_bots VALUES(71,'delta_rb71',0,1),(72,'delta_rb72',1,0);
+CREATE TABLE delta.users(id INT PRIMARY KEY);
+INSERT INTO delta.users VALUES(123);
+CREATE TABLE delta_rb72.users(id INT PRIMARY KEY);
+INSERT INTO delta_rb72.users VALUES(456);
+CREATE TABLE delta_sms_bridge.events(id INT PRIMARY KEY);
+INSERT INTO delta_sms_bridge.events VALUES(789);
+""")
+        with tempfile.TemporaryDirectory() as d, patch.object(full, "mysql_access", return_value=(args, env)):
+            stage = pathlib.Path(d)
+            sql("UPDATE delta.reseller_bots SET status=1,is_deleted=0 WHERE id=71")
+            with self.assertRaisesRegex(RuntimeError, "ACTIVE_RESELLER_DB_MISSING"):
+                full.database_snapshot(stage)
+            sql("UPDATE delta.reseller_bots SET status=0,is_deleted=1 WHERE id=71")
+            self.assertEqual(full.database_snapshot(stage), ["delta", "delta_rb72", "delta_sms_bridge"])
+            sql("DELETE FROM delta.users; DELETE FROM delta_rb72.users; DELETE FROM delta_sms_bridge.events; CREATE TABLE delta.extra_after_backup(id INT)")
+            with (stage / "databases.sql").open("rb") as dump:
+                subprocess.run(args + ["--binary-mode"], stdin=dump, env=env, check=True)
+            self.assertEqual(sql("SELECT id FROM delta.users"), b"123\n")
+            self.assertEqual(sql("SELECT id FROM delta_rb72.users"), b"456\n")
+            self.assertEqual(sql("SELECT id FROM delta_sms_bridge.events"), b"789\n")
+            self.assertEqual(sql("SHOW TABLES FROM delta LIKE 'extra_after_backup'"), b"")
+            self.assertEqual(sql("SELECT CONCAT(status,':',is_deleted) FROM delta.reseller_bots WHERE id=71"), b"0:1\n")
 
     def test_round_trip_and_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
