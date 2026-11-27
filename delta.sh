@@ -135,7 +135,7 @@ if [ ! -d "/root/confdelta" ]; then
     sleep 1
     
     touch /root/confdelta/dbrootdelta.txt
-    sudo chmod -R 777 /root/confdelta/dbrootdelta.txt
+    sudo chmod 600 /root/confdelta/dbrootdelta.txt
     sleep 1
     
     randomdbpasstxt=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-30)
@@ -310,7 +310,8 @@ wait
         
         sleep 2
         
-        # print file
+        # Create the settings file with private permissions before writing secrets.
+        install -o root -g www-data -m 0640 /dev/null "$file_path"
         echo -e "<?php" >> /var/www/html/deltabotvps/baseInfo.php
         echo -e "error_reporting(0);" >> /var/www/html/deltabotvps/baseInfo.php
         echo -e "${ASAS}botToken = '${YOUR_BOT_TOKEN}';" >> /var/www/html/deltabotvps/baseInfo.php
@@ -339,6 +340,7 @@ wait
         /opt/vpsbot/venv/bin/pip install -r /opt/vpsbot/requirements.txt
 
         # Write .env for VPSBot (uses same BOT_TOKEN + admin id)
+        install -o root -g root -m 0600 /dev/null /opt/vpsbot/.env
         cat > /opt/vpsbot/.env <<EOF
 BOT_TOKEN=${YOUR_BOT_TOKEN}
 ADMIN_IDS=${YOUR_CHAT_ID}
