@@ -94,7 +94,7 @@ def runtime_filter(info):
 
 def gpg():
     return ["gpg", "--batch", "--yes", "--no-tty", "--pinentry-mode", "loopback",
-            "--passphrase-file", str(KEY), "--homedir", str(ROOT / "gnupg")]
+            "--no-symkey-cache", "--passphrase-file", str(KEY), "--homedir", str(ROOT / "gnupg")]
 
 def create(stage):
     for p in REQUIRED:
