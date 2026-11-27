@@ -38,12 +38,12 @@ def mysql_access():
         env["MYSQL_PWD"] = match.group(1)
     return args, env
 
-def database_snapshot(stage):
+def database_snapshot(stage, safety=False):
     args, env = mysql_access()
     def query(sql):
         return run(args + ["-e", sql], env=env, stdout=subprocess.PIPE).stdout.decode().splitlines()
     dbs = sorted(n for n in query("SHOW DATABASES") if re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n))
-    require({"delta", "delta_sms_bridge"} <= set(dbs), "REQUIRED_DATABASE_MISSING")
+    require("delta" in dbs and (safety or "delta_sms_bridge" in dbs), "REQUIRED_DATABASE_MISSING")
     for row in query("SELECT id,COALESCE(db_name,'') FROM delta.reseller_bots WHERE status=1 AND is_deleted=0"):
         rid, _, name = row.partition("\t")
         require(re.fullmatch(r"delta_rb[1-9][0-9]*", name) and name in dbs, "ACTIVE_RESELLER_DB_MISSING")
@@ -100,10 +100,10 @@ def gpg():
     return ["gpg", "--batch", "--yes", "--no-tty", "--pinentry-mode", "loopback",
             "--no-symkey-cache", "--passphrase-file", str(KEY), "--homedir", str(ROOT / "gnupg")]
 
-def create(stage):
+def create(stage, safety=False):
     for p in REQUIRED:
         require(pathlib.Path("/" + p).exists(), "REQUIRED_COMPONENT_MISSING")
-    dbs = database_snapshot(stage)
+    dbs = database_snapshot(stage, safety=True) if safety else database_snapshot(stage)
     sqlite = sqlite_snapshot(stage)
     paths = [p for p in PATHS if pathlib.Path("/" + p).exists()]
     with tarfile.open(stage / "runtime.tar.gz", "w:gz", dereference=False) as tar:
@@ -117,7 +117,7 @@ def create(stage):
             tar.add(stage / "sqlite", arcname="sqlite")
         names.append("sqlite.tar.gz")
     manifest = {"format": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
-                "databases": dbs, "paths": paths, "sqlite": sqlite,
+                "databases": dbs, "paths": paths, "sqlite": sqlite, "safety": safety,
                 "files": {n: {"sha256": sha(stage / n), "size": (stage / n).stat().st_size} for n in names}}
     (stage / "manifest.json").write_text(json.dumps(manifest, indent=2))
     plain = stage / "archive.tar.gz"
@@ -173,7 +173,7 @@ def verify(stage, limit=LIMIT):
                     h.update(chunk)
                     size += len(chunk)
             require(manifest["files"][name] == {"sha256": h.hexdigest(), "size": size}, "HASH_MISMATCH")
-        require({"delta", "delta_sms_bridge"} <= set(manifest["databases"]), "MISSING_DATABASES")
+        require("delta" in manifest["databases"] and (manifest.get("safety") is True or "delta_sms_bridge" in manifest["databases"]), "MISSING_DATABASES")
         require(all(re.fullmatch(r"delta(?:_rb[1-9][0-9]*|_sms_bridge)?", n) for n in manifest["databases"]), "INVALID_DB_LIST")
     # Keep only one pending restore. No unbounded plaintext staging via the web worker.
     ready = ROOT / "verified-pending.tar.gz"
@@ -235,7 +235,7 @@ def unpack_runtime(archive, dest, roots):
         for out, m in reversed(directories):
             if os.geteuid() == 0:
                 os.chown(out, m.uid, m.gid)
-            os.chmod(out, m.mode & 0o777)
+            os.chmod(out, m.mode & 0o7777)
 
 def unpack_outer(verified, work):
     with tarfile.open(verified, "r:gz") as tar:
@@ -339,14 +339,18 @@ def apply_verified(work, expected_sha):
     # Keep MySQL running. If anything fails, leave writers stopped, and retain
     # the safety backup for root recovery rather than claim a successful restore.
     print("RESTORE_STOPPING_WRITERS", flush=True)
-    for svc in running:
-        run(["systemctl", "stop", svc])
+    stopped = []
     safety = ROOT / ("before-restore-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(4).hex() + ".delta.gpg")
+    changed = False
     try:
+        for svc in running:
+            run(["systemctl", "stop", svc])
+            stopped.append(svc)
         with safety.open("xb") as out:
             run([sys.executable, __file__, "create-safety"], stdout=out)
         require(safety.stat().st_size > len(MAGIC), "SAFETY_ARCHIVE_FAILED")
         print("SAFETY_BACKUP=" + str(safety), flush=True)
+        changed = True
         with (work / "databases.sql").open("rb") as sql:
             run(args + ["--binary-mode", "--default-character-set=utf8mb4"], env=env, stdin=sql, stdout=subprocess.DEVNULL)
         # Existing MySQL root config and root password must remain target-local.
@@ -363,7 +367,15 @@ def apply_verified(work, expected_sha):
         verified.unlink()
         print("DELTA_FULL_RESTORE_COMPLETE_CHECK_EXTERNAL_SERVICES", flush=True)
     except Exception:
-        print("RESTORE_FAILED_WRITERS_MAY_BE_STOPPED; SAFETY_BACKUP=" + str(safety), file=sys.stderr)
+        if not changed:
+            safety.unlink(missing_ok=True)
+            for svc in stopped:
+                subprocess.run(["systemctl", "start", svc], stderr=subprocess.DEVNULL)
+            print("RESTORE_STOPPED_BEFORE_REPLACEMENT", file=sys.stderr)
+        else:
+            for svc in running:
+                subprocess.run(["systemctl", "stop", svc], stderr=subprocess.DEVNULL)
+            print("RESTORE_FAILED_WRITERS_STOPPED; SAFETY_BACKUP=" + str(safety), file=sys.stderr)
         raise
 
 def main():
@@ -380,7 +392,7 @@ def main():
     # create-safety runs only as root while its parent holds the lock.
     if mode == "create-safety":
         with tempfile.TemporaryDirectory(prefix="safety-", dir=ROOT) as d:
-            create(pathlib.Path(d))
+            create(pathlib.Path(d), safety=True)
         return
     with (ROOT / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
