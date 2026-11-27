@@ -590,6 +590,14 @@ function daRefreshBroadcast(mysqli $db,bool $reconnect): array {
 
 // Device IDs are app-scoped, not a hardware attestation. The account row
 // serializes login, migration, and revocation so no extra slot is granted.
+// Absolute lifetime for new sessions; legacy tokens are capped on next use.
+function daSessionTtl(): int {return 90*86400;}
+function daSessionLookup(mysqli $db,string $hash,int $now): ?array {
+    return daRow($db,'SELECT s.account_id,d.id FROM delta_app_sessions s JOIN delta_app_devices d ON d.token_hash=s.token_hash AND d.account_id=s.account_id WHERE s.token_hash=? AND s.expires>?','si',$hash,$now);
+}
+function daSessionCap(mysqli $db,string $hash,int $now): void {
+    daExec($db,'UPDATE delta_app_sessions SET expires=LEAST(expires,?) WHERE token_hash=? AND expires>?','isi',$now+daSessionTtl(),$hash,$now);
+}
 function daDeviceLogin(mysqli $db,string $name,string $password,string $device,string $model,string $legacy=''): array {
     $db->begin_transaction();
     try{
@@ -615,7 +623,7 @@ function daDeviceLogin(mysqli $db,string $name,string $password,string $device,s
             daExec($db,'INSERT INTO delta_app_devices(account_id,device_hash,token_hash,model,created,last_seen) VALUES(?,?,?,?,?,?)','isssii',$id,$dh,$hash,$model,$now,$now);
         }
         daExec($db,'DELETE FROM delta_app_sessions WHERE account_id=? AND token_hash NOT IN (SELECT token_hash FROM delta_app_devices WHERE account_id=?)','ii',$id,$id);
-        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',$hash,$id,$now+315360000);
+        daExec($db,'INSERT INTO delta_app_sessions(token_hash,account_id,expires) VALUES(?,?,?)','sii',$hash,$id,$now+daSessionTtl());
         $db->commit();
         return ['account'=>$a,'token'=>$token];
     }catch(Throwable $e){$db->rollback();throw $e;}
