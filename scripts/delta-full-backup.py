@@ -13,7 +13,7 @@ PATHS = (
     "opt/delta-sms-bridge", "opt/vpsbot", "root/vpsbot",
     "etc/delta-sms-bridge.php", "var/lib/delta-sms-bridge",
     "root/delta-sms-bridge-pairing.txt", "root/confdelta",
-    "etc/apache2", "etc/letsencrypt", "etc/mysql", "etc/php", "etc/cron.d",
+    "etc/apache2", "etc/letsencrypt", "etc/mysql", "etc/php", "etc/phpmyadmin", "etc/cron.d",
     "var/spool/cron/crontabs", "etc/systemd/system/vpsbridge.service",
     "etc/systemd/system/vpsbot.service",
 )
@@ -66,6 +66,19 @@ def sha(p):
 
 def sqlite_snapshot(stage):
     found = []
+    for config in (pathlib.Path("/opt/vpsbot/.env"), pathlib.Path("/root/vpsbot/.env")):
+        if config.is_file():
+            m = re.search(r"^\s*(?:export\s+)?DB_PATH\s*=\s*(.*?)\s*$", config.read_text(), re.M)
+            if m:
+                path = pathlib.Path(m.group(1).strip("'\""))
+                if not path.is_absolute():
+                    path = config.parent / path
+                require(under(str(path.resolve()).lstrip("/"), ("opt/vpsbot", "root/vpsbot")), "VPSBOT_DB_OUTSIDE_BACKUP_SCOPE")
+                require(not path.is_symlink(), "VPSBOT_DB_SYMLINK")
+                # A configured but absent SQLite database is not equivalent to an empty backup.
+                require(path.is_file(), "VPSBOT_CONFIGURED_DB_MISSING")
+                with path.open("rb") as check:
+                    require(check.read(16) == b"SQLite format 3\x00", "VPSBOT_DB_INVALID")
     for base in (pathlib.Path("/opt/vpsbot"), pathlib.Path("/root/vpsbot")):
         if not base.is_dir():
             continue
@@ -107,6 +120,7 @@ def create(stage, safety=False):
     sqlite = sqlite_snapshot(stage)
     paths = [p for p in PATHS if pathlib.Path("/" + p).exists()]
     with tarfile.open(stage / "runtime.tar.gz", "w:gz", dereference=False) as tar:
+        # Preserve symlinks without following them.
         for p in paths:
             tar.add("/" + p, arcname=p, filter=lambda info: None if info.name in sqlite else runtime_filter(info))
     with (stage / "packages.txt").open("wb") as f:
@@ -184,7 +198,7 @@ def verify(stage, limit=LIMIT):
 # Restore only explicit paths from the authenticated backup. Never extract an
 # uploaded archive directly onto /. All links are installed after regular files.
 # MySQL server configuration and root credentials remain those of the target.
-PRESERVE_TARGET = {"etc/mysql", "root/confdelta"}
+PRESERVE_TARGET = {"etc/mysql", "root/confdelta", "etc/phpmyadmin"}
 SERVICE_NAMES = ("apache2", "cron", "vpsbridge", "vpsbot")
 def under(name, roots):
     return any(name == p or name.startswith(p + "/") for p in roots)
@@ -205,7 +219,7 @@ def unpack_runtime(archive, dest, roots):
             name = m.name.rstrip("/")
             require(safe_name(name) and under(name, roots) and name not in seen, "UNSAFE_RUNTIME_MEMBER")
             require(not any(x in SKIP for x in name.split("/")), "EXCLUDED_RUNTIME_MEMBER")
-            require(m.isdir() or m.isfile() or m.issym(), "UNSUPPORTED_RUNTIME_MEMBER")
+            require(m.isdir() or m.isfile() or m.issym() or m.islnk(), "UNSUPPORTED_RUNTIME_MEMBER")
             seen.add(name)
             total += m.size
             require(total <= PLAIN_LIMIT and len(seen) <= 200000, "RUNTIME_LIMIT")
@@ -217,6 +231,18 @@ def unpack_runtime(archive, dest, roots):
                 package_links = ("usr/share/phpmyadmin", "usr/share/javascript", "etc/ssl/certs", "etc/alternatives")
                 require(safe_name(normalized) and (under(normalized, roots) or (target.startswith("/") and under(normalized, package_links))), "UNSAFE_RUNTIME_LINK")
                 links.append((out, m))
+            elif m.islnk():
+                target = m.linkname
+                require(safe_name(target) and under(target, roots) and target in seen and target != name, "UNSAFE_HARDLINK")
+                src = dest / target
+                require(src.is_file() and not src.is_symlink() and not any(p.is_symlink() for p in src.parents), "INVALID_HARDLINK_TARGET")
+                total += src.stat().st_size
+                require(total <= PLAIN_LIMIT, "RUNTIME_LIMIT")
+                out.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, out)
+                if os.geteuid() == 0:
+                    os.chown(out, m.uid, m.gid)
+                os.chmod(out, m.mode & 0o777)
             elif m.isdir():
                 out.mkdir(parents=True, exist_ok=True)
                 directories.append((out, m))
@@ -409,6 +435,26 @@ def prepare_install(work, expected_sha):
     print("PRIVATE_INSTALL_CREDENTIALS=" + str(private))
     print("Use the original domain, bot token, admin ID and DB username/password. Never paste these files into chat.")
 
+def rehearsal(work, expected_sha):
+    verified = ROOT / "verified-pending.tar.gz"
+    require(verified.is_file() and not verified.is_symlink() and sha(verified) == expected_sha,
+            "APPROVAL_DIGEST_MISMATCH")
+    manifest = unpack_outer(verified, work)
+    runtime = work / "runtime"
+    runtime.mkdir()
+    unpack_runtime(work / "runtime.tar.gz", runtime, manifest["paths"])
+    if manifest["sqlite"]:
+        restore_sqlite(work / "sqlite.tar.gz", runtime, manifest["sqlite"])
+    for rel in REQUIRED:
+        require((runtime / rel).exists(), "RESTORE_COMPONENT_MISSING")
+    values = base_values(runtime / "var/www/html/deltabotvps/baseInfo.php")
+    require(values["dbName"] == "delta", "MOTHER_DB_MISMATCH")
+    print("ARCHIVE_DATABASES=" + ",".join(manifest["databases"]))
+    print("ARCHIVE_RUNTIME_PATHS=" + str(len(manifest["paths"])))
+    print("ARCHIVE_SQLITE_COUNT=" + str(len(manifest["sqlite"])))
+    print("DELTA_FULL_ARCHIVE_REHEARSAL_OK")
+    print("No live SQL, service, webhook or configuration was changed.")
+
 def main():
     os.umask(0o077)
     require(os.geteuid() == 0, "ROOT_REQUIRED")
@@ -418,7 +464,7 @@ def main():
     require(len(KEY.read_bytes().strip()) >= 24, "RECOVERY_KEY_TOO_SHORT")
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     require((len(sys.argv) == 2 and mode in ("create", "verify", "verify-local", "create-safety")) or
-            (len(sys.argv) == 3 and mode in ("apply", "prepare-install") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
+            (len(sys.argv) == 3 and mode in ("apply", "prepare-install", "rehearse") and re.fullmatch(r"[a-f0-9]{64}",sys.argv[2])), "INVALID_MODE")
     (ROOT / "gnupg").mkdir(mode=0o700, exist_ok=True)
     # create-safety runs only as root while its parent holds the lock.
     if mode == "create-safety":
@@ -433,6 +479,8 @@ def main():
                 apply_verified(stage, sys.argv[2])
             elif mode == "prepare-install":
                 prepare_install(stage, sys.argv[2])
+            elif mode == "rehearse":
+                rehearsal(stage, sys.argv[2])
             elif mode == "create":
                 create(stage)
             else:
