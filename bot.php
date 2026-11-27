@@ -826,6 +826,9 @@ if(!$isStartCmd){
             $cmd = 'nohup php ' . escapeshellarg($worker) . ' backup ' . escapeshellarg($tokenToUse) . ' ' . escapeshellarg($admin) . ' ' . escapeshellarg('deltabotvps_auto_backup') . ' ' . escapeshellarg($dbToUse) . ' >/dev/null 2>&1 &';
             @shell_exec($cmd);
         }else{
+            if (!$isChildBot) {
+                error_log('Full mother backup worker unavailable; no partial automatic backup sent.');
+            } else {
             // Fallback (sync) - may still take time on huge DBs
             $tmp = dbCreateSqlBackupFile('deltabotvps_auto_backup');
             if($tmp){
@@ -834,6 +837,7 @@ if(!$isStartCmd){
                     if(isset($sd['ok']) && $sd['ok']) @unlink($tmp);
                 }
             }
+        }
         }
     }
 }
@@ -1127,12 +1131,18 @@ if(($userInfo['step'] ?? '') == 'awaiting_backup_sql' && ($from_id == $admin || 
             $out = @fopen($path, 'xb');
             umask($oldBackupUmask);
             if($in && $out){
-                @stream_copy_to_stream($in, $out);
+                $received = @stream_copy_to_stream($in, $out, 19*1024*1024+1);
                 @fclose($in);
                 @fclose($out);
+                if ($received === false || $received < 1 || $received > 19*1024*1024 ||
+                    (isset($doc->file_size) && (int)$doc->file_size !== $received)) {
+                    @unlink($path);
+                    sendMessage("❌ دریافت فایل ناقص است یا از سقف حجم مجاز بیشتر است.");
+                    exit;
+                }
 
                 setUser('none','step');
-                sendMessage("✅ فایل بکاپ دریافت شد. در حال بازگردانی... ممکن است چند دقیقه طول بکشد.");
+                sendMessage("✅ فایل بکاپ دریافت شد. در حال اعتبارسنجی...");
 
                 $tokenToUse = $GLOBALS['botToken'] ?? ($botToken ?? null);
                 if($tokenToUse && isShellExecAvailable()){
@@ -2014,8 +2024,9 @@ if($data=='adminBackupMenu' && ($from_id == $admin || $userInfo['isAdmin'] == tr
         $message_id,
         "🗄 مدیریت بکاپ\n\n".
         "- بکاپ خودکار: هر {$interval} دقیقه (در صورت فعال بودن)\n".
-        "- بکاپ دستی: همین الان فایل SQL ارسال می‌شود\n".
-        "- بازگردانی: فایل SQL را ارسال کنید",
+        (!$isChildBot && (string)$from_id === (string)$admin
+            ? "- بکاپ دستی و خودکار مادر: فایل رمزگذاری‌شده کل مجموعه\n- بازگردانی: فایل را بفرستید؛ پس از اعتبارسنجی، تأیید مستقل مالک برای بازیابی سیستمی لازم است."
+            : "- بکاپ دستی: فایل SQL دیتابیس همین ربات\n- بازگردانی: فایل SQL را ارسال کنید"),
         $keys
     );
 }
@@ -2041,6 +2052,10 @@ if($data=='adminBackupSetInterval' && ($from_id == $admin || $userInfo['isAdmin'
 }
 
 if($data=='adminBackupGet' && ($from_id == $admin || $userInfo['isAdmin'] == true)){
+    if (!$isChildBot && (string)$from_id === (string)$admin && !isShellExecAvailable()) {
+        sendMessage('❌ اجرای سرویس بکاپ کامل در دسترس نیست؛ بکاپ ناقص ارسال نشد.');
+        exit;
+    }
     // Run backup asynchronously to avoid webhook/callback timeouts (prevents bot "hang")
     alert('✅ درخواست بکاپ ثبت شد. در حال آماده‌سازی...');
 
@@ -2079,7 +2094,7 @@ if($data=='adminBackupGet' && ($from_id == $admin || $userInfo['isAdmin'] == tru
 
 if($data=='adminBackupRestore' && ($from_id == $admin || $userInfo['isAdmin'] == true)){
     setUser('awaiting_backup_sql','step');
-    smartSendOrEdit($message_id, "📤 فایل بکاپ SQL را همینجا ارسال کنید.\n\n⚠️ توجه: بازگردانی بکاپ باعث جایگزینی کامل دیتابیس فعلی می‌شود.", ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
+    smartSendOrEdit($message_id, (!$isChildBot && (string)$from_id === (string)$admin ? "📤 فایل بکاپ رمزگذاری‌شده DELTA-FULL یا SQL را ارسال کنید. فایل کامل فقط اعتبارسنجی و برای تأیید مستقل مالک آماده می‌شود. بازگردانی SQL قدیمی جایگزین دیتابیس فعلی می‌شود." : "📤 فایل بکاپ SQL را ارسال کنید.\n⚠️ بازگردانی SQL دیتابیس فعلی را جایگزین می‌کند."), ['inline_keyboard'=>[[['text'=>$buttonValues['back_button'],'callback_data'=>'adminBackupMenu']]]]);
 }
 
 // ===== Admin Backup Files List (stored on server) =====
@@ -2094,7 +2109,7 @@ if(preg_match('/^adminBackupFiles_(\d+)/',$data,$m) && ($from_id == $admin || $u
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2148,7 +2163,7 @@ if(preg_match('/^adminBackupShow_(\d+)_(\d+)/',$data,$m) && ($from_id == $admin 
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2198,7 +2213,7 @@ if(preg_match('/^adminBackupDel_(\d+)_(\d+)/',$data,$m) && ($from_id == $admin |
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
@@ -2235,7 +2250,7 @@ if(preg_match('/^adminBackupRestoreFromFile_(\d+)_(\d+)/',$data,$m) && ($from_id
         if(is_array($scan)){
             foreach($scan as $f){
                 if($f === '.' || $f === '..') continue;
-                if(!preg_match('/\.sql(\.gz)?$/i', $f)) continue;
+                if(!preg_match('/\.sql(\.gz)?$/i', $f) && !(!$isChildBot && (string)$from_id === (string)$admin && preg_match('/^DELTA-FULL-\d{8}_\d{6}-[a-f0-9]{8}\.delta\.gpg$/D', $f))) continue;
                 $full = $dir . '/' . $f;
                 if(is_file($full)) $files[] = $f;
             }
